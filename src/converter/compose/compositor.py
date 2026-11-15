@@ -33,9 +33,31 @@ class CompositorStrategy(Protocol):
 class CPUCompositor:
     """PIL-based CPU compositing."""
 
+    # Maximum number of decoded RGBA images to keep in memory.  Bounds the
+    # cache so it cannot grow without bound on large games while still avoiding
+    # repeated decode+convert of shared layers across composites.
+    _MAX_IMAGE_CACHE = 512
+
     def __init__(self, config: GameConfig, resolver: Resolver) -> None:
         self.config = config
         self.resolver = resolver
+        self._image_cache: dict[str, Image.Image] = {}
+
+    def _load_image(self, path: Path) -> Image.Image | None:
+        """Return a cached RGBA image for ``path``, decoding+convert once per path."""
+        key = str(path)
+        im = self._image_cache.get(key)
+        if im is not None:
+            return im
+        try:
+            im = Image.open(path).convert("RGBA")
+        except Exception:
+            return None
+        if len(self._image_cache) >= self._MAX_IMAGE_CACHE:
+            # Evict the oldest entry to bound memory usage.
+            self._image_cache.pop(next(iter(self._image_cache)))
+        self._image_cache[key] = im
+        return im
 
     def composite(
         self, layers: list[Layer], canvas_size: tuple[int, int] | None = None,
@@ -57,9 +79,8 @@ class CPUCompositor:
                 resolved_path=path,
                 resolution_method=self._resolution_method(path, layer.source),
             )
-            try:
-                im = Image.open(path).convert("RGBA")
-            except Exception:
+            im = self._load_image(path)
+            if im is None:
                 continue
             if size is None:
                 size = im.size

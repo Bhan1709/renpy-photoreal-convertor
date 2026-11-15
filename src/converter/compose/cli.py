@@ -29,34 +29,23 @@ from .restore import find_archive, restore_from_manifest, restore_rpy_files
 def build_config(args) -> GameConfig:
     """Resolve a :class:`GameConfig` from CLI arguments.
 
-    Priority: explicit --config JSON > --game-root / overrides > default convention.
+    Priority: explicit --config JSON > --game-root / --game > default convention.
+    ``default_config`` locates the ``game`` folder from either an explicit path or
+    a game name.
     """
     if args.config:
         return load_config(args.config)
 
-    game_root = Path(args.game_root).resolve() if args.game_root else None
-    if game_root is None and args.game:
-        search_root = (Path("src/renpy_game") / args.game).resolve()
-        if search_root.is_dir():
-            # Look for a ``game`` folder at any depth beneath the game directory
-            # (e.g. src/renpy_game/<game>/.../game).  Prefer one whose parent
-            # matches the <game>-<version>-pc build layout.
-            game_dirs = [p for p in search_root.rglob("game") if p.is_dir()]
-            pc_game_dirs = [p for p in game_dirs if p.parent.name.endswith("-pc")]
-            chosen = pc_game_dirs[0] if pc_game_dirs else (game_dirs[0] if game_dirs else None)
-            if chosen is not None:
-                game_root = chosen.resolve()
+    game_root = Path(args.game_root).resolve() if args.game_root else args.game
     if game_root is None:
         game_root = Path(
             "src/renpy_game/CampMourningWood-0.25.0.1/CampMourningWood-0.25.0.1-pc/game"
-        ).resolve()
-
-    archive_dir = Path(args.archive_dir).resolve() if args.archive_dir else None
-    config = default_config(
-        args.game or game_root.parent.name,
-        game_root,
-        archive_dir,
+        )
+    config_name = args.game or (
+        game_root if isinstance(game_root, str) else game_root.parent.name
     )
+    archive_dir = Path(args.archive_dir).resolve() if args.archive_dir else None
+    config = default_config(config_name, game_root, archive_dir)
 
     updates: dict[str, object] = {}
     if args.output_dir:

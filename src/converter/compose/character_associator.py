@@ -29,8 +29,15 @@ _WORD_RE = re.compile(r"[A-Za-z]+")
 class CharacterAssociator:
     """Infers involved characters from XXX asset paths and Ren'Py definitions."""
 
-    def __init__(self, config: GameConfig) -> None:
+    def __init__(
+        self, config: GameConfig,
+        script_lines: dict[Path, tuple[str, ...]] | None = None,
+    ) -> None:
         self.config = config
+        # Indexed per-file source lines (path -> lines) so the associator does
+        # not re-read scripts from disk.  Falls back to reading per-file when
+        # not supplied.
+        self._script_lines: dict[Path, tuple[str, ...]] = script_lines or {}
         self._aliases_cache: dict[str, set[str]] | None = None
         self._xxx_tags_cache: set[str] | None = None
         self._display_names: dict[str, str] | None = None
@@ -43,6 +50,7 @@ class CharacterAssociator:
         image_name: str,
         block,
         usage_locations: list[dict],
+        lines: tuple[str, ...] | list[str] | None = None,
     ) -> list[dict]:
         """Return character associations for a composite in the ``xxx`` folder."""
         aliases = self._aliases()
@@ -86,7 +94,12 @@ class CharacterAssociator:
                     add_alias(token, evidence_source)
                     add_identifier_tokens(token, evidence_source)
             try:
-                lines = block.path.read_text(encoding="utf-8-sig", errors="replace").splitlines()
+                # Use indexed lines when available; fall back to reading the
+                # definition script from disk (Optimization #1).
+                if lines is None:
+                    lines = block.path.read_text(
+                        encoding="utf-8-sig", errors="replace"
+                    ).splitlines()
                 before = lines[max(0, block.line - 80): block.line - 1]
                 base_line = max(1, block.line - 79)
                 headings = [
@@ -178,13 +191,22 @@ class CharacterAssociator:
         for folder in folders:
             aliases[_sub_non_alnum(folder)].add(folder)
 
-        for script in files(self.config):
-            if "archive" in script.parts or "cache" in script.parts:
-                continue
-            try:
-                lines = script.read_text(encoding="utf-8-sig", errors="replace").splitlines()
-            except OSError:
-                continue
+        # Use indexed per-file lines when available so each script is read only
+        # once by the single-pass indexer rather than scanned again here
+        # (Optimization #1).  Fall back to reading each file directly.
+        script_lines = self._script_lines
+        if script_lines:
+            script_items: list[tuple[Path, tuple[str, ...]]] = list(script_lines.items())
+        else:
+            script_items = [
+                (script, None) for script in files(self.config)
+            ]
+        for script, lines in script_items:
+            if lines is None:
+                try:
+                    lines = script.read_text(encoding="utf-8-sig", errors="replace").splitlines()
+                except OSError:
+                    continue
             for raw in lines:
                 match = _CHARACTER_DEF_RE.match(raw.split("#", 1)[0].strip())
                 if not match:

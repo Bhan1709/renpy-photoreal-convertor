@@ -14,10 +14,8 @@ import json
 import re
 from collections import defaultdict
 from pathlib import Path
-from typing import Callable
 
 from tqdm import tqdm
-
 from .character_associator import CharacterAssociator
 from .compositor import Compositor
 from .conditions import eval_cond, select_layers_for_chain, state_at_call
@@ -73,15 +71,19 @@ class Composer:
         screens = index.screens
         image_declarations = index.image_decls
 
-        # Count total expected work units so the progress bar reflects real
-        # composites processed, not files scanned.
-        total_usages = sum(
-            1
-            for fi in index.per_file.values()
-            for u in fi.usages
-            if u.kind in ("show_scene", "show_screen")
+        # Rebuild the associator with the indexed per-file lines so it never
+        # re-reads scripts from disk (Optimization #1).
+        self.associator = CharacterAssociator(
+            self.config,
+            script_lines={fi.path: fi.lines for fi in index.per_file.values()},
         )
-        total_usages += len(image_declarations)
+
+        # We cannot know up front exactly how many usages will pass through
+        # emit_wrapper (some are skipped because the tag/screen is undefined,
+        # the stack is empty, or the declaration is dynamic), so we start the
+        # progress bar without a fixed total.  It will show iterations
+        # processed and rate; the final count is recorded in usages_processed.
+        bar = tqdm(desc="composites processed")
 
         records: list[CompositeRecord] = []
         records_by_key: dict[tuple[str, str, str], CompositeRecord] = {}
@@ -89,28 +91,25 @@ class Composer:
         # instead of an O(n) linear scan calling _record_key() on every entry.
         key_to_index: dict[tuple[str, str, str], int] = {}
         use_count = 0
-        rendered_count = 0
-
-        bar = tqdm(total=max(total_usages, 1), desc="composites processed")
+        usages_processed = 0
 
         def emit_wrapper(
             name: str, kind: str, layers: list[Layer], locations: list[dict], block: ScriptBlock,
         ) -> None:
-            nonlocal use_count, rendered_count
+            nonlocal use_count, usages_processed
 
-            def on_render() -> None:
-                nonlocal rendered_count
-                rendered_count += 1
+            usages_processed += 1
+            normalized = _normalize_layers(layers, self.config)
+            if not normalized:
                 bar.update(1)
-
-            record, key = _emit_record(
-                name, kind, layers, locations, block, index, self.config, self.resolver,
-                self.compositor, self.associator, dry_run=dry_run, on_render=on_render,
-            )
-            if record is None:
                 return
-            assert key is not None
+            key = _record_key(kind, name, normalized)
+            digest = key[2]
+
             if key in records_by_key:
+                # Duplicate composite: merge usage locations only.  Skip the
+                # expensive render / association / dialog work, which was
+                # already performed for the first occurrence of this key.
                 existing = records_by_key[key]
                 new_locs = [
                     loc for loc in locations
@@ -127,30 +126,26 @@ class Composer:
                             existing_keys.add(k)
                     merged = tuple(sorted(merged_list, key=lambda l: (l.script, l.line)))
                     existing = existing.replace(usage_locations=merged)
-                    existing = existing.replace(usage_locations=merged)
                     records_by_key[key] = existing
                     # O(1) replacement via key->index map instead of O(n) scan
                     idx = key_to_index.get(key)
                     if idx is not None:
                         records[idx] = existing
-                if existing.family == "xxx" and existing.characters is None:
-                    chars = self.associator.associate(
-                        list(existing.ordered_layers), name, block,
-                        [{"script": l.script, "line": l.line, "statement": l.statement} for l in existing.usage_locations],
-                    )
-                    existing = existing.replace(
-                        characters=tuple(chars),
-                        character_association_status="associated" if chars else "missing",
-                    )
-                    records_by_key[key] = existing
-                    idx = key_to_index.get(key)
-                    if idx is not None:
-                        records[idx] = existing
+                bar.update(1)
+                return
+
+            record = _emit_record(
+                name, kind, normalized, locations, block, index, self.config, self.resolver,
+                self.compositor, self.associator, dry_run=dry_run, digest=digest,
+            )
+            if record is None:
+                bar.update(1)
                 return
             records_by_key[key] = record
             key_to_index[key] = len(records)
             records.append(record)
             use_count += 1
+            bar.update(1)
 
         # --- Pass 1: layeredimage show/scene statements ---
         _process_layeredimage_uses_from_index(
@@ -198,7 +193,7 @@ class Composer:
             summary={
                 "scripts_scanned": len(index.files),
                 "composites": len(records),
-                "uses_processed": use_count,
+                "uses_processed": usages_processed,
                 "image_declarations_indexed": len(declaration_records),
                 "dynamic_declarations": len(dynamic_declarations),
             },
@@ -214,6 +209,52 @@ def _loc_to_usage(loc: dict) -> UsageLocation:
         script=loc["script"], line=loc["line"], statement=loc["statement"],
         state_snapshot=loc.get("state_snapshot"),
     )
+
+
+def _normalize_layers(layers: list[Layer], config: GameConfig) -> list[Layer]:
+    """Keep only layers whose source lives under a configured asset folder.
+
+    Pure filtering/copying — no disk or image work — so it is cheap to run for
+    every usage before the dedup check.
+    """
+    prefixes = tuple(f"{n}/" for n in config.categories.values())
+    return [
+        Layer(
+            source=x.source, line=x.line, group=x.group, conditions=x.conditions,
+            attribute=x.attribute, default_attribute=x.default_attribute,
+            offset=x.offset, offset_rel=x.offset_rel, chain_id=x.chain_id,
+            resolved_path=x.resolved_path, resolution_method=x.resolution_method,
+            warning=x.warning, unresolved_conditions=x.unresolved_conditions,
+            via_image_tag=x.via_image_tag, role=x.role, canvas_size=x.canvas_size,
+            declaration_expression=x.declaration_expression,
+        )
+        for x in layers
+        if any(x.source.lower().startswith(p) for p in prefixes)
+    ]
+
+
+def _record_key(kind: str, name: str, normalized: list[Layer]) -> tuple[str, str, str]:
+    """Dedup key for a composite: (kind, name, sha1 of normalized layer semantics)."""
+    semantic = json.dumps(
+        [
+            kind,
+            name,
+            [
+                (
+                    x.source,
+                    list(x.conditions),
+                    x.attribute,
+                    x.offset,
+                    x.offset_rel,
+                    x.canvas_size,
+                )
+                for x in normalized
+            ],
+        ],
+        sort_keys=True,
+    )
+    digest = hashlib.sha1(semantic.encode()).hexdigest()[:12]
+    return (kind, name, digest)
 
 
 def _require_config() -> GameConfig:
@@ -267,6 +308,7 @@ def _process_layeredimage_uses_from_index(
                 defaults,
                 emit_wrapper,
                 config,
+                lines=file_index.lines,
             )
 
 
@@ -274,6 +316,7 @@ def _emit_layeredimage_uses(
     tag: str, tail: str, block: ScriptBlock, candidates: list[Layer],
     f: Path, no: int, statement: str, defaults: dict[str, object],
     emit_wrapper, config: GameConfig,
+    lines: tuple[str, ...] | list[str] | None = None,
 ) -> None:
     attr_tokens = set(re.findall(r"\b[a-zA-Z][\w]*\b", tail))
     valid_attrs = {x.attribute for x in candidates if x.attribute}
@@ -291,7 +334,7 @@ def _emit_layeredimage_uses(
     if not selected:
         return
 
-    call_state = state_at_call(f, no, defaults, config)
+    call_state = state_at_call(f, no, defaults, config, lines=lines)
     resolved: list[Layer] = []
     unresolved_conditions: list[str] = []
 
@@ -304,6 +347,9 @@ def _emit_layeredimage_uses(
         else:
             unchained.append(layer)
 
+    # Evaluate unchained layers: only True conditions are selected.
+    # UNKNOWN conditions are recorded but the layer is NOT selected —
+    # unconditional layers are kept as a preview instead (matches legacy behavior).
     for layer in unchained:
         result = True
         layer_unresolved: list[str] = []
@@ -319,14 +365,37 @@ def _emit_layeredimage_uses(
         if result is True:
             resolved.append(layer)
         elif result is None:
-            layer = layer.with_unresolved(tuple(layer_unresolved))
-            resolved.append(layer)
             unresolved_conditions.extend(layer_unresolved)
 
+    # Evaluate chained layers via select_layers_for_chain.
     for cid, chain_layers in chained.items():
         chain_selected, chain_unresolved = select_layers_for_chain(chain_layers, call_state)
         unresolved_conditions.extend(chain_unresolved)
         resolved.extend(chain_selected)
+
+    # If there are unresolved conditions, keep unconditional layers as a
+    # marked partial preview (matches legacy behavior: never drop everything
+    # just because some conditions can't be statically evaluated).
+    if unresolved_conditions:
+        selected_keys = {(l.source, l.line, l.attribute) for l in resolved}
+        for layer in unchained:
+            if not layer.conditions and (layer.source, layer.line, layer.attribute) not in selected_keys:
+                resolved.append(layer)
+                selected_keys.add((layer.source, layer.line, layer.attribute))
+        # Also add unconditional chained layers not already selected.
+        for cid, chain_layers in chained.items():
+            for layer in chain_layers:
+                if not layer.conditions and (layer.source, layer.line, layer.attribute) not in selected_keys:
+                    resolved.append(layer)
+                    selected_keys.add((layer.source, layer.line, layer.attribute))
+
+    # Mark all conditionally-selected layers with the unresolved conditions.
+    if unresolved_conditions:
+        resolved = [
+            l.with_unresolved(tuple(sorted(set(l.unresolved_conditions) | set(unresolved_conditions))))
+            if l.conditions else l
+            for l in resolved
+        ]
 
     locations = [
         {
@@ -365,6 +434,44 @@ def _process_image_declarations_from_index(
     """
     path_regex = config.path_regex()
 
+    # Pre-parse static declaration expressions once (canvas size + offsets) so
+    # declarations used in many places do not re-run the regexes per usage.
+    parsed_decls: dict[str, list[Layer] | None] = {}
+    for name, decl in image_declarations.items():
+        expression = decl.expression
+        dynamic = any(
+            token in expression
+            for token in ("ConditionSwitch", "LiveComposite", "Function(", "DynamicDisplayable")
+        )
+        paths = decl.sources
+        if dynamic or not paths:
+            parsed_decls[name] = None
+            continue
+        layers = [
+            Layer(
+                source=p, line=decl.line, role="image_declaration_layer",
+                conditions=(), declaration_expression=expression,
+            )
+            for p in paths
+        ]
+        comp = re.search(r"Composite\s*\(\s*\(\s*(\d+)\s*,\s*(\d+)\s*\)", expression)
+        if comp:
+            canvas_size = (int(comp.group(1)), int(comp.group(2)))
+            layers = [l.replace(canvas_size=canvas_size) for l in layers]
+        position_pairs = list(
+            re.finditer(
+                r"\(\s*(-?\d+)\s*,\s*(-?\d+)\s*\)\s*,\s*['\"]("
+                + path_regex.pattern[1:-1] + r")['\"]",
+                expression,
+            )
+        )
+        for pair_index, match in enumerate(position_pairs):
+            if pair_index < len(layers):
+                layers[pair_index] = layers[pair_index].replace(
+                    offset=(int(match.group(1)), int(match.group(2)))
+                )
+        parsed_decls[name] = layers
+
     for file_index in index.per_file.values():
         f = file_index.path
         for usage in file_index.usages:
@@ -384,7 +491,6 @@ def _process_image_declarations_from_index(
                 token in expression
                 for token in ("ConditionSwitch", "LiveComposite", "Function(", "DynamicDisplayable")
             )
-            paths = decl.sources
             if dynamic:
                 dynamic_declarations.append({
                     "name": name,
@@ -394,36 +500,14 @@ def _process_image_declarations_from_index(
                     },
                     "usage_locations": [loc],
                     "expression": expression,
-                    "source_candidates": list(paths),
+                    "source_candidates": list(decl.sources),
                     "status": "dynamic_review",
                     "reason": "runtime-dependent image declaration",
                 })
                 continue
-            if not paths:
+            layers = parsed_decls.get(name)
+            if not layers:
                 continue
-            layers = [
-                Layer(
-                    source=p, line=decl.line, role="image_declaration_layer",
-                    conditions=(), declaration_expression=expression,
-                )
-                for p in paths
-            ]
-            comp = re.search(r"Composite\s*\(\s*\(\s*(\d+)\s*,\s*(\d+)\s*\)", expression)
-            if comp:
-                canvas_size = (int(comp.group(1)), int(comp.group(2)))
-                layers = [l.replace(canvas_size=canvas_size) for l in layers]
-            position_pairs = list(
-                re.finditer(
-                    r"\(\s*(-?\d+)\s*,\s*(-?\d+)\s*\)\s*,\s*['\"]("
-                    + path_regex.pattern[1:-1] + r")['\"]",
-                    expression,
-                )
-            )
-            for pair_index, match in enumerate(position_pairs):
-                if pair_index < len(layers):
-                    layers[pair_index] = layers[pair_index].replace(
-                        offset=(int(match.group(1)), int(match.group(2)))
-                    )
             emit_wrapper(name, "image_declaration", layers, [loc], _DeclBlock(decl.script, decl.line))
 
 
@@ -444,10 +528,9 @@ def _process_screen_stacks_from_index(
     Consumes the single-pass index instead of re-reading every script
     (Optimization #1).
     """
-    screen_stack_cache = {
-        name: parse_screen_stack(block, definitions, config)
-        for name, block in screens.items()
-    }
+    # Parse screen stacks lazily: only screens that are actually referenced by
+    # a ``show screen`` statement are parsed, avoiding work for unused screens.
+    screen_stack_cache: dict[str, list[Layer]] = {}
     for file_index in index.per_file.values():
         f = file_index.path
         for usage in file_index.usages:
@@ -456,11 +539,18 @@ def _process_screen_stacks_from_index(
             name = usage.tag
             if name not in screens:
                 continue
+            if name not in screen_stack_cache:
+                screen_stack_cache[name] = parse_screen_stack(
+                    screens[name], definitions, config
+                )
             block = screens[name]
             stack = list(screen_stack_cache[name])  # shallow copy
             if stack:
-                call_state = state_at_call(f, usage.line, defaults, config)
+                call_state = state_at_call(
+                    f, usage.line, defaults, config, lines=file_index.lines
+                )
                 selected: list[Layer] = []
+                unknown_conditions: list[str] = []
 
                 chained: dict[str, list[Layer]] = defaultdict(list)
                 unchained: list[Layer] = []
@@ -471,6 +561,9 @@ def _process_screen_stacks_from_index(
                     else:
                         unchained.append(layer)
 
+                # Evaluate unchained layers: only True conditions are selected.
+                # UNKNOWN conditions are recorded but the layer is NOT selected —
+                # unconditional layers are kept as a preview instead (matches legacy behavior).
                 for layer in unchained:
                     outcome = True
                     layer_unresolved: list[str] = []
@@ -486,12 +579,37 @@ def _process_screen_stacks_from_index(
                     if outcome is True:
                         selected.append(layer)
                     elif outcome is None:
-                        layer = layer.with_unresolved(tuple(layer_unresolved))
-                        selected.append(layer)
+                        unknown_conditions.extend(layer_unresolved)
 
+                # Evaluate chained layers via select_layers_for_chain.
                 for cid, chain_layers in chained.items():
-                    chain_selected, _ = select_layers_for_chain(chain_layers, call_state)
+                    chain_selected, chain_unresolved = select_layers_for_chain(
+                        chain_layers, call_state
+                    )
+                    unknown_conditions.extend(chain_unresolved)
                     selected.extend(chain_selected)
+
+                # If there are unknown conditions, keep unconditional layers as a
+                # marked partial preview (matches legacy behavior).
+                if unknown_conditions:
+                    selected_keys = {(l.source, l.line, l.attribute) for l in selected}
+                    for layer in unchained:
+                        if not layer.conditions and (layer.source, layer.line, layer.attribute) not in selected_keys:
+                            selected.append(layer)
+                            selected_keys.add((layer.source, layer.line, layer.attribute))
+                    for cid, chain_layers in chained.items():
+                        for layer in chain_layers:
+                            if not layer.conditions and (layer.source, layer.line, layer.attribute) not in selected_keys:
+                                selected.append(layer)
+                                selected_keys.add((layer.source, layer.line, layer.attribute))
+
+                # Mark conditionally-selected layers with unresolved conditions.
+                if unknown_conditions:
+                    selected = [
+                        l.with_unresolved(tuple(sorted(set(l.unresolved_conditions) | set(unknown_conditions))))
+                        if l.conditions else l
+                        for l in selected
+                    ]
 
                 if selected:
                     relevant_names = {
@@ -527,60 +645,20 @@ def _process_screen_stacks_from_index(
 # ---------------------------------------------------------------------- #
 
 def _emit_record(
-    name: str, kind: str, layers: list[Layer], locations: list[dict], block: ScriptBlock,
+    name: str, kind: str, normalized: list[Layer], locations: list[dict], block: ScriptBlock,
     index: ScriptIndex, config: GameConfig, resolver: Resolver, compositor: Compositor,
     associator: CharacterAssociator, *,
-    dry_run: bool = False,
-    on_render: Callable[[], None] | None = None,
-) -> tuple[CompositeRecord | None, tuple[str, str, str] | None]:
+    dry_run: bool = False, digest: str | None = None,
+) -> CompositeRecord | None:
     """Register a composite record (and optionally render its PNG).
 
-    Returns ``(record, key)`` or ``(None, None)`` if the stack could not be
-    normalized to a configured asset folder.
-
-    Args:
-        on_render: Optional callback invoked after a PNG is successfully
-            rendered (not when skipped because it already exists).
+    ``normalized`` must already be the prefix-filtered layer list; the dedup
+    key is computed by the caller, so this function only performs the
+    per-unique-composite work (render / association / dialog) once.
+    Returns ``None`` if the stack could not be normalized to a configured
+    asset folder or rendering failed.
     """
-    dynamic = any(x.unresolved_conditions for x in layers)
-
-    prefixes = tuple(f"{n}/" for n in config.categories.values())
-    normalized: list[Layer] = [
-        Layer(
-            source=x.source, line=x.line, group=x.group, conditions=x.conditions,
-            attribute=x.attribute, default_attribute=x.default_attribute,
-            offset=x.offset, offset_rel=x.offset_rel, chain_id=x.chain_id,
-            resolved_path=x.resolved_path, resolution_method=x.resolution_method,
-            warning=x.warning, unresolved_conditions=x.unresolved_conditions,
-            via_image_tag=x.via_image_tag, role=x.role, canvas_size=x.canvas_size,
-            declaration_expression=x.declaration_expression,
-        )
-        for x in layers
-        if any(x.source.lower().startswith(p) for p in prefixes)
-    ]
-    if not normalized:
-        return None, None
-
-    semantic = json.dumps(
-        [
-            kind,
-            name,
-            [
-                (
-                    x.source,
-                    list(x.conditions),
-                    x.attribute,
-                    x.offset,
-                    x.offset_rel,
-                    x.canvas_size,
-                )
-                for x in normalized
-            ],
-        ],
-        sort_keys=True,
-    )
-    digest = hashlib.sha1(semantic.encode()).hexdigest()[:12]
-    key = (kind, name, digest)
+    dynamic = any(x.unresolved_conditions for x in normalized)
 
     folder = next(
         (x.source.split("/")[:-1] for x in normalized if "/" in x.source), [kind]
@@ -591,6 +669,7 @@ def _emit_record(
     sub = Path(*folder[1:]) if len(folder) > 1 else Path()
     status = "dynamic_review" if dynamic else "static"
     paths = config.resolved_paths()
+    digest = digest or _record_key(kind, name, normalized)[2]
     target = paths["output_dir"] / status / family / sub / f"{name}__{digest}.png"
     dimensions: tuple[int, int] | None = None
 
@@ -612,11 +691,9 @@ def _emit_record(
         else:
             image = compositor.composite(normalized, canvas_size=None)
             if image is None:
-                return None, None
+                return None
             dimensions = (int(image.size[0]), int(image.size[1]))
             image.save(target)
-            if on_render is not None:
-                on_render()
 
     family2 = ""
     for x in normalized:
@@ -654,17 +731,21 @@ def _emit_record(
         ordered_layers=tuple(normalized),
         dimensions=dimensions,
         dynamic_conditions=tuple(
-            sorted({c for x in layers for c in x.unresolved_conditions})
+            sorted({c for x in normalized for c in x.unresolved_conditions})
         ),
         resolved_conditions=tuple(
-            sorted({c for x in layers for c in x.conditions})
+            sorted({c for x in normalized for c in x.conditions})
         ),
         family="xxx" if is_xxx else (family2 or kind),
     )
 
     if is_xxx:
         char_locs = [{"script": l.script, "line": l.line, "statement": l.statement} for l in usage_locations]
-        chars = associator.associate(list(normalized), name, block, char_locs)
+        file_index = index.per_file.get(block.path)
+        chars = associator.associate(
+            list(normalized), name, block, char_locs,
+            lines=file_index.lines if file_index is not None else None,
+        )
         record = record.replace(
             characters=tuple(chars),
             character_association_status="associated" if chars else "missing",
@@ -696,28 +777,5 @@ def _emit_record(
                 )
             )
 
-    return record, key
+    return record
 
-
-def _record_key(record: CompositeRecord) -> tuple[str, str, str]:
-    """Compute the dedup key for a CompositeRecord."""
-    semantic = json.dumps(
-        [
-            record.kind,
-            record.name,
-            [
-                (
-                    l.source,
-                    list(l.conditions),
-                    l.attribute,
-                    l.offset,
-                    l.offset_rel,
-                    l.canvas_size,
-                )
-                for l in record.ordered_layers
-            ],
-        ],
-        sort_keys=True,
-    )
-    digest = hashlib.sha1(semantic.encode()).hexdigest()[:12]
-    return (record.kind, record.name, digest)

@@ -526,6 +526,9 @@ class Applier:
             if "archive" in path.parts or path == self._declaration_path():
                 continue
             text = path.read_text(encoding="utf-8-sig", errors="replace")
+            # Fast-path: skip files that reference no generated composite path.
+            if not any(old in text for old in replacements):
+                continue
             updated = text
             for old, new in replacements.items():
                 updated = updated.replace(old, new)

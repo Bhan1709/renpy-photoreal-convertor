@@ -268,13 +268,21 @@ def parse_screen_stack(
         indent = len(row) - len(row.lstrip())
         conditions = [(level, cond) for level, cond in conditions if level < indent]
 
-        cm = re.match(r"(?:if|elif)\s+(.+?)\s*:", text)
+        cm = re.match(r"(if|elif|else)\s+(.+?)\s*:", text)
         if cm:
-            if current_chain is None or current_chain[0] != indent:
+            kind, cond = cm.groups()
+            if kind == "else":
+                cond = "<else>"
+            # An ``if`` always starts a new chain (even at the same indent as a
+            # previous ``if``/``elif`` block); ``elif``/``else`` continue the
+            # current chain when at the same indent.  This mirrors
+            # :func:`parse_layered` and keeps independent ``if`` blocks from
+            # becoming mutually exclusive (Optimization fix).
+            if kind == "if" or current_chain is None or current_chain[0] != indent:
                 chain_counter += 1
                 current_chain = (indent, chain_counter)
             conditions = [(level, cond) for level, cond in conditions if level < indent]
-            conditions.append((indent, cm.group(1)))
+            conditions.append((indent, cond))
             continue
 
         if text == "else:":

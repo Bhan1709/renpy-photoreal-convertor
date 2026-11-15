@@ -55,28 +55,6 @@ def parse_literal(value: str) -> bool | int | float | str | object:
     return UNKNOWN
 
 
-def collect_defaults(script_files: list[Path], config: GameConfig | None = None) -> dict[str, object]:
-    """Collect ``default`` variable values from all scripts."""
-    config = config or _require_config()
-    defaults: dict[str, object] = dict(config.game_defaults)
-    for path in script_files:
-        try:
-            lines = path.read_text(encoding="utf-8-sig", errors="replace").splitlines()
-        except OSError:
-            continue
-        for raw in lines:
-            dm = re.match(
-                r"^\s*default\s+([A-Za-z_]\w*)\s*=\s*(True|False|-?\d+(?:\.\d+)?|'[^']*'|\"[^\"]*\")",
-                raw.split("#", 1)[0].strip(),
-            )
-            if dm and dm.group(1) not in defaults:
-                key, value = dm.groups()
-                parsed = parse_literal(value)
-                if parsed is not UNKNOWN:
-                    defaults[key] = parsed  # type: ignore[arg-type]  (parsed is a literal value)
-    return defaults
-
-
 @dataclass(frozen=True)
 class CallState:
     """A snapshot of Ren'Py variable values at a given call site."""
@@ -92,13 +70,16 @@ class CallState:
 
 def state_at_call(
     path: Path, line_number: int, defaults: dict[str, object],
-    config: GameConfig | None = None,
+    config: GameConfig | None = None, lines: tuple[str, ...] | list[str] | None = None,
 ) -> CallState:
     """Compute the variable state at ``line_number`` in ``path``.
 
     Reconstructs state by scanning from the most recent label before the line,
     applying all ``$`` assignments and ``*ResetDefault`` calls up to (but not
     including) the target line.
+
+    ``lines``, when supplied (e.g. from the single-pass script index), avoids
+    re-reading the file from disk (Optimization #1).
     """
     config = config or _require_config()
     cache_key = (str(path), line_number)
@@ -108,7 +89,7 @@ def state_at_call(
 
     key = str(path)
     if key not in _state_cache:
-        _state_cache[key] = _scan_file(path, defaults, config)
+        _state_cache[key] = _scan_file(path, defaults, config, lines=lines)
     labels, assignments = _state_cache[key]
 
     label_start = labels[max(0, bisect.bisect_right(labels, line_number - 1) - 1)]
@@ -127,16 +108,18 @@ _state_cache: dict[str, tuple[list[int], list[tuple[int, str, object]]]] = {}
 
 def _scan_file(
     path: Path, defaults: dict[str, object], config: GameConfig | None = None,
+    lines: tuple[str, ...] | list[str] | None = None,
 ) -> tuple[list[int], list[tuple[int, str, object]]]:
     config = config or _require_config()
     labels: list[int] = [0]
     assignments: list[tuple[int, str, object]] = []
     reset_map = get_reset_defaults_map(config)
 
-    try:
-        lines = path.read_text(encoding="utf-8-sig", errors="replace").splitlines()
-    except OSError:
-        return labels, assignments
+    if lines is None:
+        try:
+            lines = path.read_text(encoding="utf-8-sig", errors="replace").splitlines()
+        except OSError:
+            return labels, assignments
 
     for i, raw in enumerate(lines, 1):
         text = raw.split("#", 1)[0].strip()
@@ -209,9 +192,9 @@ def eval_cond(expr: str, env: dict[str, object]) -> bool | None | object:
     if expr == "<else>":
         # An ``else`` branch is taken when no preceding if/elif matched.  In
         # static analysis we cannot know whether a previous condition matched,
-        # so we treat ``else`` as True and rely on chain-based mutual exclusion
-        # to avoid double-compositing.
-        return True
+        # so we treat ``else`` as UNKNOWN (not True) to avoid incorrectly
+        # including ``else`` layers when a preceding ``if`` condition was True.
+        return UNKNOWN
     # Build a cache key from the expression plus the values of the variables it
     # references.  The same condition evaluated against the same state yields
     # the same result, so we can skip the Python eval() on repeats.
@@ -279,8 +262,11 @@ def select_layers_for_chain(
     unknown_layers = [r for r in results if r[1] is None]
 
     if true_layers:
-        layer, _, _ = true_layers[0]
-        return [layer], []
+        # Return ALL layers with True conditions.  Mutual exclusion in Ren'Py
+        # comes from the if/elif/else source structure (conditions are
+        # mutually exclusive by design), not from the chain mechanism.
+        # Sequential layers in the same ``if`` block must all be included.
+        return [r[0] for r in true_layers], []
     if unknown_layers:
         selected: list[Layer] = []
         unresolved_conditions: list[str] = []

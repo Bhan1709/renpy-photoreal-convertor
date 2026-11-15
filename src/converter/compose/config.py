@@ -239,29 +239,74 @@ def load_config(path: str | Path) -> GameConfig:
     )
 
 
+def _locate_game_root(name: str) -> Path:
+    """Locate a Ren'Py ``game`` folder for a game name under conventional layouts.
+
+    Search order:
+
+    1. If ``name`` is an existing directory, use it directly.
+    2. ``src/renpy_game/<name>/<name>-pc/game`` (the common extracted build layout).
+    3. Any ``<something>/game`` folder beneath ``src/renpy_game/<name>``, preferring
+       one whose parent directory ends with ``-pc``.
+    4. The legacy hard-coded convention ``src/renpy_game/<name>/<name>-pc/game``.
+
+    Returns the resolved path (caller should verify it exists).
+    """
+    candidate = Path(name)
+    if candidate.is_dir():
+        return candidate.resolve()
+
+    search_root = Path("src/renpy_game") / name
+    if search_root.is_dir():
+        # Preferred: <name>-pc/game build layout.
+        pc_layout = search_root / f"{name}-pc" / "game"
+        if pc_layout.is_dir():
+            return pc_layout.resolve()
+        # Fall back to any nested "game" folder, preferring a -pc parent.
+        game_dirs = [p for p in search_root.rglob("game") if p.is_dir()]
+        pc_game_dirs = [p for p in game_dirs if p.parent.name.endswith("-pc")]
+        if pc_game_dirs:
+            return pc_game_dirs[0].resolve()
+        if game_dirs:
+            return game_dirs[0].resolve()
+
+    # Legacy hard-coded convention.
+    return (Path("src/renpy_game") / name / f"{name}-pc" / "game").resolve()
+
+
 def default_config(
     name: str,
-    game_root: str | Path,
+    game_root: str | Path | None = None,
     archive_dir: str | Path | None = None,
     categories: Mapping[str, str] | None = None,
     **overrides: object,
 ) -> GameConfig:
     """Build a :class:`GameConfig` from conventions, suitable for a new game.
 
+    ``game_root`` may be either an explicit path to the Ren'Py ``game`` folder or
+    just a game name; when it is a name, :func:`_locate_game_root` searches the
+    conventional ``src/renpy_game/<name>/...`` layouts to find it.
+
     ``categories`` defaults to :data:`DEFAULT_CATEGORY_FOLDERS` (bg->bgs,
     char->chars, scene->xxx, gui->gui).  Output locations default to
     ``<game_root_parent>/composites/...``.
     """
-    game_root = Path(game_root).resolve()
+    if game_root is None:
+        resolved_root = _locate_game_root(name)
+    else:
+        resolved_root = Path(game_root).resolve()
+        if not resolved_root.is_dir():
+            resolved_root = _locate_game_root(name)
+
     if archive_dir is None:
-        archive_dir = game_root / "archive"
+        archive_dir = resolved_root / "archive"
     else:
         archive_dir = Path(archive_dir).resolve()
 
     paths: dict[str, Path | None] = {"output_dir": None, "manifest_path": None, "declaration_path": None, "report_path": None}
     tmp = GameConfig(
         name=name,
-        game_root=game_root,
+        game_root=resolved_root,
         archive_dir=archive_dir,
         categories=dict(categories or DEFAULT_CATEGORY_FOLDERS),
     )
@@ -282,7 +327,7 @@ def default_config(
 
     cfg = GameConfig(
         name=name,
-        game_root=game_root,
+        game_root=resolved_root,
         archive_dir=archive_dir,
         categories=dict(categories or DEFAULT_CATEGORY_FOLDERS),
         output_dir=paths["output_dir"],
