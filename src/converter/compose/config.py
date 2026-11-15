@@ -87,6 +87,22 @@ class GameConfig:
     declaration_path: Path | None = None
     report_path: Path | None = None
 
+    # Cached compiled regexes (Optimization #2).  Populated once in
+    # __post_init__ because GameConfig is frozen and categories never change
+    # after construction.
+    _path_regex: re.Pattern[str] = field(init=False, compare=False, repr=False)
+    _category_folder_regex: re.Pattern[str] = field(init=False, compare=False, repr=False)
+
+    def __post_init__(self) -> None:
+        """Compile path regexes exactly once per config instance.
+
+        ``path_regex()`` used to call ``re.compile`` on every invocation and was
+        called once per scanned line during parsing; compiling here removes that
+        repeated work entirely.
+        """
+        object.__setattr__(self, "_path_regex", self._compile_path_regex())
+        object.__setattr__(self, "_category_folder_regex", self._compile_category_folder_regex())
+
     # ------------------------------------------------------------------ #
     # Derived helpers
     # ------------------------------------------------------------------ #
@@ -124,13 +140,7 @@ class GameConfig:
         """Build an absolute path under a category's asset folder."""
         return self.archive_dir / self.folder_for(category) / Path(*rest)
 
-    def path_regex(self) -> re.Pattern[str]:
-        """Build a regex matching asset paths under any configured folder.
-
-        Matches ``<folder>/<path>.<ext>`` for every configured category folder,
-        case-insensitively.  Folder names are escaped so they may contain regex
-        metacharacters safely.
-        """
+    def _compile_path_regex(self) -> re.Pattern[str]:
         folders = sorted({name.lower() for name in self.categories.values()})
         alternation = "|".join(re.escape(f) for f in folders)
         pattern = (
@@ -138,11 +148,26 @@ class GameConfig:
         )
         return re.compile(pattern, re.I)
 
-    def category_folder_regex(self) -> re.Pattern[str]:
-        """Regex matching ``<folder>/`` prefixes for any configured folder."""
+    def _compile_category_folder_regex(self) -> re.Pattern[str]:
         folders = sorted({name.lower() for name in self.categories.values()})
         alternation = "|".join(re.escape(f) for f in folders)
         return re.compile(rf"(?:{alternation})/", re.I)
+
+    def path_regex(self) -> re.Pattern[str]:
+        """Return the compiled regex matching asset paths under any configured folder.
+
+        Matches ``<folder>/<path>.<ext>`` for every configured category folder,
+        case-insensitively.  The pattern is compiled once in :meth:`__post_init__`
+        (Optimization #2) instead of on every call.
+        """
+        return self._path_regex
+
+    def category_folder_regex(self) -> re.Pattern[str]:
+        """Return the compiled regex matching ``<folder>/`` prefixes for any configured folder.
+
+        Compiled once in :meth:`__post_init__` (Optimization #2).
+        """
+        return self._category_folder_regex
 
     def resolved_paths(self) -> dict[str, Path]:
         """Convenience: all important absolute paths, defaulting output locations."""
@@ -187,49 +212,101 @@ def load_config(path: str | Path) -> GameConfig:
         p = Path(value)
         return p if p.is_absolute() else (base / p).resolve()
 
-    categories = data.get("categories", dict(DEFAULT_CATEGORY_FOLDERS))
-    non_char = frozenset(data.get("non_character_folders", DEFAULT_NON_CHARACTER_FOLDERS))
-    aliases = data.get("path_aliases", DEFAULT_PATH_ALIASES)
-    defaults = data.get("game_defaults", DEFAULT_GAME_DEFAULTS)
+    categories_raw = data.get("categories", DEFAULT_CATEGORY_FOLDERS)
+    categories: dict[str, str] = dict(categories_raw) if isinstance(categories_raw, dict) else dict(DEFAULT_CATEGORY_FOLDERS)
+
+    non_char_raw = data.get("non_character_folders", DEFAULT_NON_CHARACTER_FOLDERS)
+    non_char: frozenset[str] = frozenset(non_char_raw) if isinstance(non_char_raw, (list, set, frozenset)) else DEFAULT_NON_CHARACTER_FOLDERS
+
+    aliases_raw = data.get("path_aliases", DEFAULT_PATH_ALIASES)
+    aliases: dict[str, str] = dict(aliases_raw) if isinstance(aliases_raw, dict) else dict(DEFAULT_PATH_ALIASES)
+
+    defaults_raw = data.get("game_defaults", DEFAULT_GAME_DEFAULTS)
+    defaults: dict[str, object] = dict(defaults_raw) if isinstance(defaults_raw, dict) else dict(DEFAULT_GAME_DEFAULTS)
 
     return GameConfig(
-        name=data.get("name", config_path.stem),
-        game_root=rel(data["game_root"]),
-        archive_dir=rel(data.get("archive_dir", str(rel(data["game_root"]) / "archive"))),
+        name=str(data.get("name", config_path.stem)),
+        game_root=rel(str(data["game_root"])),
+        archive_dir=rel(str(data.get("archive_dir", str(rel(str(data["game_root"])) / "archive")))),
         categories=categories,
         non_character_folders=non_char,
         path_aliases=aliases,
         game_defaults=defaults,
-        output_dir=rel(data["output_dir"]) if "output_dir" in data else None,
-        manifest_path=rel(data["manifest_path"]) if "manifest_path" in data else None,
-        declaration_path=rel(data["declaration_path"]) if "declaration_path" in data else None,
-        report_path=rel(data["report_path"]) if "report_path" in data else None,
+        output_dir=rel(str(data["output_dir"])) if "output_dir" in data else None,
+        manifest_path=rel(str(data["manifest_path"])) if "manifest_path" in data else None,
+        declaration_path=rel(str(data["declaration_path"])) if "declaration_path" in data else None,
+        report_path=rel(str(data["report_path"])) if "report_path" in data else None,
     )
+
+
+def _locate_game_root(name: str) -> Path:
+    """Locate a Ren'Py ``game`` folder for a game name under conventional layouts.
+
+    Search order:
+
+    1. If ``name`` is an existing directory, use it directly.
+    2. ``src/renpy_game/<name>/<name>-pc/game`` (the common extracted build layout).
+    3. Any ``<something>/game`` folder beneath ``src/renpy_game/<name>``, preferring
+       one whose parent directory ends with ``-pc``.
+    4. The legacy hard-coded convention ``src/renpy_game/<name>/<name>-pc/game``.
+
+    Returns the resolved path (caller should verify it exists).
+    """
+    candidate = Path(name)
+    if candidate.is_dir():
+        return candidate.resolve()
+
+    search_root = Path("src/renpy_game") / name
+    if search_root.is_dir():
+        # Preferred: <name>-pc/game build layout.
+        pc_layout = search_root / f"{name}-pc" / "game"
+        if pc_layout.is_dir():
+            return pc_layout.resolve()
+        # Fall back to any nested "game" folder, preferring a -pc parent.
+        game_dirs = [p for p in search_root.rglob("game") if p.is_dir()]
+        pc_game_dirs = [p for p in game_dirs if p.parent.name.endswith("-pc")]
+        if pc_game_dirs:
+            return pc_game_dirs[0].resolve()
+        if game_dirs:
+            return game_dirs[0].resolve()
+
+    # Legacy hard-coded convention.
+    return (Path("src/renpy_game") / name / f"{name}-pc" / "game").resolve()
 
 
 def default_config(
     name: str,
-    game_root: str | Path,
+    game_root: str | Path | None = None,
     archive_dir: str | Path | None = None,
     categories: Mapping[str, str] | None = None,
     **overrides: object,
 ) -> GameConfig:
     """Build a :class:`GameConfig` from conventions, suitable for a new game.
 
+    ``game_root`` may be either an explicit path to the Ren'Py ``game`` folder or
+    just a game name; when it is a name, :func:`_locate_game_root` searches the
+    conventional ``src/renpy_game/<name>/...`` layouts to find it.
+
     ``categories`` defaults to :data:`DEFAULT_CATEGORY_FOLDERS` (bg->bgs,
     char->chars, scene->xxx, gui->gui).  Output locations default to
     ``<game_root_parent>/composites/...``.
     """
-    game_root = Path(game_root).resolve()
+    if game_root is None:
+        resolved_root = _locate_game_root(name)
+    else:
+        resolved_root = Path(game_root).resolve()
+        if not resolved_root.is_dir():
+            resolved_root = _locate_game_root(name)
+
     if archive_dir is None:
-        archive_dir = game_root / "archive"
+        archive_dir = resolved_root / "archive"
     else:
         archive_dir = Path(archive_dir).resolve()
 
-    paths = {"output_dir": None, "manifest_path": None, "declaration_path": None, "report_path": None}
+    paths: dict[str, Path | None] = {"output_dir": None, "manifest_path": None, "declaration_path": None, "report_path": None}
     tmp = GameConfig(
         name=name,
-        game_root=game_root,
+        game_root=resolved_root,
         archive_dir=archive_dir,
         categories=dict(categories or DEFAULT_CATEGORY_FOLDERS),
     )
@@ -245,17 +322,29 @@ def default_config(
         if key not in valid_fields:
             continue
         if key == "non_character_folders" and not isinstance(value, frozenset):
-            value = frozenset(value)
+            value = frozenset(value)  # type: ignore[arg-type]  (validated override value)
         kwargs[key] = value
 
-    return GameConfig(
+    cfg = GameConfig(
         name=name,
-        game_root=game_root,
+        game_root=resolved_root,
         archive_dir=archive_dir,
         categories=dict(categories or DEFAULT_CATEGORY_FOLDERS),
         output_dir=paths["output_dir"],
         manifest_path=paths["manifest_path"],
         declaration_path=paths["declaration_path"],
         report_path=paths["report_path"],
-        **kwargs,
+        **kwargs,  # type: ignore[arg-type]  (overrides are validated against GameConfig fields above)
     )
+
+    # Persist the resolved config so the user can review the exact values being
+    # used when default_config() is chosen (no explicit --config JSON).
+    try:
+        config_json_path = cfg.resolved_paths()["output_dir"] / "config.json"
+        config_json_path.parent.mkdir(parents=True, exist_ok=True)
+        config_json_path.write_text(json.dumps(cfg.to_dict(), indent=2), encoding="utf-8")
+    except OSError:
+        # Best-effort: a missing config file must not abort the compose pass.
+        pass
+
+    return cfg

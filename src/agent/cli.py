@@ -14,7 +14,7 @@ import tempfile
 import time
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import httpx
 
@@ -127,12 +127,15 @@ def _start_proxy() -> subprocess.Popen[bytes]:
     """Start a detached proxy process, logging its output to a temp file."""
     log_path = _proxy_log_path()
     with log_path.open("ab") as log_file:
-        return subprocess.Popen(
-            [sys.executable, "-m", PROXY_MODULE],
-            stdin=subprocess.DEVNULL,
-            stdout=log_file,
-            stderr=subprocess.STDOUT,
-            **_proxy_popen_kwargs(),
+        return cast(
+            subprocess.Popen[bytes],
+            subprocess.Popen(
+                [sys.executable, "-m", PROXY_MODULE],
+                stdin=subprocess.DEVNULL,
+                stdout=log_file,
+                stderr=subprocess.STDOUT,
+                **_proxy_popen_kwargs(),
+            ),
         )
 
 
@@ -333,7 +336,8 @@ def _run_with_nvidia_proxy(profile: Profile) -> int:
     finally:
         logger.info(
             "ℹ️ NVIDIA proxy left running at http://%s:%d for reuse "
-            "(stop it with --stop-proxy).",
+            "(stop it with `mise run stop-proxy` or "
+            "`python -m agent --stop-proxy`).",
             PROXY_HOST,
             PROXY_PORT,
         )
