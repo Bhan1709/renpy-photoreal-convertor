@@ -1,29 +1,23 @@
 # Ren'Py Photoreal VN Converter
 
-## Project Overview
-
 This project is intended to be a toolkit to convert Ren'Py based games and visual novels from 2D format to photorealistic versions using local Ollama and free open-source models.
 
-### Intended Pipeline
+## 🎮 Features
 
-1. **Decompile** `.rpyc` files and extract `.rpa` archives.
-2. **Create composites** from different components, resulting in:
-   - **BG** (backgrounds)
-   - **GUI** (user interface)
-   - **CHAR** (characters)
-   - **SCENE** (full scenes)
-3. **Feed composites** to a ComfyUI workflow driven by a local API‑based driver for conversion.
+- **Decompile** Ren'Py `.rpyc`/`.rpymc` scripts to readable `.rpy` source
+- **Extract** Ren'Py `.rpa`/`.rpi` archive files into directory structures
+- **Cache** game folder relative paths for use by other converter subpackages
+- **Integrated** with `mise + uv` project management
+- **Extracted files** preserved alongside `.rpa` files for easier path mapping
 
----
-
-## Getting Started
+## 📦 Quick Start
 
 ### Prerequisites
 
-- Python 3.10+ (recommended via [mise](https://mise.jdx.dev/) or `pyenv`).
-- [Ollama](https://ollama.com/) installed and running locally.
-- (Optional) NVIDIA API key if you want to use NVIDIA hosted models via the rate‑limit proxy.
-- Git (for version control).
+- Python 3.14+ (recommended via [mise](https://mise.jdx.dev/) or `pyenv`)
+- [Ollama](https://ollama.com/) installed and running locally
+- (Optional) NVIDIA API key if you want to use NVIDIA hosted models via the rate‑limit proxy
+- Git (for version control)
 
 ### Installation
 
@@ -34,9 +28,7 @@ This project is intended to be a toolkit to convert Ren'Py based games and visua
    cd renpy-photoreal-vn-converter
    ```
 
-2. **Install dependencies**:
-
-   Using [uv](https://github.com/astral-sh/uv) (recommended):
+2. **Install dependencies** (using uv, recommended):
 
    ```bash
    uv sync
@@ -87,9 +79,21 @@ This project is intended to be a toolkit to convert Ren'Py based games and visua
    - Start the ConversationMonitor to back up conversation state.
    - Launch OpenCode through the NVIDIA proxy (if applicable) or directly via Ollama.
 
----
+6. **Decompile and extract Ren'Py games**:
 
-## Project Structure (high‑level)
+   ```bash
+   python src\converter\decompile\decompile.py
+   ```
+
+   Or via mise:
+
+   ```toml
+   # .mise.toml
+   [scripts]
+   decompile-games = "python src\\converter\\decompile\\decompile.py"
+   ```
+
+## 📁 Project Structure
 
 ```
 .
@@ -116,17 +120,100 @@ This project is intended to be a toolkit to convert Ren'Py based games and visua
 │       │   ├── nvidia_proxy.py # rate‑limit reverse proxy for NVIDIA APIs
 │       │   └── ...
 │       └── py.typed
-└── uv.lock
+│       └── converter/
+│           ├── __init__.py          # Entry point (main())
+│           └── decompile/           # Ren'Py decompile/extract subpackage
+│               ├── __init__.py      # Package init
+│               ├── decompile.py     # Core logic (decompile .rpyc, extract .rpa)
+│               └── README.md        # This subpackage documentation
+│   └── renpy_game/              # User places Ren'Py games here
+│       ├── CampMourningWood-0.25.0.1/     # Example game 1
+│       │   └── game/
+│       │       ├── *.rpyc                # Compiled scripts
+│       │   └── CampMourningWood-0.25.0.1-pc/  # Game build directory
+│       └── sample_visual_novel/           # Example game 2
+│           └── game/
+│               └── dialogue.rpy           # Sample decompiled file
+├── uv.lock
 ```
 
----
+## 🔧 Pipeline Overview
 
-## Next Steps / Roadmap
+1. **Decompile** `.rpyc` files and extract `.rpa` archives using the `src\converter\decompile\` subpackage
+2. **Create composites** from different components (backgrounds, GUI, characters, scenes)
+3. **Feed composites** to a ComfyUI workflow driven by a local API‑based driver for conversion
 
-- Add decompilation utilities for `.rpyc`/`.rpa` extraction.
-- Integrate ComfyUI local API driver.
-- Provide example workflow JSON for ComfyUI.
-- Expand Modelfiles for additional context sizes and models.
-- Document CI/CD and testing setup.
+## 📚 Recent Additions
+
+### Decompile Subpackage (`src\converter\decompile\`)
+
+New subpackage for handling Ren'Py script decompilation and RPA archive extraction:
+
+- **`find_game_folders()`** - Discovers all games under `src\renpy_game\`, locates `\game` subfolders, and caches the relative path
+- **`get_game_folder_rel_path()` / `set_game_folder_rel_path()`** - Reusable path caching for other subpackages
+- **`decompile_rpyc_files()` / `decompile_rpyc_file()`** - Decompile `.rpyc` → `.rpy` using rpa-toolkit
+- **`extract_rpa_file()`** - Extract `.rpa` archives into directory alongside the `.rpa` file, preserving relative path structure
+- **`process_all_games()`** - Full workflow: find → decompile → extract
+
+Example extraction path structure:
+```
+.src\renpy_game\CampMourningWood-0.25.0.1\
+  └─ CampMourningWood-0.25.0.1-pc\game\
+      ├─ archive.rpa          # Original file preserved
+      ├─ archive/             # Extracted directory (named after .rpa stem)
+      │  ├─ file1.dat
+      │  └─ ...
+      ├─ audio/
+      ├─ chars/
+      └─ *.rpy                # Decompiled .rpy files
+```
+
+### Package Management
+
+- **rpa-toolkit** installed via: `uv add git+https://github.com/regiellis/rpa-toolkit.git@3.0.0`
+- Added to `pyproject.toml` dependencies
+- Integrated with `mise` through `.mise.toml` scripts section
+
+## 🛠️ Usage Patterns
+
+### Decompile Specific Files
+
+```python
+from rpatool import decompile_rpyc_file
+from pathlib import Path
+
+result = decompile_rpyc_file(
+    Path("src/renpy_game/my_game/game/script.rpyc"),
+    output_path=Path("src/renpy_game/my_game/game/script.rpy")
+)
+```
+
+### Extract Specific .rpa
+
+```python
+from src.converter.decompile.decompile import extract_rpa_file
+extract_rpa_file(Path("src/renpy_game/my_game/archive.rpa"))
+# Extracted to: src/renpy_game/my_game/archive/
+```
+
+### Using Cached Path in Other Subpackages
+
+```python
+from src.converter.decompile.decompile import find_game_folders, get_game_folder_rel_path
+
+find_game_folders()  # Cache the path
+cached = get_game_folder_rel_path()
+if cached:
+    game_dir = f"src/{cached}"
+    # Process files in game_dir
+```
+
+## 🚧 Roadmap
+
+- [x] **Add decompilation utilities** for `.rpyc`/`.rpa` extraction ✅
+- [ ] Integrate ComfyUI local API driver
+- [ ] Provide example workflow JSON for ComfyUI
+- [ ] Expand Modelfiles for additional context sizes and models
+- [ ] Document CI/CD and testing setup
 
 Feel free to open issues or contribute new profiles, Modelfiles, or pipeline steps.

@@ -10,3 +10,7 @@ wheels/
 .venv
 
 mise.local.toml
+
+
+src/renpy_game/*
+!src/renpy_game/.gitkeep
