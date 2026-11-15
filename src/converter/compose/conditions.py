@@ -29,7 +29,7 @@ _eval_cond_cache: dict[tuple, bool | None | object] = {}
 # Cache for call-state reconstruction: (path_str, line_number) -> CallState.
 # Multiple usages on the same file at nearby lines share the same reconstructed
 # state when no assignment occurs between them (Optimization #8).
-_state_at_call_cache: dict[tuple[str, int], CallState] = {}
+_state_at_call_cache: dict[tuple, CallState] = {}
 
 # Cache for reset-defaults map: config identity -> mapping.
 _reset_defaults_cache: dict[int, dict[str, list[tuple[str, str]]]] = {}
@@ -82,12 +82,13 @@ def state_at_call(
     re-reading the file from disk (Optimization #1).
     """
     config = config or _require_config()
-    cache_key = (str(path), line_number)
+    defaults_key = _defaults_cache_key(defaults)
+    cache_key = (str(path), id(config), defaults_key, line_number)
     cached = _state_at_call_cache.get(cache_key)
     if cached is not None:
         return cached
 
-    key = str(path)
+    key = (str(path), id(config), defaults_key)
     if key not in _state_cache:
         _state_cache[key] = _scan_file(path, defaults, config, lines=lines)
     labels, assignments = _state_cache[key]
@@ -103,7 +104,12 @@ def state_at_call(
     return result
 
 
-_state_cache: dict[str, tuple[list[int], list[tuple[int, str, object]]]] = {}
+_state_cache: dict[tuple, tuple[list[int], list[tuple[int, str, object]]]] = {}
+
+
+def _defaults_cache_key(defaults: dict[str, object]) -> tuple[tuple[str, str], ...]:
+    """Return a stable cache key for the values used to reconstruct call state."""
+    return tuple(sorted((name, repr(value)) for name, value in defaults.items()))
 
 
 def _scan_file(

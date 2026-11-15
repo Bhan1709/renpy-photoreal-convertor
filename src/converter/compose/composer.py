@@ -233,6 +233,26 @@ def _normalize_layers(layers: list[Layer], config: GameConfig) -> list[Layer]:
     ]
 
 
+def _restore_layer_order(layers: list[Layer], source_order: list[Layer]) -> list[Layer]:
+    """Restore declaration/stack order after conditional layers were grouped.
+
+    The condition-selection pass separates unconditional layers from ``if``
+    chains for evaluation. Emitting those buckets directly changes z-order:
+    conditional layers that were declared before facial attributes can end up
+    on top of them. Match selected layers back to their original positions.
+    """
+    def key(layer: Layer) -> tuple:
+        return (
+            layer.source, layer.line, layer.group, layer.conditions,
+            layer.attribute, layer.chain_id, layer.via_image_tag, layer.role,
+        )
+
+    positions: dict[tuple, int] = {}
+    for index, layer in enumerate(source_order):
+        positions.setdefault(key(layer), index)
+    return sorted(layers, key=lambda layer: positions.get(key(layer), len(positions)))
+
+
 def _record_key(kind: str, name: str, normalized: list[Layer]) -> tuple[str, str, str]:
     """Dedup key for a composite: (kind, name, sha1 of normalized layer semantics)."""
     semantic = json.dumps(
@@ -396,6 +416,8 @@ def _emit_layeredimage_uses(
             if l.conditions else l
             for l in resolved
         ]
+
+    resolved = _restore_layer_order(resolved, selected)
 
     locations = [
         {
@@ -611,6 +633,8 @@ def _process_screen_stacks_from_index(
                         for l in selected
                     ]
 
+                selected = _restore_layer_order(selected, stack)
+
                 if selected:
                     relevant_names = {
                         used_name
@@ -778,4 +802,3 @@ def _emit_record(
             )
 
     return record
-
