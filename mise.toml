@@ -1,0 +1,30 @@
+[tools]
+python = "3.14"
+uv = "latest"
+
+
+[settings]
+python.uv_venv_auto = "create|source"
+
+
+[tasks.agent]
+description = "Run OpenCode monitor with a specified config profile"
+usage = 'arg "<profile>" default="nvidia-glm" help="Profile key from config.json"'
+run = "uv run opencode-monitor {{ usage.profile }}"
+
+[tasks.glm]
+description = "Shortcut: Launch OpenCode with NVIDIA GLM-5.3 Flash"
+run = "uv run opencode-monitor nvidia-glm"
+
+[tasks.proxy-stop]
+description = "Stop the shared NVIDIA rate-limit proxy"
+run = "uv run opencode-monitor --stop-proxy"
+
+[tasks.qwen]
+description = "Shortcut: Launch OpenCode with Qwen-3-VL (default 32k)"
+usage = '''
+arg "<ctx>" default="32k" help="Context size" {
+  choices "16k" "32k" "64k" "128k"
+}
+'''
+run = "uv run opencode-monitor qwen-3-vl-{{ usage.ctx }}"

@@ -1,0 +1,23 @@
+[project]
+name = "renpy-photoreal-vn-converter"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "Bhan1709", email = "bhans1709@gmail.com" }
+]
+requires-python = ">=3.14"
+dependencies = [
+    "fastapi>=0.163.0",
+    "httpx>=0.28.1",
+    "tiktoken>=0.14.0",
+    "uvicorn>=0.54.0",
+]
+
+[project.scripts]
+renpy-photoreal-vn-converter = "renpy_photoreal_vn_converter:main"
+opencode-monitor = "renpy_photoreal_vn_converter.agent.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.13.8,<0.14.0"]
+build-backend = "uv_build"
