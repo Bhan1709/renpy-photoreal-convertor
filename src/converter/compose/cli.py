@@ -8,7 +8,9 @@ Usage::
     python -m converter.compose.cli --game CampMourningWood-0.25.0.1
     python -m converter.compose.cli --config mygame/config.json
     python -m converter.compose.cli --game-root /abs/path/to/game --output-dir /abs/path/out
+    python -m converter.compose.cli --game CampMourningWood-0.25.0.1 --restore
 """
+
 from __future__ import annotations
 
 import argparse
@@ -16,9 +18,11 @@ import sys
 from dataclasses import replace
 from pathlib import Path
 
+from .applier import Applier
+from .composer import Composer
 from .config import GameConfig, default_config, load_config
-from .apply_composite_tags import apply as apply_pass, set_config as apply_set_config
-from .compose_script_elements import compose, set_config as compose_set_config, write_manifest
+from .manifest import ManifestWriter
+from .restore import find_archive, restore_from_manifest, restore_rpy_files
 
 
 def build_config(args) -> GameConfig:
@@ -66,6 +70,7 @@ def main(argv=None) -> int:
     ap.add_argument("--game-root", help="Absolute path to the Ren'Py \\game folder")
     ap.add_argument("--config", help="Path to a GameConfig JSON file")
     ap.add_argument("--archive-dir", help="Absolute path to the extracted asset archive")
+    ap.add_argument("--archive-path", help="Explicit path to archive.rpa (for --restore)")
     ap.add_argument("--output-dir", help="Directory for generated composite PNGs")
     ap.add_argument("--manifest", help="Path for the manifest JSON report")
     ap.add_argument("--dry-run", action="store_true", help="Do not write PNGs or manifest")
@@ -75,20 +80,52 @@ def main(argv=None) -> int:
                     help="Run the compose pass only; skip script adoption")
     ap.add_argument("--apply-only", action="store_true",
                     help="Run the apply pass only (requires an existing manifest)")
+    ap.add_argument("--device", default="auto", choices=["cpu", "cuda", "auto"],
+                    help="Compositing device: cpu, cuda, or auto (default)")
+
+    # Restore operations
+    ap.add_argument("--restore", action="store_true",
+                    help="Restore all .rpy files from archive.rpa into game_root")
+    ap.add_argument("--restore-from-manifest", action="store_true",
+                    help="Restore only .rpy files touched by the apply pass (per manifest)")
+    ap.add_argument("--restore-dry-run", action="store_true",
+                    help="Report what --restore / --restore-from-manifest would do without writing")
+
     args = ap.parse_args(argv)
 
     config = build_config(args)
 
-    compose_set_config(config)
-    apply_set_config(config)
+    # --- Restore operations (standalone, skip compose/apply) ---
+    if args.restore or args.restore_from_manifest or args.restore_dry_run:
+        archive_path = Path(args.archive_path).resolve() if args.archive_path else None
+        dry_run = args.restore_dry_run
 
+        if args.restore_from_manifest:
+            results = restore_from_manifest(config, dry_run=dry_run)
+            action = "Would restore" if dry_run else "Restored"
+            print(f"{action} {len(results)} .rpy file(s) from manifest:")
+            for rel, status in sorted(results.items()):
+                print(f"  {rel}: {status}")
+        else:
+            results = restore_rpy_files(
+                config, archive_path=archive_path, dry_run=dry_run,
+            )
+            action = "Would restore" if dry_run else "Restored"
+            print(f"{action} {len(results)} .rpy file(s) from archive:")
+            for rel, status in sorted(results.items()):
+                print(f"  {rel}: {status}")
+        return 0
+
+    # --- Normal compose + apply flow ---
     if not args.apply_only:
-        manifest = compose(config, dry_run=args.dry_run, clean_output=args.clean_output)
-        write_manifest(manifest, config, dry_run=args.dry_run)
-        if args.compose_only:
+        composer = Composer(config, device=args.device)
+        manifest = composer.compose(dry_run=args.dry_run, clean_output=args.clean_output)
+        ManifestWriter(config).write(manifest, dry_run=args.dry_run)
+        if args.compose_only or args.dry_run:
             return 0
 
-    apply_pass(config)
+    applier = Applier(config)
+    applier.apply()
     return 0
 
 

@@ -187,23 +187,30 @@ def load_config(path: str | Path) -> GameConfig:
         p = Path(value)
         return p if p.is_absolute() else (base / p).resolve()
 
-    categories = data.get("categories", dict(DEFAULT_CATEGORY_FOLDERS))
-    non_char = frozenset(data.get("non_character_folders", DEFAULT_NON_CHARACTER_FOLDERS))
-    aliases = data.get("path_aliases", DEFAULT_PATH_ALIASES)
-    defaults = data.get("game_defaults", DEFAULT_GAME_DEFAULTS)
+    categories_raw = data.get("categories", DEFAULT_CATEGORY_FOLDERS)
+    categories: dict[str, str] = dict(categories_raw) if isinstance(categories_raw, dict) else dict(DEFAULT_CATEGORY_FOLDERS)
+
+    non_char_raw = data.get("non_character_folders", DEFAULT_NON_CHARACTER_FOLDERS)
+    non_char: frozenset[str] = frozenset(non_char_raw) if isinstance(non_char_raw, (list, set, frozenset)) else DEFAULT_NON_CHARACTER_FOLDERS
+
+    aliases_raw = data.get("path_aliases", DEFAULT_PATH_ALIASES)
+    aliases: dict[str, str] = dict(aliases_raw) if isinstance(aliases_raw, dict) else dict(DEFAULT_PATH_ALIASES)
+
+    defaults_raw = data.get("game_defaults", DEFAULT_GAME_DEFAULTS)
+    defaults: dict[str, object] = dict(defaults_raw) if isinstance(defaults_raw, dict) else dict(DEFAULT_GAME_DEFAULTS)
 
     return GameConfig(
-        name=data.get("name", config_path.stem),
-        game_root=rel(data["game_root"]),
-        archive_dir=rel(data.get("archive_dir", str(rel(data["game_root"]) / "archive"))),
+        name=str(data.get("name", config_path.stem)),
+        game_root=rel(str(data["game_root"])),
+        archive_dir=rel(str(data.get("archive_dir", str(rel(str(data["game_root"])) / "archive")))),
         categories=categories,
         non_character_folders=non_char,
         path_aliases=aliases,
         game_defaults=defaults,
-        output_dir=rel(data["output_dir"]) if "output_dir" in data else None,
-        manifest_path=rel(data["manifest_path"]) if "manifest_path" in data else None,
-        declaration_path=rel(data["declaration_path"]) if "declaration_path" in data else None,
-        report_path=rel(data["report_path"]) if "report_path" in data else None,
+        output_dir=rel(str(data["output_dir"])) if "output_dir" in data else None,
+        manifest_path=rel(str(data["manifest_path"])) if "manifest_path" in data else None,
+        declaration_path=rel(str(data["declaration_path"])) if "declaration_path" in data else None,
+        report_path=rel(str(data["report_path"])) if "report_path" in data else None,
     )
 
 
@@ -226,7 +233,7 @@ def default_config(
     else:
         archive_dir = Path(archive_dir).resolve()
 
-    paths = {"output_dir": None, "manifest_path": None, "declaration_path": None, "report_path": None}
+    paths: dict[str, Path | None] = {"output_dir": None, "manifest_path": None, "declaration_path": None, "report_path": None}
     tmp = GameConfig(
         name=name,
         game_root=game_root,
@@ -245,7 +252,7 @@ def default_config(
         if key not in valid_fields:
             continue
         if key == "non_character_folders" and not isinstance(value, frozenset):
-            value = frozenset(value)
+            value = frozenset(value)  # type: ignore[arg-type]  (validated override value)
         kwargs[key] = value
 
     return GameConfig(
@@ -257,5 +264,5 @@ def default_config(
         manifest_path=paths["manifest_path"],
         declaration_path=paths["declaration_path"],
         report_path=paths["report_path"],
-        **kwargs,
+        **kwargs,  # type: ignore[arg-type]  (overrides are validated against GameConfig fields above)
     )
