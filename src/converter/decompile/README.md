@@ -14,14 +14,14 @@ The subpackage is already included in your project via `rpa-toolkit`:
 
 ```bash
 # Already done via uv add in your pyproject.toml:
-# "rpa-toolkit @ git+https://github.com/regiellis/rpa-toolkit.git@3.0.0"
+# "rpa-toolkit @ git+https://github.com/regiellis/rpa-toolkit.git@435f202e7cb9aeeaf6c006cf928d9661f8830e6e"
 
 # Verify it's installed:
 uv pip list | grep rpa
 # → rpa-toolkit 3.0.0
 
 # Or install fresh:
-uv add git+https://github.com/regiellis/rpa-toolkit.git@3.0.0
+uv add git+https://github.com/regiellis/rpa-toolkit.git@435f202e7cb9aeeaf6c006cf928d9661f8830e6e
 ```
 
 ---
@@ -224,7 +224,7 @@ decompile-games = "python src\\converter\\decompile\\decompile.py"
 dependencies = [
     "fastapi>=0.163.0",
     "httpx>=0.28.1",
-    "rpa-toolkit @ git+https://github.com/regiellis/rpa-toolkit.git@3.0.0",
+    "rpa-toolkit @ git+https://github.com/regiellis/rpa-toolkit.git@435f202e7cb9aeeaf6c006cf928d9661f8830e6e",
     "tiktoken>=0.14.0",
     "uvicorn>=0.54.0",
 ]
@@ -298,7 +298,7 @@ if cached:
 | `Error: The given file is not a valid Ren'Py archive` | Verify the `.rpa` file is a valid Ren'Py RPA v2/v3 format |
 | `Failed to decompile: ...` | Some `.rpyc` files may use obfuscation; try with `--try-harder` flag via CLI |
 | `UnicodeEncodeError` | This is an OpenCode display issue, not a functional problem - the code works correctly |
-| `ModuleNotFoundError: rpa_toolkit` | Run `uv add git+https://github.com/regiellis/rpa-toolkit.git@3.0.0` |
+| `ModuleNotFoundError: rpatool` | Run `uv add git+https://github.com/regiellis/rpa-toolkit.git@435f202e7cb9aeeaf6c006cf928d9661f8830e6e` |
 
 ### Debug Mode
 
