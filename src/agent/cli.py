@@ -332,7 +332,7 @@ def _run_with_nvidia_proxy(profile: Profile) -> int:
         return _run_command(["opencode"])
     finally:
         logger.info(
-            "ℹ️ NVIDIA proxy left running on http://%s:%d for reuse "
+            "ℹ️ NVIDIA proxy left running at http://%s:%d for reuse "
             "(stop it with --stop-proxy).",
             PROXY_HOST,
             PROXY_PORT,
