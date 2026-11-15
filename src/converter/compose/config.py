@@ -280,7 +280,7 @@ def default_config(
             value = frozenset(value)  # type: ignore[arg-type]  (validated override value)
         kwargs[key] = value
 
-    return GameConfig(
+    cfg = GameConfig(
         name=name,
         game_root=game_root,
         archive_dir=archive_dir,
@@ -291,3 +291,15 @@ def default_config(
         report_path=paths["report_path"],
         **kwargs,  # type: ignore[arg-type]  (overrides are validated against GameConfig fields above)
     )
+
+    # Persist the resolved config so the user can review the exact values being
+    # used when default_config() is chosen (no explicit --config JSON).
+    try:
+        config_json_path = cfg.resolved_paths()["output_dir"] / "config.json"
+        config_json_path.parent.mkdir(parents=True, exist_ok=True)
+        config_json_path.write_text(json.dumps(cfg.to_dict(), indent=2), encoding="utf-8")
+    except OSError:
+        # Best-effort: a missing config file must not abort the compose pass.
+        pass
+
+    return cfg

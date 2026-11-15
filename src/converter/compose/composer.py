@@ -14,8 +14,10 @@ import json
 import re
 from collections import defaultdict
 from pathlib import Path
+from typing import Callable
 
-from ..utility import ProgressBar
+from tqdm import tqdm
+
 from .character_associator import CharacterAssociator
 from .compositor import Compositor
 from .conditions import eval_cond, select_layers_for_chain, state_at_call
@@ -71,17 +73,39 @@ class Composer:
         screens = index.screens
         image_declarations = index.image_decls
 
+        # Count total expected work units so the progress bar reflects real
+        # composites processed, not files scanned.
+        total_usages = sum(
+            1
+            for fi in index.per_file.values()
+            for u in fi.usages
+            if u.kind in ("show_scene", "show_screen")
+        )
+        total_usages += len(image_declarations)
+
         records: list[CompositeRecord] = []
         records_by_key: dict[tuple[str, str, str], CompositeRecord] = {}
+        # Maps dedup key -> position in ``records`` list for O(1) replacement
+        # instead of an O(n) linear scan calling _record_key() on every entry.
+        key_to_index: dict[tuple[str, str, str], int] = {}
         use_count = 0
+        rendered_count = 0
+
+        bar = tqdm(total=max(total_usages, 1), desc="composites processed")
 
         def emit_wrapper(
             name: str, kind: str, layers: list[Layer], locations: list[dict], block: ScriptBlock,
         ) -> None:
-            nonlocal use_count
+            nonlocal use_count, rendered_count
+
+            def on_render() -> None:
+                nonlocal rendered_count
+                rendered_count += 1
+                bar.update(1)
+
             record, key = _emit_record(
                 name, kind, layers, locations, block, index, self.config, self.resolver,
-                self.compositor, self.associator, dry_run=dry_run,
+                self.compositor, self.associator, dry_run=dry_run, on_render=on_render,
             )
             if record is None:
                 return
@@ -105,12 +129,11 @@ class Composer:
                     existing = existing.replace(usage_locations=merged)
                     existing = existing.replace(usage_locations=merged)
                     records_by_key[key] = existing
-                    # Replace in records list by finding position of old record with same key
-                    for i, r in enumerate(records):
-                        if _record_key(r) == key:
-                            records[i] = existing
-                            break
-                if existing.family == "xxx":
+                    # O(1) replacement via key->index map instead of O(n) scan
+                    idx = key_to_index.get(key)
+                    if idx is not None:
+                        records[idx] = existing
+                if existing.family == "xxx" and existing.characters is None:
                     chars = self.associator.associate(
                         list(existing.ordered_layers), name, block,
                         [{"script": l.script, "line": l.line, "statement": l.statement} for l in existing.usage_locations],
@@ -120,12 +143,12 @@ class Composer:
                         character_association_status="associated" if chars else "missing",
                     )
                     records_by_key[key] = existing
-                    for i, r in enumerate(records):
-                        if _record_key(r) == key:
-                            records[i] = existing
-                            break
+                    idx = key_to_index.get(key)
+                    if idx is not None:
+                        records[idx] = existing
                 return
             records_by_key[key] = record
+            key_to_index[key] = len(records)
             records.append(record)
             use_count += 1
 
@@ -144,6 +167,8 @@ class Composer:
         _process_screen_stacks_from_index(
             index, screens, definitions, defaults, emit_wrapper, self.config
         )
+
+        bar.close()
 
         # --- Build manifest ---
         previous_dynamic_states = _load_previous_dynamic_states(self.config)
@@ -221,7 +246,6 @@ def _process_layeredimage_uses_from_index(
     Reads each script exactly once (via the single-pass index) instead of
     re-scanning every file line-by-line (Optimization #1).
     """
-    scan_bar = ProgressBar(total=len(index.files), width=28, label="indexing script uses")
     for file_index in index.per_file.values():
         f = file_index.path
         for usage in file_index.usages:
@@ -244,8 +268,6 @@ def _process_layeredimage_uses_from_index(
                 emit_wrapper,
                 config,
             )
-        scan_bar.update(1)
-    scan_bar.finish()
 
 
 def _emit_layeredimage_uses(
@@ -426,9 +448,6 @@ def _process_screen_stacks_from_index(
         name: parse_screen_stack(block, definitions, config)
         for name, block in screens.items()
     }
-    screen_bar = ProgressBar(
-        total=len(index.files), width=28, label="resolving screen stacks"
-    )
     for file_index in index.per_file.values():
         f = file_index.path
         for usage in file_index.usages:
@@ -501,8 +520,6 @@ def _process_screen_stacks_from_index(
                         ],
                         block,
                     )
-        screen_bar.update(1)  # type: ignore[arg-type]
-    screen_bar.finish()
 
 
 # ---------------------------------------------------------------------- #
@@ -514,11 +531,16 @@ def _emit_record(
     index: ScriptIndex, config: GameConfig, resolver: Resolver, compositor: Compositor,
     associator: CharacterAssociator, *,
     dry_run: bool = False,
+    on_render: Callable[[], None] | None = None,
 ) -> tuple[CompositeRecord | None, tuple[str, str, str] | None]:
     """Register a composite record (and optionally render its PNG).
 
     Returns ``(record, key)`` or ``(None, None)`` if the stack could not be
     normalized to a configured asset folder.
+
+    Args:
+        on_render: Optional callback invoked after a PNG is successfully
+            rendered (not when skipped because it already exists).
     """
     dynamic = any(x.unresolved_conditions for x in layers)
 
@@ -540,7 +562,21 @@ def _emit_record(
         return None, None
 
     semantic = json.dumps(
-        [kind, name, [(x.source, list(x.conditions), x.attribute) for x in normalized]],
+        [
+            kind,
+            name,
+            [
+                (
+                    x.source,
+                    list(x.conditions),
+                    x.attribute,
+                    x.offset,
+                    x.offset_rel,
+                    x.canvas_size,
+                )
+                for x in normalized
+            ],
+        ],
         sort_keys=True,
     )
     digest = hashlib.sha1(semantic.encode()).hexdigest()[:12]
@@ -558,40 +594,29 @@ def _emit_record(
     target = paths["output_dir"] / status / family / sub / f"{name}__{digest}.png"
     dimensions: tuple[int, int] | None = None
 
-    # Optimization #5: skip PIL compositing when the output already exists and
-    # its inputs (resolved sources, offsets, canvas size) are unchanged.
-    content_hash = _content_hash(normalized, resolver)
-    hash_path = target.with_name(f"{target.name}.hash")
-
+    # The digest above now encodes offsets, offset_rel, and canvas size, so the
+    # PNG filename is a self-validating cache key: if the output file exists,
+    # its inputs are unchanged and PIL compositing can be skipped entirely.
+    # No separate .hash sidecar is needed.
     if not dry_run:
         target.parent.mkdir(parents=True, exist_ok=True)
-        skip = False
-        if target.is_file() and hash_path.is_file():
+        if target.is_file():
+            # Re-read dimensions from the existing PNG without re-compositing.
             try:
-                stored = json.loads(hash_path.read_text(encoding="utf-8"))
-                dims = stored.get("dimensions")
-                if (
-                    stored.get("hash") == content_hash
-                    and isinstance(dims, list)
-                    and len(dims) == 2
-                ):
-                    skip = True
-                    dimensions = (int(dims[0]), int(dims[1]))
-            except (OSError, json.JSONDecodeError, TypeError, ValueError):
-                skip = False
-        if not skip:
+                from PIL import Image as _PILImage
+
+                with _PILImage.open(target) as _im:
+                    dimensions = _im.size
+            except (OSError, Exception):
+                dimensions = None
+        else:
             image = compositor.composite(normalized, canvas_size=None)
             if image is None:
                 return None, None
             dimensions = (int(image.size[0]), int(image.size[1]))
             image.save(target)
-            try:
-                hash_path.write_text(
-                    json.dumps({"hash": content_hash, "dimensions": [dimensions[0], dimensions[1]]}),
-                    encoding="utf-8",
-                )
-            except OSError:
-                pass
+            if on_render is not None:
+                on_render()
 
     family2 = ""
     for x in normalized:
@@ -677,34 +702,22 @@ def _emit_record(
 def _record_key(record: CompositeRecord) -> tuple[str, str, str]:
     """Compute the dedup key for a CompositeRecord."""
     semantic = json.dumps(
-        [record.kind, record.name, [(l.source, list(l.conditions), l.attribute) for l in record.ordered_layers]],
+        [
+            record.kind,
+            record.name,
+            [
+                (
+                    l.source,
+                    list(l.conditions),
+                    l.attribute,
+                    l.offset,
+                    l.offset_rel,
+                    l.canvas_size,
+                )
+                for l in record.ordered_layers
+            ],
+        ],
         sort_keys=True,
     )
     digest = hashlib.sha1(semantic.encode()).hexdigest()[:12]
     return (record.kind, record.name, digest)
-
-
-def _content_hash(layers: list[Layer], resolver: Resolver) -> str:
-    """Content hash used to skip unchanged composites (Optimization #5).
-
-    Hashes the sorted list of resolved source paths plus offsets and canvas
-    size.  If these inputs are unchanged since the last run the composited PNG
-    is byte-identical, so PIL compositing can be skipped entirely.
-    """
-    canvas = next((str(l.canvas_size) for l in layers if l.canvas_size), "none")
-    entries = [f"canvas={canvas}"]
-    for layer in sorted(
-        layers,
-        key=lambda l: (
-            l.source,
-            str(l.offset) if l.offset is not None else "",
-            str(l.offset_rel) if l.offset_rel is not None else "",
-            str(l.canvas_size) if l.canvas_size is not None else "",
-        ),
-    ):
-        resolved = resolver.resolve(layer.source)
-        entries.append(
-            f"{layer.source}|{resolved.as_posix() if resolved is not None else ''}|"
-            f"{layer.offset}|{layer.offset_rel}|{layer.canvas_size}"
-        )
-    return hashlib.sha1("\n".join(entries).encode()).hexdigest()[:16]

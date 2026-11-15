@@ -21,11 +21,13 @@ from collections import defaultdict
 from pathlib import Path
 from typing import NotRequired, TypedDict
 
+from tqdm import tqdm
+
 from .config import GameConfig
 from .conditions import CallState, get_reset_defaults_map, state_at_call
 from .errors import ApplyError
-from .manifest import ManifestWriter
-from .models import AdoptionReport, CompositeManifest
+from .manifest import KNOWN_FAMILIES
+from .models import AdoptionReport, CompositeManifest, CompositeRecord
 
 KEYWORDS = {"at", "with", "zorder", "as", "parent", "to"}
 EXPR_KEYWORDS = {"True", "False", "and", "or", "not", "None"}
@@ -58,9 +60,18 @@ class Applier:
     # ------------------------------------------------------------------ #
 
     def apply(self) -> tuple[CompositeManifest, AdoptionReport]:
-        """Run the apply pass and return ``(manifest, report)``."""
-        manifest = ManifestWriter.load_all(self.config)
-        image_tags, missing_generated = self._generated_composites(manifest)
+        """Run the apply pass and return ``(manifest, report)``.
+
+        Composites are loaded and applied one category manifest at a time
+        (bg, char, scene, gui, …) with a progress bar, rather than merging all
+        manifests into a single in-memory list up front.
+        """
+        # Global index payload (dynamic states, declarations, summary) is read
+        # once; composites are streamed per category manifest below.
+        index_payload = self._load_index_payload()
+        dynamic_states = index_payload["dynamic_states"]
+        summary = dict(index_payload.get("summary", {}))
+
         reset_map = get_reset_defaults_map(self.config)
 
         mapping: dict[tuple[str, int], _CompositeUsageInfo] = {}
@@ -68,18 +79,28 @@ class Applier:
         skipped: list[dict] = []
         runtime_switches: dict[tuple[str, int], _CompositeUsageInfo] = {}
         already_direct = 0
+        all_records: list[CompositeRecord] = []
 
         usage_records: dict[tuple[str, int], list[tuple]] = defaultdict(list)
-        for record in manifest.composites_list:
-            if record.status != "static" or record.kind == "screen":
-                continue
-            for loc in record.usage_locations:
-                if "/archive/" in loc.script:
+
+        category_files = self._category_manifest_files()
+        bar = tqdm(total=len(category_files), desc="applying manifests")
+        for cat_path in category_files:
+            cat_data = json.loads(cat_path.read_text(encoding="utf-8"))
+            for c in cat_data.get("composites", []):
+                record = CompositeManifest._record_from_dict(c)
+                all_records.append(record)
+                if record.status != "static" or record.kind == "screen":
                     continue
-                if not SHOW_RE.match(loc.statement.strip()):
-                    continue
-                key = (loc.script, loc.line)
-                usage_records[key].append((record, loc))
+                for loc in record.usage_locations:
+                    if "/archive/" in loc.script:
+                        continue
+                    if not SHOW_RE.match(loc.statement.strip()):
+                        continue
+                    key = (loc.script, loc.line)
+                    usage_records[key].append((record, loc))
+            bar.update(1)
+        bar.close()
 
         for key, candidates in usage_records.items():
             statement = candidates[0][1].statement
@@ -100,7 +121,7 @@ class Applier:
 
             if variables - written:
                 runtime_switch, _ = self._runtime_switch_for_usage(
-                    candidates, key, statement, manifest.composites_list
+                    candidates, key, statement, all_records
                 )
                 if runtime_switch:
                     runtime_switches[key] = runtime_switch
@@ -115,6 +136,18 @@ class Applier:
                 name = next(iter(composite_tags))
                 mapping[key] = {"name": name, "statement": statement}
                 used[name] = next(iter(candidates))[0].composite_path
+
+        # Build the merged manifest from the per-category composites streamed
+        # above, so the apply pass can resolve generated images / missing files.
+        full_manifest = CompositeManifest(
+            composites=tuple(all_records),
+            dynamic_states=dynamic_states,
+            image_declarations=index_payload["image_declarations"],
+            dynamic_declarations=index_payload["dynamic_declarations"],
+            unresolved=tuple(index_payload.get("unresolved", [])),
+            summary=summary,
+        )
+        image_tags, missing_generated = self._generated_composites(full_manifest)
 
         # --- Rewrite direct mappings ---
         by_file = self._group_by_file(mapping)
@@ -213,7 +246,7 @@ class Applier:
         report_path.write_text(json.dumps(report.to_dict(), indent=2), encoding="utf-8")
 
         # Update manifest index summary with adoption info.
-        manifest.summary["adoption"] = {
+        full_manifest.summary["adoption"] = {
             "applied_statements": applied,
             "skipped_runtime_state": len(skipped),
             "adopted_composites": len(used),
@@ -232,7 +265,7 @@ class Applier:
         index_path = self.config.resolved_paths()["manifest_path"].parent / "manifest_index.json"
         index_path.parent.mkdir(parents=True, exist_ok=True)
         index_data = json.loads(index_path.read_text(encoding="utf-8")) if index_path.is_file() else {}
-        index_data["summary"] = manifest.summary
+        index_data["summary"] = full_manifest.summary
         index_path.write_text(json.dumps(index_data, indent=2), encoding="utf-8")
         print(
             f"applied {applied}, unchanged {unchanged}, skipped for runtime state {len(skipped)}, "
@@ -243,7 +276,7 @@ class Applier:
             f"skipped without safe state maps {len(skipped)}, "
             f"missing files {len(missing_generated)}"
         )
-        return manifest, report
+        return full_manifest, report
 
     # ------------------------------------------------------------------ #
     # Path helpers
@@ -509,6 +542,25 @@ class Applier:
             rel = script[len("game/"):] if script.startswith("game/") else script
             by_file.setdefault(rel, []).append((line, info))
         return dict(by_file)
+
+    def _load_index_payload(self) -> dict:
+        """Load the global manifest_index.json payload (no per-category composites)."""
+        paths = self.config.resolved_paths()
+        index_path = paths["manifest_path"].parent / "manifest_index.json"
+        if not index_path.is_file():
+            raise ManifestError(f"Manifest index not found: {index_path}")
+        return json.loads(index_path.read_text(encoding="utf-8"))
+
+    def _category_manifest_files(self) -> list[Path]:
+        """Return existing per-category manifest files, in canonical order."""
+        paths = self.config.resolved_paths()
+        reports_dir = paths["manifest_path"].parent
+        files: list[Path] = []
+        for cat_name in KNOWN_FAMILIES:
+            cat_path = reports_dir / f"manifest_{cat_name}.json"
+            if cat_path.is_file():
+                files.append(cat_path)
+        return files
 
 
 # ---------------------------------------------------------------------- #

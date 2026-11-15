@@ -108,9 +108,11 @@ def files(config: GameConfig) -> list[Path]:
         (
             p
             for p in config.game_root.rglob("*.rpy")
-            if "cache" not in p.parts and p.name != "composite_images.rpy"
+            if "cache" not in p.parts
+            and "archive" not in p.parts
+            and p.name != "composite_images.rpy"
         ),
-        key=lambda p: ("/archive/" in p.as_posix().lower(), p.as_posix().lower()),
+        key=lambda p: p.as_posix().lower(),
     )
 
 

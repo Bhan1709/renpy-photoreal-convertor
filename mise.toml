@@ -16,7 +16,7 @@ run = "python -m agent {{ usage.profile }}"
 description = "Shortcut: Launch OpenCode with NVIDIA GLM-5.3 Flash"
 run = "python -m agent nvidia-glm"
 
-[tasks.proxy-stop]
+[tasks.stop-proxy]
 description = "Stop the shared NVIDIA rate-limit proxy"
 run = "python -m agent --stop-proxy"
 

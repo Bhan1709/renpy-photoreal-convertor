@@ -10,10 +10,12 @@ requires-python = ">=3.14"
 dependencies = [
     "fastapi>=0.163.0",
     "httpx>=0.28.1",
+    "mypy>=2.4.1",
     "numpy>=2.5.4",
     "pillow>=13.0.0",
     "rpa-toolkit @ git+https://github.com/regiellis/rpa-toolkit.git@435f202e7cb9aeeaf6c006cf928d9661f8830e6e",
     "tiktoken>=0.14.0",
+    "tqdm>=4.70.1",
     "uvicorn>=0.54.0",
 ]
 

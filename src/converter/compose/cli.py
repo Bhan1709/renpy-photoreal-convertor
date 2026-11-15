@@ -14,6 +14,7 @@ Usage::
 from __future__ import annotations
 
 import argparse
+import shutil
 import sys
 from dataclasses import replace
 from pathlib import Path
@@ -35,11 +36,16 @@ def build_config(args) -> GameConfig:
 
     game_root = Path(args.game_root).resolve() if args.game_root else None
     if game_root is None and args.game:
-        game_root = (Path("src/renpy_game") / args.game).resolve()
-        # Common Ren'Py build layout: <game>-<version>-pc/game
-        candidates = [p for p in game_root.iterdir() if p.is_dir() and p.name.endswith("-pc")]
-        if candidates:
-            game_root = (candidates[0] / "game").resolve()
+        search_root = (Path("src/renpy_game") / args.game).resolve()
+        if search_root.is_dir():
+            # Look for a ``game`` folder at any depth beneath the game directory
+            # (e.g. src/renpy_game/<game>/.../game).  Prefer one whose parent
+            # matches the <game>-<version>-pc build layout.
+            game_dirs = [p for p in search_root.rglob("game") if p.is_dir()]
+            pc_game_dirs = [p for p in game_dirs if p.parent.name.endswith("-pc")]
+            chosen = pc_game_dirs[0] if pc_game_dirs else (game_dirs[0] if game_dirs else None)
+            if chosen is not None:
+                game_root = chosen.resolve()
     if game_root is None:
         game_root = Path(
             "src/renpy_game/CampMourningWood-0.25.0.1/CampMourningWood-0.25.0.1-pc/game"
@@ -115,6 +121,12 @@ def main(argv=None) -> int:
 
     # --- Normal compose + apply flow ---
     if not args.apply_only:
+        if args.clean_output:
+            paths = config.resolved_paths()
+            output_dir = paths["output_dir"]
+            if output_dir.exists():
+                shutil.rmtree(output_dir)
+                print(f"Cleaned output directory: {output_dir}")
         composer = Composer(config)
         manifest = composer.compose(dry_run=args.dry_run, clean_output=args.clean_output)
         ManifestWriter(config).write(manifest, dry_run=args.dry_run)

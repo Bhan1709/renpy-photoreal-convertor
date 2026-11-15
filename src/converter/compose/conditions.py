@@ -20,6 +20,20 @@ from .models import Layer
 
 UNKNOWN = object()
 
+# Cache for static condition evaluation: (expression, relevant-env-key) -> result.
+# Conditions like "month == 6" are evaluated against many call sites with the
+# same variable values, so caching avoids repeated Python eval() calls
+# (Optimization #7).
+_eval_cond_cache: dict[tuple, bool | None | object] = {}
+
+# Cache for call-state reconstruction: (path_str, line_number) -> CallState.
+# Multiple usages on the same file at nearby lines share the same reconstructed
+# state when no assignment occurs between them (Optimization #8).
+_state_at_call_cache: dict[tuple[str, int], CallState] = {}
+
+# Cache for reset-defaults map: config identity -> mapping.
+_reset_defaults_cache: dict[int, dict[str, list[tuple[str, str]]]] = {}
+
 
 class ConditionError(ComposeError):
     """Raised when a condition cannot be statically evaluated."""
@@ -87,6 +101,11 @@ def state_at_call(
     including) the target line.
     """
     config = config or _require_config()
+    cache_key = (str(path), line_number)
+    cached = _state_at_call_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
     key = str(path)
     if key not in _state_cache:
         _state_cache[key] = _scan_file(path, defaults, config)
@@ -98,7 +117,9 @@ def state_at_call(
     right = bisect.bisect_left(assignments, (line_number, "", None))
     for _, name, value in assignments[left:right]:
         state[name] = value
-    return CallState(values=state)
+    result = CallState(values=state)
+    _state_at_call_cache[cache_key] = result
+    return result
 
 
 _state_cache: dict[str, tuple[list[int], list[tuple[int, str, object]]]] = {}
@@ -144,9 +165,14 @@ def _scan_file(
 def get_reset_defaults_map(config: GameConfig | None = None) -> dict[str, list[tuple[str, str]]]:
     """Parse ``characters.rpy`` for ``*ResetDefault`` labels and their assignments."""
     config = config or _require_config()
+    cache_key = id(config)
+    cached = _reset_defaults_cache.get(cache_key)
+    if cached is not None:
+        return cached
     mapping: dict[str, list[tuple[str, str]]] = {}
     char_file = config.game_root / "characters.rpy"
     if not char_file.exists():
+        _reset_defaults_cache[cache_key] = mapping
         return mapping
     current_label: str | None = None
     try:
@@ -169,6 +195,7 @@ def get_reset_defaults_map(config: GameConfig | None = None) -> dict[str, list[t
                     mapping[current_label].append((name, value))
     except OSError:
         pass
+    _reset_defaults_cache[cache_key] = mapping
     return mapping
 
 
@@ -185,13 +212,28 @@ def eval_cond(expr: str, env: dict[str, object]) -> bool | None | object:
         # so we treat ``else`` as True and rely on chain-based mutual exclusion
         # to avoid double-compositing.
         return True
+    # Build a cache key from the expression plus the values of the variables it
+    # references.  The same condition evaluated against the same state yields
+    # the same result, so we can skip the Python eval() on repeats.
+    var_names = [
+        v for v in sorted(
+            {v for v in re.findall(r"\b[A-Za-z_]\w*\b", expr)
+             if v not in {"True", "False", "and", "or", "not", "None"}}
+        )
+    ]
+    cache_key = (expr, tuple((v, repr(env.get(v, "__missing__"))) for v in var_names))
+    cached = _eval_cond_cache.get(cache_key)
+    if cached is not None:
+        return cached  # type: ignore[return-value]
     try:
         # Ren'Py conditions are standard Python comparison/boolean expressions.
-        return bool(eval(expr, {"__builtins__": {}}, dict(env)))  # noqa: S307
+        result: bool | None | object = bool(eval(expr, {"__builtins__": {}}, dict(env)))  # noqa: S307
     except (NameError, TypeError, KeyError):
-        return UNKNOWN
+        result = UNKNOWN
     except Exception:
-        return UNKNOWN
+        result = UNKNOWN
+    _eval_cond_cache[cache_key] = result
+    return result
 
 
 def select_layers_for_chain(

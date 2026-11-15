@@ -31,6 +31,10 @@ class Resolver:
         #   _name_index:    lowercased file name -> list of absolute Paths
         self._archive_index: dict[str, Path] = {}
         self._name_index: dict[str, list[Path]] = defaultdict(list)
+        # Cache of source -> resolved Path (or None).  Avoids repeating
+        # stat() calls and index lookups for the same asset across many
+        # composites (Optimization #6).
+        self._resolve_cache: dict[str, Path | None] = {}
         self._build_archive_index()
 
     def with_aliases(self, aliases: dict[str, str]) -> "Resolver":
@@ -73,8 +77,13 @@ class Resolver:
         if s in self._aliases:
             s = self._aliases[s]
 
+        # Cache hit — skip stat() and index lookups entirely.
+        if s in self._resolve_cache:
+            return self._resolve_cache[s]
+
         direct = self.config.archive_dir / Path(s)
         if direct.is_file():
+            self._resolve_cache[s] = direct
             return direct
 
         # Asset folder variants occur in extracted builds; match exact relative path
@@ -82,6 +91,7 @@ class Resolver:
         key = s.replace("\\", "/").lower()
         exact = self._archive_index.get(key)
         if exact is not None:
+            self._resolve_cache[s] = exact
             return exact
 
         wanted = key.replace("/", "\\")
@@ -92,12 +102,15 @@ class Resolver:
             except ValueError:
                 continue
             if relative == wanted:
+                self._resolve_cache[s] = candidate
                 return candidate
             if relative.endswith("\\" + wanted):
                 suffix_matches.append(candidate)
 
         if len(suffix_matches) == 1:
+            self._resolve_cache[s] = suffix_matches[0]
             return suffix_matches[0]
+        self._resolve_cache[s] = None
         return None
 
     def archive_relative(self, path: Path) -> str:

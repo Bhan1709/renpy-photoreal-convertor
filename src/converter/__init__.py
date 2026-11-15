@@ -1,12 +1,12 @@
 """Converter subpackage: shared utilities for Ren'Py game conversion.
 
-Subpackages (decompile, compose, …) can reuse the progress bar and other
-helpers defined here.
+Subpackages (decompile, compose, …) can reuse tqdm-based progress reporting
+defined here.
 """
 
-from .utility import ProgressBar, make_progress_bar, progress  # noqa: F401  (re-exported for subpackages)
+from .utility import tqdm  # noqa: F401  (re-exported for subpackages)
 
-__all__ = ["ProgressBar", "make_progress_bar", "progress"]
+__all__ = ["tqdm"]
 
 
 def main() -> None:
