@@ -47,7 +47,7 @@ from __future__ import annotations
 from .applier import Applier
 from .character_associator import CharacterAssociator
 from .composer import Composer
-from .compositor import Compositor, CPUCompositor, GPUCompositor
+from .compositor import Compositor, CPUCompositor
 from .config import GameConfig, default_config, load_config
 from .conditions import CallState
 from .errors import (
@@ -75,7 +75,6 @@ __all__ = [
     "Composer",
     "Compositor",
     "CPUCompositor",
-    "GPUCompositor",
     "GameConfig",
     "default_config",
     "load_config",

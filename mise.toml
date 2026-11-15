@@ -10,15 +10,15 @@ python.uv_venv_auto = "create|source"
 [tasks.agent]
 description = "Run OpenCode monitor with a specified config profile"
 usage = 'arg "<profile>" default="nvidia-glm" help="Profile key from config.json"'
-run = "uv run opencode-monitor {{ usage.profile }}"
+run = "python -m agent {{ usage.profile }}"
 
 [tasks.glm]
 description = "Shortcut: Launch OpenCode with NVIDIA GLM-5.3 Flash"
-run = "uv run opencode-monitor nvidia-glm"
+run = "python -m agent nvidia-glm"
 
 [tasks.proxy-stop]
 description = "Stop the shared NVIDIA rate-limit proxy"
-run = "uv run opencode-monitor --stop-proxy"
+run = "python -m agent --stop-proxy"
 
 [tasks.qwen]
 description = "Shortcut: Launch OpenCode with Qwen-3-VL (default 32k)"
@@ -27,4 +27,4 @@ arg "<ctx>" default="32k" help="Context size" {
   choices "16k" "32k" "64k" "128k"
 }
 '''
-run = "uv run opencode-monitor qwen-3-vl-{{ usage.ctx }}"
+run = "python -m agent qwen-3-vl-{{ usage.ctx }}"

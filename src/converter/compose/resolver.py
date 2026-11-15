@@ -7,6 +7,7 @@ per-game path aliases and case-insensitive folder-suffix matching.
 
 from __future__ import annotations
 
+from collections import defaultdict
 from pathlib import Path
 
 from .config import GameConfig
@@ -14,12 +15,23 @@ from .errors import AssetResolutionError, ComposeError
 
 
 class Resolver:
-    """Resolves asset paths to on-disk files using a :class:`GameConfig`."""
+    """Resolves asset paths to on-disk files using a :class:`GameConfig`.
+
+    The archive directory is indexed once in :meth:`__init__` (Optimization #3),
+    so :meth:`resolve` does dictionary lookups instead of walking the archive
+    tree with :meth:`Path.rglob` for every unresolved asset.
+    """
 
     def __init__(self, config: GameConfig) -> None:
         self.config = config
         # Per-game path alias overrides (e.g. a sprite sheet renamed between versions).
         self._aliases: dict[str, str] = dict(config.path_aliases)
+        # Indexes built once from the archive directory:
+        #   _archive_index: lowercased relative posix path -> absolute Path
+        #   _name_index:    lowercased file name -> list of absolute Paths
+        self._archive_index: dict[str, Path] = {}
+        self._name_index: dict[str, list[Path]] = defaultdict(list)
+        self._build_archive_index()
 
     def with_aliases(self, aliases: dict[str, str]) -> "Resolver":
         """Return a copy with additional path aliases applied."""
@@ -27,13 +39,35 @@ class Resolver:
         new._aliases = {**self._aliases, **aliases}
         return new
 
+    def _build_archive_index(self) -> None:
+        """Walk ``archive_dir`` once and index every file it contains."""
+        archive = self.config.archive_dir
+        if not archive.is_dir():
+            return
+        try:
+            for path in archive.rglob("*"):
+                if not path.is_file():
+                    continue
+                try:
+                    relative = path.relative_to(archive).as_posix().lower()
+                except ValueError:
+                    continue
+                # Two files cannot share one relative path; first occurrence wins.
+                self._archive_index.setdefault(relative, path)
+                self._name_index[path.name.lower()].append(path)
+        except (OSError, ValueError):
+            # An unreadable archive directory falls back to direct-join only.
+            pass
+
     def resolve(self, source: str) -> Path | None:
         """Resolve an asset path to an absolute :class:`~pathlib.Path`, or ``None``.
 
         Resolution strategy:
         1. Apply path aliases from config.
         2. Try direct join under ``archive_dir``.
-        3. Fall back to case-insensitive folder-suffix matching under ``archive_dir``.
+        3. Look up the exact relative path case-insensitively in the archive index.
+        4. Fall back to case-insensitive folder-suffix matching using the name index
+           (no directory walk).
         """
         s = source
         if s in self._aliases:
@@ -43,15 +77,16 @@ class Resolver:
         if direct.is_file():
             return direct
 
-        # Asset folder variants occur in extracted builds; match exact relative path case-insensitively.
-        wanted = s.replace("/", "\\").lower()
-        suffix_matches: list[Path] = []
-        try:
-            candidates = self.config.archive_dir.rglob(Path(s).name)
-        except (OSError, ValueError):
-            candidates = []
+        # Asset folder variants occur in extracted builds; match exact relative path
+        # case-insensitively via the index (no rglob walk).
+        key = s.replace("\\", "/").lower()
+        exact = self._archive_index.get(key)
+        if exact is not None:
+            return exact
 
-        for candidate in candidates:
+        wanted = key.replace("/", "\\")
+        suffix_matches: list[Path] = []
+        for candidate in self._name_index.get(Path(s).name.lower(), []):
             try:
                 relative = str(candidate.relative_to(self.config.archive_dir)).replace("/", "\\").lower()
             except ValueError:

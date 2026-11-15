@@ -14,13 +14,11 @@ dependencies = [
     "pillow>=13.0.0",
     "rpa-toolkit @ git+https://github.com/regiellis/rpa-toolkit.git@435f202e7cb9aeeaf6c006cf928d9661f8830e6e",
     "tiktoken>=0.14.0",
-    "torch>=2.15.0",
     "uvicorn>=0.54.0",
 ]
 
 [project.scripts]
 renpy-photoreal-vn-converter = "converter:main"
-opencode-monitor = "agent.cli:main"
 
 [build-system]
 requires = ["uv_build>=0.13.8,<0.14.0"]

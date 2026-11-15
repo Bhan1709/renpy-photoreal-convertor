@@ -87,6 +87,22 @@ class GameConfig:
     declaration_path: Path | None = None
     report_path: Path | None = None
 
+    # Cached compiled regexes (Optimization #2).  Populated once in
+    # __post_init__ because GameConfig is frozen and categories never change
+    # after construction.
+    _path_regex: re.Pattern[str] = field(init=False, compare=False, repr=False)
+    _category_folder_regex: re.Pattern[str] = field(init=False, compare=False, repr=False)
+
+    def __post_init__(self) -> None:
+        """Compile path regexes exactly once per config instance.
+
+        ``path_regex()`` used to call ``re.compile`` on every invocation and was
+        called once per scanned line during parsing; compiling here removes that
+        repeated work entirely.
+        """
+        object.__setattr__(self, "_path_regex", self._compile_path_regex())
+        object.__setattr__(self, "_category_folder_regex", self._compile_category_folder_regex())
+
     # ------------------------------------------------------------------ #
     # Derived helpers
     # ------------------------------------------------------------------ #
@@ -124,13 +140,7 @@ class GameConfig:
         """Build an absolute path under a category's asset folder."""
         return self.archive_dir / self.folder_for(category) / Path(*rest)
 
-    def path_regex(self) -> re.Pattern[str]:
-        """Build a regex matching asset paths under any configured folder.
-
-        Matches ``<folder>/<path>.<ext>`` for every configured category folder,
-        case-insensitively.  Folder names are escaped so they may contain regex
-        metacharacters safely.
-        """
+    def _compile_path_regex(self) -> re.Pattern[str]:
         folders = sorted({name.lower() for name in self.categories.values()})
         alternation = "|".join(re.escape(f) for f in folders)
         pattern = (
@@ -138,11 +148,26 @@ class GameConfig:
         )
         return re.compile(pattern, re.I)
 
-    def category_folder_regex(self) -> re.Pattern[str]:
-        """Regex matching ``<folder>/`` prefixes for any configured folder."""
+    def _compile_category_folder_regex(self) -> re.Pattern[str]:
         folders = sorted({name.lower() for name in self.categories.values()})
         alternation = "|".join(re.escape(f) for f in folders)
         return re.compile(rf"(?:{alternation})/", re.I)
+
+    def path_regex(self) -> re.Pattern[str]:
+        """Return the compiled regex matching asset paths under any configured folder.
+
+        Matches ``<folder>/<path>.<ext>`` for every configured category folder,
+        case-insensitively.  The pattern is compiled once in :meth:`__post_init__`
+        (Optimization #2) instead of on every call.
+        """
+        return self._path_regex
+
+    def category_folder_regex(self) -> re.Pattern[str]:
+        """Return the compiled regex matching ``<folder>/`` prefixes for any configured folder.
+
+        Compiled once in :meth:`__post_init__` (Optimization #2).
+        """
+        return self._category_folder_regex
 
     def resolved_paths(self) -> dict[str, Path]:
         """Convenience: all important absolute paths, defaulting output locations."""

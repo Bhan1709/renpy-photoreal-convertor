@@ -80,9 +80,6 @@ def main(argv=None) -> int:
                     help="Run the compose pass only; skip script adoption")
     ap.add_argument("--apply-only", action="store_true",
                     help="Run the apply pass only (requires an existing manifest)")
-    ap.add_argument("--device", default="auto", choices=["cpu", "cuda", "auto"],
-                    help="Compositing device: cpu, cuda, or auto (default)")
-
     # Restore operations
     ap.add_argument("--restore", action="store_true",
                     help="Restore all .rpy files from archive.rpa into game_root")
@@ -118,7 +115,7 @@ def main(argv=None) -> int:
 
     # --- Normal compose + apply flow ---
     if not args.apply_only:
-        composer = Composer(config, device=args.device)
+        composer = Composer(config)
         manifest = composer.compose(dry_run=args.dry_run, clean_output=args.clean_output)
         ManifestWriter(config).write(manifest, dry_run=args.dry_run)
         if args.compose_only or args.dry_run:

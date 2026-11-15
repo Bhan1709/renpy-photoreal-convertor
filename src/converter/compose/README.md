@@ -41,7 +41,7 @@ in the compose or apply logic.
 | ``parser.py`` | Ren'Py script parsing (blocks, layeredimage, screen, image declarations) |
 | ``resolver.py`` | Asset path resolution (aliases, archive lookup) |
 | ``conditions.py`` | Static condition evaluation, call-state reconstruction |
-| ``compositor.py`` | Image compositing (CPU via PIL, GPU via PyTorch CUDA) |
+| ``compositor.py`` | Image compositing (CPU via PIL) |
 | ``character_associator.py`` | Character inference for XXX (scene/adult) composites |
 | ``composer.py`` | Compose pass orchestration |
 | ``applier.py`` | Apply pass orchestration (script rewriting, declarations) |
@@ -155,7 +155,7 @@ compose/
 ├── parser.py        # Ren'Py script parsing
 ├── resolver.py      # Asset path resolution
 ├── conditions.py    # Static condition evaluation + call-state
-├── compositor.py    # Image compositing (CPU/GPU strategies)
+├── compositor.py    # Image compositing (CPU via PIL)
 ├── character_associator.py  # Character inference for XXX composites
 ├── composer.py      # Compose pass orchestration
 ├── applier.py       # Apply pass orchestration
@@ -192,8 +192,8 @@ extension: ``categories`` can map a category to a list of folders, and
 - **Single responsibility**: each module owns exactly one concern (parsing,
   resolution, conditions, compositing, character association, orchestration,
   manifest I/O).
-- **Strategy pattern**: compositing supports CPU (PIL) and GPU (PyTorch CUDA)
-  backends through a common :class:`CompositorStrategy` protocol.
+- **Strategy pattern**: compositing uses CPU (PIL) through a common
+  :class:`CompositorStrategy` protocol.
 - **Idempotent apply**: the apply pass refuses to touch a line whose text no
   longer matches the recorded statement, so a second run is a no-op.
 

@@ -28,9 +28,16 @@ from .models import (
     Layer,
     UsageLocation,
 )
-from .parser import blocks_from, files, find_nearby_dialog, parse_image_declarations, parse_layered, parse_screen_stack
+from .parser import (
+    FileIndex,
+    ScriptBlock,
+    ScriptIndex,
+    ScriptUsage,
+    find_nearby_dialog,
+    index_scripts,
+    parse_screen_stack,
+)
 from .resolver import Resolver
-from .parser import ScriptBlock  # type: ignore[F401]  (used in annotations)
 
 
 _SHOW_RE = re.compile(r"^\s*(?:show|scene)\s+(?!screen\b)([\w.]+)(?:\s+([^\n#]+))?")
@@ -40,11 +47,10 @@ _DECLARATION_USE_RE = re.compile(r"^\s*(?:show|scene)\s+([\w.]+)")
 class Composer:
     """Runs the full compose pass for a :class:`GameConfig`."""
 
-    def __init__(self, config: GameConfig, device: str = "auto") -> None:
+    def __init__(self, config: GameConfig) -> None:
         self.config = config
-        self.device = device
         self.resolver = Resolver(config)
-        self.compositor = Compositor(config, device=device)
+        self.compositor = Compositor(config)
         self.associator = CharacterAssociator(config)
 
     # ------------------------------------------------------------------ #
@@ -59,21 +65,11 @@ class Composer:
             clean_output: Accepted for API parity; actual cleanup is handled
                 by the caller/CLI before this method is invoked.
         """
-        script_files = files(self.config)
-        all_blocks = blocks_from(script_files, self.config)
-        defaults = _collect_defaults(script_files, self.config)
-
-        # Index layeredimage and screen definitions.
-        definitions: dict[str, tuple[ScriptBlock, list[Layer]]] = {}
-        screens: dict[str, ScriptBlock] = {}
-        for b in all_blocks:
-            if b.kind == "layeredimage" and b.name not in definitions:
-                definitions[b.name] = (b, parse_layered(b, self.config))
-            elif b.kind == "screen" and b.name not in screens:
-                screens[b.name] = b
-
-        # Index image declarations.
-        image_declarations = parse_image_declarations(script_files, self.config)
+        index = index_scripts(self.config)
+        defaults = index.all_defaults
+        definitions = index.layeredimage_defs
+        screens = index.screens
+        image_declarations = index.image_decls
 
         records: list[CompositeRecord] = []
         records_by_key: dict[tuple[str, str, str], CompositeRecord] = {}
@@ -84,8 +80,8 @@ class Composer:
         ) -> None:
             nonlocal use_count
             record, key = _emit_record(
-                name, kind, layers, locations, block, self.config, self.resolver,
-                self.compositor, self.associator, dry_run=dry_run, device=self.device,
+                name, kind, layers, locations, block, index, self.config, self.resolver,
+                self.compositor, self.associator, dry_run=dry_run,
             )
             if record is None:
                 return
@@ -134,19 +130,19 @@ class Composer:
             use_count += 1
 
         # --- Pass 1: layeredimage show/scene statements ---
-        _process_layeredimage_uses(
-            script_files, definitions, defaults, emit_wrapper, self.config
+        _process_layeredimage_uses_from_index(
+            index, definitions, defaults, emit_wrapper, self.config
         )
 
         # --- Pass 2: ordinary image declarations ---
         dynamic_declarations: list[dict] = []
-        _process_image_declarations(
-            script_files, image_declarations, emit_wrapper, dynamic_declarations, self.config
+        _process_image_declarations_from_index(
+            index, image_declarations, emit_wrapper, dynamic_declarations, self.config
         )
 
         # --- Pass 3: screen stacks ---
-        _process_screen_stacks(
-            script_files, screens, definitions, defaults, emit_wrapper, self.config
+        _process_screen_stacks_from_index(
+            index, screens, definitions, defaults, emit_wrapper, self.config
         )
 
         # --- Build manifest ---
@@ -175,7 +171,7 @@ class Composer:
             dynamic_declarations=dynamic_declarations,
             unresolved=tuple(),
             summary={
-                "scripts_scanned": len(script_files),
+                "scripts_scanned": len(index.files),
                 "composites": len(records),
                 "uses_processed": use_count,
                 "image_declarations_indexed": len(declaration_records),
@@ -199,41 +195,6 @@ def _require_config() -> GameConfig:
     raise ComposeError("compose config not initialized; pass a GameConfig explicitly")
 
 
-def _collect_defaults(script_files: list[Path], config: GameConfig) -> dict[str, object]:
-    defaults: dict[str, object] = dict(config.game_defaults)
-    for path in script_files:
-        try:
-            lines = path.read_text(encoding="utf-8-sig", errors="replace").splitlines()
-        except OSError:
-            continue
-        for raw in lines:
-            dm = re.match(
-                r"^\s*default\s+([A-Za-z_]\w*)\s*=\s*(True|False|-?\d+(?:\.\d+)?|'[^']*'|\"[^\"]*\")",
-                raw.split("#", 1)[0].strip(),
-            )
-            if dm and dm.group(1) not in defaults:
-                key, value = dm.groups()
-                parsed = _parse_literal(value)
-                if parsed is not None:
-                    defaults[key] = parsed
-    return defaults
-
-
-def _parse_literal(value: str) -> bool | int | float | str | None:
-    value = value.strip()
-    if value == "True":
-        return True
-    if value == "False":
-        return False
-    if re.fullmatch(r"-?\d+\.\d+", value):
-        return float(value)
-    if re.fullmatch(r"-?\d+", value):
-        return int(value)
-    if value[:1] in ("'", '"') and value[-1:] == value[:1]:
-        return value[1:-1]
-    return None
-
-
 def _load_previous_dynamic_states(config: GameConfig) -> list[dict]:
     previous_manifest_path = config.resolved_paths()["manifest_path"]
     if previous_manifest_path.is_file():
@@ -248,42 +209,49 @@ def _load_previous_dynamic_states(config: GameConfig) -> list[dict]:
 # Pass 1: layeredimage show/scene statements
 # ---------------------------------------------------------------------- #
 
-def _process_layeredimage_uses(
-    script_files: list[Path],
+def _process_layeredimage_uses_from_index(
+    index: ScriptIndex,
     definitions: dict[str, tuple[ScriptBlock, list[Layer]]],
     defaults: dict[str, object],
     emit_wrapper,
     config: GameConfig,
 ) -> None:
-    total_lines = sum(
-        len(f.read_text(encoding="utf-8-sig", errors="replace").splitlines())
-        for f in script_files
-    )
-    scanned_lines = 0
-    last_percent = -1
-    scan_bar = ProgressBar(total=total_lines, width=28, label="indexing script uses")
-    for f in script_files:
-        text = f.read_text(encoding="utf-8-sig", errors="replace")
-        for no, line in enumerate(text.splitlines(), 1):
-            m = _SHOW_RE.search(line.split("#", 1)[0].strip())
+    """Pass 1: emit layeredimage composites for show/scene uses of defined tags.
+
+    Reads each script exactly once (via the single-pass index) instead of
+    re-scanning every file line-by-line (Optimization #1).
+    """
+    scan_bar = ProgressBar(total=len(index.files), width=28, label="indexing script uses")
+    for file_index in index.per_file.values():
+        f = file_index.path
+        for usage in file_index.usages:
+            if usage.kind != "show_scene":
+                continue
+            m = _SHOW_RE.search(usage.statement)
             if not m or m.group(1) not in definitions:
                 continue
             tag, tail = m.group(1), (m.group(2) or "")
             block, candidates = definitions[tag]
             _emit_layeredimage_uses(
-                tag, tail, block, candidates, f, no, defaults, emit_wrapper, config
+                tag,
+                tail,
+                block,
+                candidates,
+                f,
+                usage.line,
+                usage.statement,
+                defaults,
+                emit_wrapper,
+                config,
             )
-        scanned_lines += len(text.splitlines())
-        pct = int(scanned_lines * 100 / max(total_lines, 1))
-        if pct != last_percent:
-            scan_bar.update(scanned_lines)
-            last_percent = pct
+        scan_bar.update(1)
     scan_bar.finish()
 
 
 def _emit_layeredimage_uses(
     tag: str, tail: str, block: ScriptBlock, candidates: list[Layer],
-    f: Path, no: int, defaults: dict[str, object], emit_wrapper, config: GameConfig,
+    f: Path, no: int, statement: str, defaults: dict[str, object],
+    emit_wrapper, config: GameConfig,
 ) -> None:
     attr_tokens = set(re.findall(r"\b[a-zA-Z][\w]*\b", tail))
     valid_attrs = {x.attribute for x in candidates if x.attribute}
@@ -342,21 +310,11 @@ def _emit_layeredimage_uses(
         {
             "script": f.relative_to(config.game_root.parent).as_posix(),
             "line": no,
-            "statement": _line_statement(f, no),
+            "statement": statement,
         }
     ]
     if resolved:
         emit_wrapper(tag, "layeredimage", resolved, locations, block)
-
-
-def _line_statement(f: Path, line_no: int) -> str:
-    try:
-        lines = f.read_text(encoding="utf-8-sig", errors="replace").splitlines()
-        if 1 <= line_no <= len(lines):
-            return lines[line_no - 1].split("#", 1)[0].strip()
-    except OSError:
-        pass
-    return ""
 
 
 # ---------------------------------------------------------------------- #
@@ -371,27 +329,34 @@ class _DeclBlock:
         self.line = line
 
 
-def _process_image_declarations(
-    script_files: list[Path],
-    image_declarations,
+def _process_image_declarations_from_index(
+    index: ScriptIndex,
+    image_declarations: dict[str, ImageDeclaration],
     emit_wrapper,
     dynamic_declarations: list[dict],
     config: GameConfig,
 ) -> None:
+    """Pass 2: emit composites for show/scene uses of image declarations.
+
+    Consumes the single-pass index instead of re-reading every script
+    (Optimization #1).
+    """
     path_regex = config.path_regex()
 
-    for f in script_files:
-        for no, raw in enumerate(f.read_text(encoding="utf-8-sig", errors="replace").splitlines(), 1):
-            use = _DECLARATION_USE_RE.search(raw.split("#", 1)[0].strip())
-            if not use or use.group(1) not in image_declarations:
+    for file_index in index.per_file.values():
+        f = file_index.path
+        for usage in file_index.usages:
+            if usage.kind != "show_scene":
                 continue
-            name = use.group(1)
+            name = usage.tag
+            if name not in image_declarations:
+                continue
             decl = image_declarations[name]
             expression = decl.expression
             loc = {
                 "script": f.relative_to(config.game_root.parent).as_posix(),
-                "line": no,
-                "statement": raw.split("#", 1)[0].strip(),
+                "line": usage.line,
+                "statement": usage.statement,
             }
             dynamic = any(
                 token in expression
@@ -432,9 +397,9 @@ def _process_image_declarations(
                     expression,
                 )
             )
-            for index, match in enumerate(position_pairs):
-                if index < len(layers):
-                    layers[index] = layers[index].replace(
+            for pair_index, match in enumerate(position_pairs):
+                if pair_index < len(layers):
+                    layers[pair_index] = layers[pair_index].replace(
                         offset=(int(match.group(1)), int(match.group(2)))
                     )
             emit_wrapper(name, "image_declaration", layers, [loc], _DeclBlock(decl.script, decl.line))
@@ -444,32 +409,38 @@ def _process_image_declarations(
 # Pass 3: screen stacks
 # ---------------------------------------------------------------------- #
 
-def _process_screen_stacks(
-    script_files: list[Path],
+def _process_screen_stacks_from_index(
+    index: ScriptIndex,
     screens: dict[str, ScriptBlock],
     definitions: dict[str, tuple[ScriptBlock, list[Layer]]],
     defaults: dict[str, object],
     emit_wrapper,
     config: GameConfig,
 ) -> None:
+    """Pass 3: emit composites for show screen uses of defined screens.
+
+    Consumes the single-pass index instead of re-reading every script
+    (Optimization #1).
+    """
     screen_stack_cache = {
         name: parse_screen_stack(block, definitions, config)
         for name, block in screens.items()
     }
     screen_bar = ProgressBar(
-        total=len(script_files), width=28, label="resolving screen stacks"
+        total=len(index.files), width=28, label="resolving screen stacks"
     )
-    for f in script_files:
-        lines = f.read_text(encoding="utf-8-sig", errors="replace").splitlines()
-        for no, raw in enumerate(lines, 1):
-            sm = re.search(r"^\s*show\s+screen\s+([\w.]+)", raw.split("#", 1)[0].strip())
-            if not sm or sm.group(1) not in screens:
+    for file_index in index.per_file.values():
+        f = file_index.path
+        for usage in file_index.usages:
+            if usage.kind != "show_screen":
                 continue
-            name = sm.group(1)
-            block = screens[sm.group(1)]
+            name = usage.tag
+            if name not in screens:
+                continue
+            block = screens[name]
             stack = list(screen_stack_cache[name])  # shallow copy
             if stack:
-                call_state = state_at_call(f, no, defaults, config)
+                call_state = state_at_call(f, usage.line, defaults, config)
                 selected: list[Layer] = []
 
                 chained: dict[str, list[Layer]] = defaultdict(list)
@@ -505,11 +476,11 @@ def _process_screen_stacks(
 
                 if selected:
                     relevant_names = {
-                        name
+                        used_name
                         for layer in stack
                         for condition in layer.conditions
-                        for name in re.findall(r"\b[A-Za-z_]\w*\b", condition)
-                        if name not in {"True", "False", "and", "or", "not"}
+                        for used_name in re.findall(r"\b[A-Za-z_]\w*\b", condition)
+                        if used_name not in {"True", "False", "and", "or", "not"}
                     }
                     state_snapshot = {
                         key: call_state.values[key]
@@ -523,8 +494,8 @@ def _process_screen_stacks(
                         [
                             {
                                 "script": f.relative_to(config.game_root.parent).as_posix(),
-                                "line": no,
-                                "statement": raw.split("#", 1)[0].strip(),
+                                "line": usage.line,
+                                "statement": usage.statement,
                                 "state_snapshot": state_snapshot,
                             }
                         ],
@@ -540,9 +511,9 @@ def _process_screen_stacks(
 
 def _emit_record(
     name: str, kind: str, layers: list[Layer], locations: list[dict], block: ScriptBlock,
-    config: GameConfig, resolver: Resolver, compositor: Compositor,
+    index: ScriptIndex, config: GameConfig, resolver: Resolver, compositor: Compositor,
     associator: CharacterAssociator, *,
-    dry_run: bool = False, device: str = "auto",
+    dry_run: bool = False,
 ) -> tuple[CompositeRecord | None, tuple[str, str, str] | None]:
     """Register a composite record (and optionally render its PNG).
 
@@ -587,13 +558,40 @@ def _emit_record(
     target = paths["output_dir"] / status / family / sub / f"{name}__{digest}.png"
     dimensions: tuple[int, int] | None = None
 
+    # Optimization #5: skip PIL compositing when the output already exists and
+    # its inputs (resolved sources, offsets, canvas size) are unchanged.
+    content_hash = _content_hash(normalized, resolver)
+    hash_path = target.with_name(f"{target.name}.hash")
+
     if not dry_run:
         target.parent.mkdir(parents=True, exist_ok=True)
-        image = compositor.composite(normalized, canvas_size=None)
-        if image is None:
-            return None, None
-        dimensions = (int(image.size[0]), int(image.size[1]))
-        image.save(target)
+        skip = False
+        if target.is_file() and hash_path.is_file():
+            try:
+                stored = json.loads(hash_path.read_text(encoding="utf-8"))
+                dims = stored.get("dimensions")
+                if (
+                    stored.get("hash") == content_hash
+                    and isinstance(dims, list)
+                    and len(dims) == 2
+                ):
+                    skip = True
+                    dimensions = (int(dims[0]), int(dims[1]))
+            except (OSError, json.JSONDecodeError, TypeError, ValueError):
+                skip = False
+        if not skip:
+            image = compositor.composite(normalized, canvas_size=None)
+            if image is None:
+                return None, None
+            dimensions = (int(image.size[0]), int(image.size[1]))
+            image.save(target)
+            try:
+                hash_path.write_text(
+                    json.dumps({"hash": content_hash, "dimensions": [dimensions[0], dimensions[1]]}),
+                    encoding="utf-8",
+                )
+            except OSError:
+                pass
 
     family2 = ""
     for x in normalized:
@@ -659,7 +657,12 @@ def _emit_record(
             record = record.replace(character_name=associator.display_name(char_folder))
     elif family2 == "scene":
         record = record.replace(family="scene")
-        dialog = find_nearby_dialog(block.path, block.line)
+        file_index = index.per_file.get(block.path)
+        dialog = find_nearby_dialog(
+            block.path,
+            block.line,
+            lines=list(file_index.lines) if file_index is not None else None,
+        )
         if dialog:
             record = record.replace(
                 dialog_context=tuple(
@@ -679,3 +682,29 @@ def _record_key(record: CompositeRecord) -> tuple[str, str, str]:
     )
     digest = hashlib.sha1(semantic.encode()).hexdigest()[:12]
     return (record.kind, record.name, digest)
+
+
+def _content_hash(layers: list[Layer], resolver: Resolver) -> str:
+    """Content hash used to skip unchanged composites (Optimization #5).
+
+    Hashes the sorted list of resolved source paths plus offsets and canvas
+    size.  If these inputs are unchanged since the last run the composited PNG
+    is byte-identical, so PIL compositing can be skipped entirely.
+    """
+    canvas = next((str(l.canvas_size) for l in layers if l.canvas_size), "none")
+    entries = [f"canvas={canvas}"]
+    for layer in sorted(
+        layers,
+        key=lambda l: (
+            l.source,
+            str(l.offset) if l.offset is not None else "",
+            str(l.offset_rel) if l.offset_rel is not None else "",
+            str(l.canvas_size) if l.canvas_size is not None else "",
+        ),
+    ):
+        resolved = resolver.resolve(layer.source)
+        entries.append(
+            f"{layer.source}|{resolved.as_posix() if resolved is not None else ''}|"
+            f"{layer.offset}|{layer.offset_rel}|{layer.canvas_size}"
+        )
+    return hashlib.sha1("\n".join(entries).encode()).hexdigest()[:16]

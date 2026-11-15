@@ -136,22 +136,37 @@ class CharacterAssociator:
     def display_name(self, char_folder: str) -> str:
         """Return the human-readable display name for a character asset folder."""
         if self._display_names is None:
-            self._display_names = self._build_display_names()
+            self._aliases_cache, self._xxx_tags_cache, self._display_names = (
+                self._build_aliases_and_display_names()
+            )
         return self._display_names.get(char_folder, char_folder)
 
     # -- internal ---------------------------------------------------------
 
     def _aliases(self) -> dict[str, set[str]]:
         if self._aliases_cache is None:
-            self._aliases_cache, self._xxx_tags_cache = self._build_aliases()
+            self._aliases_cache, self._xxx_tags_cache, self._display_names = (
+                self._build_aliases_and_display_names()
+            )
         return self._aliases_cache
 
     def _xxx_tags(self) -> set[str]:
         if self._xxx_tags_cache is None:
-            self._aliases_cache, self._xxx_tags_cache = self._build_aliases()
+            self._aliases_cache, self._xxx_tags_cache, self._display_names = (
+                self._build_aliases_and_display_names()
+            )
         return self._xxx_tags_cache
 
-    def _build_aliases(self) -> tuple[dict[str, set[str]], set[str]]:
+    def _build_aliases_and_display_names(
+        self,
+    ) -> tuple[dict[str, set[str]], set[str], dict[str, str]]:
+        """Build the alias map and display-name map in a single script walk.
+
+        ``_build_aliases`` and ``_build_display_names`` used to walk every
+        ``.rpy`` file separately, regex-matching every line each time.
+        Optimization #4 merges them into one pass: each file is opened and read
+        exactly once, and both structures are populated from the same matches.
+        """
         chars_dir = self.config.char_dir()
         folders = (
             {p.name.lower() for p in chars_dir.iterdir() if p.is_dir()}
@@ -159,6 +174,7 @@ class CharacterAssociator:
             else set()
         )
         aliases: dict[str, set[str]] = defaultdict(set)
+        display_by_folder: dict[str, str] = {}
         for folder in folders:
             aliases[_sub_non_alnum(folder)].add(folder)
 
@@ -166,73 +182,45 @@ class CharacterAssociator:
             if "archive" in script.parts or "cache" in script.parts:
                 continue
             try:
-                for raw in script.read_text(encoding="utf-8-sig", errors="replace").splitlines():
-                    match = _CHARACTER_DEF_RE.match(raw.split("#", 1)[0].strip())
-                    if not match:
-                        continue
-                    speaker, _, display_name, tail = match.groups()
-                    display = _sub_non_alnum(display_name).lower()
-                    image_match = _IMAGE_TAG_RE.search(tail)
-                    image_tag = image_match.group(2).lower() if image_match else ""
-                    candidates: set[str] = set()
-                    if display in folders:
-                        candidates.add(display)
-                    for word in _WORD_RE.findall(display_name.lower()):
-                        if word in folders:
-                            candidates.add(word)
-                    if image_tag in folders:
-                        candidates.add(image_tag)
-                    if not candidates:
-                        canonical = _sub_non_alnum(display_name).lower().strip("_")
-                        if canonical:
-                            candidates.add(canonical)
-                    for canonical in candidates:
-                        aliases[display].add(canonical)
-                        aliases[_sub_non_alnum(speaker).lower()].add(canonical)
-                        if image_tag:
-                            aliases[_sub_non_alnum(image_tag)].add(canonical)
+                lines = script.read_text(encoding="utf-8-sig", errors="replace").splitlines()
             except OSError:
                 continue
-        return aliases, folders
-
-    def _build_display_names(self) -> dict[str, str]:
-        display_by_folder: dict[str, str] = {}
-        for script in files(self.config):
-            if "archive" in script.parts or "cache" in script.parts:
-                continue
-            try:
-                for raw in script.read_text(encoding="utf-8-sig", errors="replace").splitlines():
-                    m = _CHARACTER_DEF_RE.match(raw.split("#", 1)[0].strip())
-                    if not m:
+            for raw in lines:
+                match = _CHARACTER_DEF_RE.match(raw.split("#", 1)[0].strip())
+                if not match:
+                    continue
+                speaker, _, display_name, tail = match.groups()
+                display = _sub_non_alnum(display_name).lower()
+                image_match = _IMAGE_TAG_RE.search(tail)
+                image_tag = image_match.group(2).lower() if image_match else ""
+                candidates: set[str] = set()
+                if display in folders:
+                    candidates.add(display)
+                for word in _WORD_RE.findall(display_name.lower()):
+                    if word in folders:
+                        candidates.add(word)
+                if image_tag in folders:
+                    candidates.add(image_tag)
+                if not candidates:
+                    canonical = _sub_non_alnum(display_name).lower().strip("_")
+                    if canonical:
+                        candidates.add(canonical)
+                # Alias map: speaker/display/image-tag nicknames -> canonical folder.
+                for canonical in candidates:
+                    aliases[display].add(canonical)
+                    aliases[_sub_non_alnum(speaker).lower()].add(canonical)
+                    if image_tag:
+                        aliases[_sub_non_alnum(image_tag)].add(canonical)
+                # Display-name map: canonical folder -> longest display name.
+                for canonical in candidates:
+                    if canonical in self.config.non_character_folders:
                         continue
-                    _, _, display_name, tail = m.groups()
-                    image_match = _IMAGE_TAG_RE.search(tail)
-                    image_tag = image_match.group(2).lower() if image_match else ""
-                    chars_dir = self.config.char_dir()
-                    folders = (
-                        {p.name.lower() for p in chars_dir.iterdir() if p.is_dir()}
-                        if chars_dir.is_dir()
-                        else set()
-                    )
-                    candidates: set[str] = set()
-                    display_clean = _sub_non_alnum(display_name).lower()
-                    if display_clean in folders:
-                        candidates.add(display_clean)
-                    for word in _WORD_RE.findall(display_name.lower()):
-                        if word in folders:
-                            candidates.add(word)
-                    if image_tag in folders:
-                        candidates.add(image_tag)
-                    for canonical in candidates:
-                        if canonical not in self.config.non_character_folders:
-                            if (
-                                canonical not in display_by_folder
-                                or len(display_name) > len(display_by_folder[canonical])
-                            ):
-                                display_by_folder[canonical] = display_name
-            except OSError:
-                continue
-        return display_by_folder
+                    if (
+                        canonical not in display_by_folder
+                        or len(display_name) > len(display_by_folder[canonical])
+                    ):
+                        display_by_folder[canonical] = display_name
+        return aliases, folders, display_by_folder
 
 
 def _sub_non_alnum(s: str) -> str:
