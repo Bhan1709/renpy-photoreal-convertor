@@ -170,7 +170,7 @@ Example extraction path structure:
 
 ### Package Management
 
-- **rpa-toolkit** installed via: `uv add git+https://github.com/regiellis/rpa-toolkit.git@3.0.0`
+- **rpa-toolkit** installed via: `uv add git+https://github.com/regiellis/rpa-toolkit.git@435f202e7cb9aeeaf6c006cf928d9661f8830e6e`
 - Added to `pyproject.toml` dependencies
 - Integrated with `mise` through `.mise.toml` scripts section
 

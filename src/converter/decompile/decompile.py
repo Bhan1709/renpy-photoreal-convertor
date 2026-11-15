@@ -10,7 +10,7 @@ _game_folder_rel_path: pathlib.Path | None = None
 
 
 def set_game_folder_rel_path(rel_path: pathlib.Path) -> None:
-    """Cache the relative path of the \game folder for other subpackages.
+    r"""Cache the relative path of the \game folder for other subpackages.
 
     This should be called after find_game_folders() to make the game folder
     location available to other converter subpackages.
@@ -24,7 +24,7 @@ def set_game_folder_rel_path(rel_path: pathlib.Path) -> None:
 
 
 def get_game_folder_rel_path() -> pathlib.Path | None:
-    """Get the cached relative path of the \game folder.
+    r"""Get the cached relative path of the \game folder.
 
     Returns:
         The relative path to the \game folder if set, None otherwise.
@@ -38,7 +38,7 @@ RENPY_GAMES = ROOT / "renpy_game"
 
 
 def find_game_folders():
-    """Find all game folders under src/renpy_game.
+    r"""Find all game folders under src/renpy_game.
 
     Looks for \game subfolder within each game directory under
     src/renpy_game. Caches the relative path of the first game folder
