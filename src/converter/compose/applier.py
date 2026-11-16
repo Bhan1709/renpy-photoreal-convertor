@@ -126,7 +126,7 @@ class Applier:
             )
             if runtime_switch:
                 runtime_switches[key] = runtime_switch
-                used[runtime_switch["tag"]] = None
+                used[runtime_switch["tag"]] = None  # type: ignore[typeddict-item]
                 continue
             elif len(composite_tags) == 1:
                 # Single variant — direct mapping even without a switch.
@@ -200,7 +200,7 @@ class Applier:
                         "statement": info["statement"], "reason": "source_line_changed",
                     })
                     continue
-                lines[index] = _rewrite_script_line(lines[index], info["statement"], info["tag"])
+                lines[index] = _rewrite_script_line(lines[index], info["statement"], info["tag"])  # type: ignore[typeddict-item]
                 runtime_applied += 1
                 changed = True
             if changed:
@@ -218,15 +218,15 @@ class Applier:
         ]
         for name, rel in sorted(image_tags.items()):
             declarations.append(f'image {name} = "../{rel.replace(chr(92), "/")}"')
-        wrapper_declarations = {info["tag"]: info for info in runtime_switches.values()}
-        for info in sorted(wrapper_declarations.values(), key=lambda item: str(item["tag"])):
-            branches = info["branches"]
-            declarations.append(f'image {info["tag"]} = ConditionSwitch(')
+        wrapper_declarations = {info["tag"]: info for info in runtime_switches.values()}  # type: ignore[typeddict-item]
+        for info in sorted(wrapper_declarations.values(), key=lambda item: str(item["tag"])):  # type: ignore[typeddict-item]
+            branches = info["branches"]  # type: ignore[typeddict-item]
+            declarations.append(f'image {info["tag"]} = ConditionSwitch(')  # type: ignore[typeddict-item]
             declarations.extend(
                 f'    {json.dumps(condition)}, {json.dumps(tag)},'
                 for condition, tag in zip(branches[::2], branches[1::2])
             )
-            declarations.append(f'    "True", {json.dumps(info["fallback"])},')
+            declarations.append(f'    "True", {json.dumps(info["fallback"])},')  # type: ignore[typeddict-item]
             declarations.append(")")
         declaration_path = self._declaration_path()
         declaration_path.write_text("\n".join(declarations) + "\n", encoding="utf-8-sig")
