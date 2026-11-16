@@ -30,8 +30,13 @@ arg "<ctx>" default="32k" help="Context size" {
 run = "python -m agent qwen-3-vl-{{ usage.ctx }}"
 
 [tasks.decompile]
-description = "Generalized decompile: finds the first \game folder under src/renpy_game, copies relevant files into src/renpy_game/game, extracts .rpa archives, decompiles .rpyc files, and writes src/converter/config.json"
+description = 'Generalized decompile: finds the first \game folder under src/renpy_game, copies relevant files into src/renpy_game/game, extracts .rpa archives, decompiles .rpyc files, and writes src/converter/config.json'
 run = "python src/converter/decompile/decompile.py"
+
+[tasks.update-exclusions]
+description = 'Add exclusion pattern(s) to, or sync, src/converter/config.json'
+usage = 'arg "<pattern>" default="" help="Exclusion pattern to add; omit to sync/re-run decompile preserving existing exclusions"'
+run = "python src/converter/decompile/update_exclusions.py {{ usage.pattern }}"
 
 [tasks.compose]
 description = "Compose composites + write manifest for a game (skip apply)"
