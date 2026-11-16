@@ -17,45 +17,17 @@ from pathlib import Path
 from .config import GameConfig
 from .errors import ComposeError
 from .models import Layer
-
-# --------------------------------------------------------------------------- #
-# Regexes
-# --------------------------------------------------------------------------- #
-
-# Matches:  <indent><layeredimage|screen> <name>(...):  at block start
-BLOCK_RE = re.compile(
-    r"^(\s*)(layeredimage|screen)\s+([\w.]+)(?:\([^\n]*\))?\s*:\s*$"
+from .regexp import (
+    BLOCK_RE,
+    CHARACTER_DEF_RE,
+    IMAGE_RE,
+    IMAGE_TAG_RE,
+    NARRATOR_RE,
+    NOT_SPEAKER,
+    SAY_RE,
+    SHOW_SCENE_RE,
+    SHOW_SCREEN_RE,
 )
-
-# Matches:  <indent>image <name> = <expression>
-IMAGE_RE = re.compile(r"^(\s*)image\s+([\w.]+)\s*=\s*(.*)$")
-
-# Matches:  show|scene <tag> [<transform args>]
-SHOW_SCENE_RE = re.compile(r"^\s*(?:show|scene)\s+(?!screen\b)([\w.]+)(?:\s+([^\n#]+))?")
-
-# Matches:  show screen <name>
-SHOW_SCREEN_RE = re.compile(r"^\s*show\s+screen\s+([\w.]+)")
-
-# Matches:  default <name> = <value>
-DEFAULT_RE = re.compile(
-    r"^\s*default\s+([A-Za-z_]\w*)\s*=\s*(True|False|-?\d+(?:\.\d+)?|'[^']*'|\"[^\"]*\")"
-)
-
-# Matches:  define <var> = Character("<display>", ... image="<tag>" ...)
-CHARACTER_DEF_RE = re.compile(
-    r"""^\s*define\s+([A-Za-z_]\w*)\s*=\s*Character\(\s*(['"])(.*?)\2(.*?)\)\s*$"""
-)
-
-# Keywords that are not dialogue speakers even when followed by a quoted string.
-_NOT_SPEAKER = {
-    "add", "show", "scene", "hide", "pause", "jump", "call", "return", "with",
-    "as", "to", "parent", "zorder", "if", "elif", "else", "while", "for",
-    "in", "not", "and", "or", "True", "False", "None", "screen", "layeredimage",
-    "image", "define", "default", "init", "label", "menu", "python",
-}
-
-SAY_RE = re.compile(r'^(\s*)([A-Za-z_]\w*)\s+(".*")(\s*#.*)?$')
-NARRATOR_RE = re.compile(r'^(\s*)(".*")(\s*#.*)?$')
 
 
 class ParseError(ComposeError):
@@ -128,9 +100,8 @@ def files(
     return result
 
 
-def blocks_from(paths: list[Path], config: GameConfig | None = None) -> list[ScriptBlock]:
+def blocks_from(paths: list[Path]) -> list[ScriptBlock]:
     """Parse all ``layeredimage`` and ``screen`` blocks from the given scripts."""
-    config = config or _require_config()
     out: list[ScriptBlock] = []
     for path in paths:
         try:
@@ -161,14 +132,13 @@ def blocks_from(paths: list[Path], config: GameConfig | None = None) -> list[Scr
     return out
 
 
-def parse_layered(block: ScriptBlock, config: GameConfig | None = None) -> list[Layer]:
+def parse_layered(block: ScriptBlock, config: GameConfig) -> list[Layer]:
     """Read source paths and nearby literal attribute/group/condition declarations
     from a ``layeredimage`` block.
 
     Returns one :class:`Layer` per asset-referencing line, with conditions,
     group, attribute, and offset information populated.
     """
-    config = config or _require_config()
     records: list[Layer] = []
     group = ""
     group_indent: int | None = None
@@ -260,14 +230,13 @@ def parse_layered(block: ScriptBlock, config: GameConfig | None = None) -> list[
 
 def parse_screen_stack(
     block: ScriptBlock, definitions: dict[str, tuple[ScriptBlock, list[Layer]]],
-    config: GameConfig | None = None,
+    config: GameConfig,
 ) -> list[Layer]:
     """Parse the body of a ``screen`` block into a stack of layers.
 
     Resolves ``add <path>`` and named layeredimage displayables, tracking
     if/elif/else chains so mutually-exclusive alternatives are kept together.
     """
-    config = config or _require_config()
     stack: list[Layer] = []
     conditions: list[tuple[int, str]] = []
     chain_counter = 0
@@ -382,10 +351,9 @@ def _extend_with_definition(
 
 
 def parse_image_declarations(
-    script_files: list[Path], config: GameConfig | None = None,
+    script_files: list[Path], config: GameConfig,
 ) -> dict[str, ImageDeclaration]:
     """Index all ``image`` declarations that reference asset paths."""
-    config = config or _require_config()
     declarations: dict[str, ImageDeclaration] = {}
     for path in script_files:
         source_lines = path.read_text(encoding="utf-8-sig", errors="replace").splitlines()
@@ -451,7 +419,7 @@ def find_nearby_dialog(
         m = SAY_RE.match(raw)
         if m:
             speaker = m.group(2)
-            if speaker in _NOT_SPEAKER:
+            if speaker in NOT_SPEAKER:
                 continue
             dialog_text = m.group(3)
             if _looks_like_asset_path(dialog_text):
@@ -494,8 +462,6 @@ def _parse_position_from_transforms(transforms: str) -> tuple[tuple[float, float
 # --------------------------------------------------------------------------- #
 # Single-pass script indexer (Optimization #1)
 # --------------------------------------------------------------------------- #
-
-_IMAGE_TAG_RE = re.compile(r"""image\s*=\s*(['"])(.*?)\1""")
 
 
 @dataclass(frozen=True)
@@ -727,14 +693,9 @@ def _parse_character_defs_in_lines(lines: list[str], path: Path) -> list[tuple[s
         if not match:
             continue
         speaker, _, display_name, tail = match.groups()
-        image_match = _IMAGE_TAG_RE.search(tail)
+        image_match = IMAGE_TAG_RE.search(tail)
         image_tag = image_match.group(2).lower() if image_match else ""
         defs.append((speaker, display_name, image_tag))
     return defs
 
 
-def _require_config() -> GameConfig:
-    """Called when no config was explicitly passed — should not happen in refactored code."""
-    raise ComposeError(
-        "compose config not initialized; pass a GameConfig explicitly"
-    )

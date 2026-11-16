@@ -26,7 +26,7 @@ from typing import cast
 
 from .config import GameConfig
 from .errors import ManifestError
-from .models import CompositeManifest
+from .models import CompositeManifest, CompositeRecord
 
 KNOWN_FAMILIES = ("bg", "char", "scene", "gui", "xxx", "other")
 
@@ -82,7 +82,7 @@ class ManifestWriter:
                 cat_records = categories.get(cat_name, [])
                 cat_manifest = {
                     "category": cat_name,
-                    "composites": [_record_to_dict(r) for r in cat_records],
+                    "composites": [r.to_dict() for r in cat_records],
                     "summary": {"composites": len(cat_records)},
                 }
                 cat_path = reports_dir / f"manifest_{cat_name}.json"
@@ -138,7 +138,7 @@ class ManifestWriter:
 
         return CompositeManifest(
             composites=tuple(
-                CompositeManifest._record_from_dict(c) for c in all_composites
+                CompositeRecord.from_dict(c) for c in all_composites
             ),
             dynamic_states=index.get("dynamic_states", []),
             image_declarations=index.get("image_declarations", []),
@@ -146,61 +146,6 @@ class ManifestWriter:
             unresolved=tuple(index.get("unresolved", [])),
             summary=index.get("summary", {}),
         )
-
-
-def _record_to_dict(record) -> dict:
-    """Serialise a single CompositeRecord to a JSON-friendly dict."""
-    d = {
-        "composite_path": record.composite_path,
-        "name": record.name,
-        "kind": record.kind,
-        "status": record.status,
-        "definition": {"script": record.definition.script, "line": record.definition.line},
-        "usage_locations": [
-            {
-                "script": loc.script,
-                "line": loc.line,
-                "statement": loc.statement,
-                **({"state_snapshot": loc.state_snapshot} if loc.state_snapshot else {}),
-            }
-            for loc in record.usage_locations
-        ],
-        "ordered_layers": [
-            {
-                "source": l.source,
-                "line": l.line,
-                "group": l.group,
-                "conditions": list(l.conditions),
-                "attribute": l.attribute,
-                "default_attribute": l.default_attribute,
-                "offset": list(l.offset) if l.offset else None,
-                "offset_rel": list(l.offset_rel) if l.offset_rel else None,
-                "chain_id": l.chain_id,
-                "resolved_path": str(l.resolved_path) if l.resolved_path else None,
-                "resolution_method": l.resolution_method,
-                "warning": l.warning,
-                "unresolved_conditions": list(l.unresolved_conditions),
-                "via_image_tag": l.via_image_tag,
-                "role": l.role,
-                "canvas_size": list(l.canvas_size) if l.canvas_size else None,
-                "declaration_expression": l.declaration_expression,
-            }
-            for l in record.ordered_layers
-        ],
-        "dimensions": list(record.dimensions) if record.dimensions else None,
-        "dynamic_conditions": list(record.dynamic_conditions),
-        "resolved_conditions": list(record.resolved_conditions),
-        "family": record.family,
-    }
-    if record.characters is not None:
-        d["characters"] = list(record.characters)
-    if record.character_name is not None:
-        d["character_name"] = record.character_name
-    if record.character_association_status is not None:
-        d["character_association_status"] = record.character_association_status
-    if record.dialog_context is not None:
-        d["dialog_context"] = list(record.dialog_context)
-    return d
 
 
 def _print_summary(manifest: CompositeManifest, association_summary: object | None = None) -> None:

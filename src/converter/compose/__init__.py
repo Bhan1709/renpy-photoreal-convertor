@@ -16,7 +16,7 @@ Public API
 
 Configuration::
 
-    from converter.compose.config import GameConfig, load_config, default_config
+    from converter.compose.config import GameConfig, load_config
 
 Compose (manifest + PNGs)::
 
@@ -38,15 +38,14 @@ Restore (revert modified .rpy files from archive)::
 
 One-shot CLI::
 
-    python -m converter.compose --game MyGame
-    python -m converter.compose --game MyGame --restore
+    python -m converter.compose --config src/converter/config.json
+    python -m converter.compose --config src/converter/config.json --restore
 """
 
 from __future__ import annotations
 
 from converter.restore import (
     RestoreError,
-    find_archive,
     restore_from_manifest,
     restore_rpy_files,
 )
@@ -56,7 +55,7 @@ from .character_associator import CharacterAssociator
 from .composer import Composer
 from .compositor import Compositor, CPUCompositor
 from .conditions import CallState
-from .config import GameConfig, default_config, load_config
+from .config import GameConfig, load_config
 from .errors import (
     ApplyError,
     AssetResolutionError,
@@ -97,8 +96,6 @@ __all__ = [
     "ManifestWriter",
     "RestoreError",
     "UsageLocation",
-    "default_config",
-    "find_archive",
     "load_config",
     "restore_from_manifest",
     "restore_rpy_files",
