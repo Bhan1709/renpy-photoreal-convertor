@@ -90,7 +90,7 @@ class Applier:
             for c in cat_data.get("composites", []):
                 record = CompositeManifest._record_from_dict(c)
                 all_records.append(record)
-                if record.status != "static" or record.kind == "screen":
+                if record.status != "static":
                     continue
                 for loc in record.usage_locations:
                     if "/archive/" in loc.script:
@@ -119,23 +119,26 @@ class Applier:
                 used[name] = next(iter(candidates))[0].composite_path
                 continue
 
-            if variables - written:
-                runtime_switch, _ = self._runtime_switch_for_usage(
-                    candidates, key, statement, all_records
-                )
-                if runtime_switch:
-                    runtime_switches[key] = runtime_switch
-                    used[runtime_switch["tag"]] = None
-                    continue
-                skipped.append({
-                    "script": key[0], "line": key[1],
-                    "statement": statement,
-                    "global_defaults": sorted(variables - written),
-                })
+            # Multiple variants (runtime-dependent) — try to build a
+            # ConditionSwitch so the live script can select at runtime.
+            runtime_switch, _ = self._runtime_switch_for_usage(
+                candidates, key, statement, all_records
+            )
+            if runtime_switch:
+                runtime_switches[key] = runtime_switch
+                used[runtime_switch["tag"]] = None
+                continue
             elif len(composite_tags) == 1:
+                # Single variant — direct mapping even without a switch.
                 name = next(iter(composite_tags))
                 mapping[key] = {"name": name, "statement": statement}
                 used[name] = next(iter(candidates))[0].composite_path
+                continue
+            skipped.append({
+                "script": key[0], "line": key[1],
+                "statement": statement,
+                "global_defaults": sorted(variables - written),
+            })
 
         # Build the merged manifest from the per-category composites streamed
         # above, so the apply pass can resolve generated images / missing files.
@@ -377,7 +380,7 @@ class Applier:
         self, candidates: list[tuple], key: tuple[str, int], statement: str, all_records,
     ) -> tuple[_CompositeUsageInfo | None, list[str]]:
         """Build a runtime selector for generated snapshots, with the live image as fallback."""
-        if not candidates or candidates[0][0].kind != "layeredimage":
+        if not candidates or candidates[0][0].kind not in ("layeredimage", "screen"):
             return None, []
         exemplar = candidates[0][0]
         signatures = {_attribute_signature(record) for record, _ in candidates}
@@ -387,7 +390,7 @@ class Applier:
         definition_key = (exemplar.definition.script, exemplar.definition.line)
         variants = [
             record for record in all_records
-            if record.kind == "layeredimage"
+            if record.kind in ("layeredimage", "screen")
             and record.name == exemplar.name
             and (record.definition.script, record.definition.line) == definition_key
             and record.status == "static"
@@ -473,7 +476,8 @@ class Applier:
             self._definition_condition_cache[cache_key] = None
             return None
         header = re.match(
-            r"^(\s*)layeredimage\s+([\w.]+)(?:\([^\n]*\))?\s*:\s*$", lines[start - 1]
+            r"^(\s*)(?:layeredimage|screen)\s+([\w.]+)(?:\([^\n]*\))?\s*:\s*$",
+            lines[start - 1],
         )
         if not header or header.group(2) != record.name:
             self._definition_condition_cache[cache_key] = None
