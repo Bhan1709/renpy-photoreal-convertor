@@ -103,6 +103,7 @@ class CharacterAssociator:
                         ).splitlines()
                     except OSError:
                         lines = []
+                assert lines is not None
                 before = lines[max(0, block.line - 80): block.line - 1]
                 base_line = max(1, block.line - 79)
                 headings = [
