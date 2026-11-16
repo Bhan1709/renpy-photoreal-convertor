@@ -82,6 +82,11 @@ class GameConfig:
     )
     path_aliases: dict[str, str] = field(default_factory=lambda: dict(DEFAULT_PATH_ALIASES))
     game_defaults: dict[str, object] = field(default_factory=lambda: dict(DEFAULT_GAME_DEFAULTS))
+    # Scripts to scan during compose, relative to game_root.  When set (from the
+    # decompile-generated config.json), compose only parses these .rpy / _ren.py
+    # files instead of sweeping the whole game folder.
+    rpy_files: list[str] | None = None
+    ren_py_files: list[str] | None = None
     output_dir: Path | None = None
     manifest_path: Path | None = None
     declaration_path: Path | None = None
@@ -197,15 +202,74 @@ class GameConfig:
         }
 
 
+def load_decompile_config(config_path: str | Path) -> GameConfig:
+    """Build a :class:`GameConfig` from the decompile-generated config.json.
+
+    Reads ``src/converter/config.json`` (produced by :mod:`converter.decompile`)
+    which contains ``game_folder``, ``rpy_files``, ``ren_py_files``,
+    ``extracted_archives``, ``image_categories`` and ``exclusion``.  Maps these
+    onto :class:`GameConfig` so compose runs based on the decompile-discovered
+    directories rather than folder-name conventions.
+
+    The ``image_categories`` map (category -> folder under ``game_folder``) is
+    converted into the canonical ``categories`` mapping.  A leading
+    ``archive/`` segment is stripped so folder names are relative to
+    ``archive_dir`` (``game_folder / "archive"``).
+    """
+    config_path = Path(config_path)
+    data = json.loads(config_path.read_text(encoding="utf-8"))
+
+    # game_folder (and rpy_files/ren_py_files) are recorded relative to the repo
+    # root / CWD where decompile ran, not relative to config.json's location
+    # (src/converter/).  Resolve against CWD.
+    def resolve_cwd(value: str) -> Path:
+        p = Path(value)
+        return p if p.is_absolute() else p.resolve()
+
+    game_folder = resolve_cwd(str(data["game_folder"]))
+    archive_dir = game_folder / "archive"
+
+    # image_categories: {"image_categories": {"bg": "archive/bgs", ...}}
+    cat_map_raw = ((data.get("image_categories") or {}).get("image_categories") or {})
+    categories: dict[str, str] = {}
+    for category in CANONICAL_CATEGORIES:
+        if category in cat_map_raw:
+            folder = str(cat_map_raw[category])
+            if folder.lower().startswith("archive/"):
+                folder = folder[len("archive/"):]
+            categories[category] = folder
+
+    rpy_files = data.get("rpy_files") or []
+    ren_py_files = data.get("ren_py_files") or []
+
+    return GameConfig(
+        name=str(data.get("source_game") or config_path.stem),
+        game_root=game_folder,
+        archive_dir=archive_dir,
+        categories=categories or dict(DEFAULT_CATEGORY_FOLDERS),
+        rpy_files=[str(p) for p in rpy_files],
+        ren_py_files=[str(p) for p in ren_py_files],
+    )
+
+
 def load_config(path: str | Path) -> GameConfig:
     """Load a :class:`GameConfig` from a JSON file.
 
     The JSON may contain any of the :class:`GameConfig` fields.  Paths are
     interpreted relative to the config file's parent directory unless they are
     absolute.
+
+    If the file is the decompile-generated config.json (has ``game_folder`` +
+    ``image_categories`` instead of ``game_root``), it is delegated to
+    :func:`load_decompile_config`.
     """
     config_path = Path(path)
     data = json.loads(config_path.read_text(encoding="utf-8"))
+
+    # Decompile schema: game_folder + image_categories -> generalized config.
+    if "game_folder" in data and "game_root" not in data:
+        return load_decompile_config(config_path)
+
     base = config_path.parent.resolve()
 
     def rel(value: str) -> Path:

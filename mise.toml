@@ -38,26 +38,23 @@ description = "Remove exclusion-pattern-matched entries from rpy_files/ren_py_fi
 run = "python src/converter/decompile/sync_exclusions.py"
 
 [tasks.compose]
-description = "Compose composites + write manifest for a game (skip apply)"
-usage = 'arg "<game>" help="Game directory name under src/renpy_game"'
-run = 'python -m converter.pipeline --game {{ usage.game }} --compose-only'
+description = "Compose composites + write manifest for a game (skip apply). Uses src/converter/config.json (no --game needed)."
+run = 'python -m converter.pipeline --compose-only'
 
 [tasks.apply]
-description = "Apply composites into live .rpy scripts for a game"
-usage = 'arg "<game>" help="Game directory name under src/renpy_game"'
-run = 'python -m converter.pipeline --game {{ usage.game }} --apply-only'
+description = "Apply composites into live .rpy scripts for a game. Uses src/converter/config.json (no --game needed)."
+run = 'python -m converter.pipeline --apply-only'
 
 [tasks.pipeline]
-description = "Full pipeline: decompile + compose for a game (skip apply)"
+description = "(deprecated) Full pipeline: decompile + compose for a game (skip apply)"
 usage = 'arg "<game>" help="Game directory name under src/renpy_game"'
 run = 'python -m converter.pipeline --game {{ usage.game }} --pipeline'
 
 [tasks.restore-decompile]
-description = "Undo decompile: remove generated .rpy and extracted archive dirs for a game"
+description = "(deprecated) Undo decompile: remove generated .rpy and extracted archive dirs for a game"
 usage = 'arg "<game>" help="Game directory name under src/renpy_game"'
 run = 'python -m converter.pipeline --game {{ usage.game }} --restore-decompile'
 
 [tasks.restore-compose]
-description = "Undo compose/apply: restore .rpy files from archive.rpa for a game"
-usage = 'arg "<game>" help="Game directory name under src/renpy_game"'
-run = 'python -m converter.pipeline --game {{ usage.game }} --restore-compose'
+description = "Undo compose/apply: restore .rpy files from archive.rpa for a game. Uses src/converter/config.json (no --game needed)."
+run = 'python -m converter.pipeline --restore-compose'
