@@ -24,16 +24,18 @@ import argparse
 import sys
 from pathlib import Path
 
+from .compose.applier import Applier
+from .compose.composer import Composer
+from .compose.config import GameConfig, load_config
+from .compose.manifest import ManifestWriter
 from .decompile.decompile import (
+    CONFIG_PATH,
     decompile_rpyc_files,
     extract_rpa_file,
     find_game_folders,
     restore_decompile,
+    sync_exclusions,
 )
-from .compose.applier import Applier
-from .compose.composer import Composer
-from .compose.config import default_config
-from .compose.manifest import ManifestWriter
 from .restore import restore_from_manifest, restore_rpy_files
 
 
@@ -54,11 +56,12 @@ def _restore_decompile_game(target_folder: Path, dry_run: bool) -> None:
         print(f"  [{status}] {path}")
 
 
-def _restore_compose_game(name: str, game_root: Path, dry_run: bool) -> None:
+def _restore_compose_game(config: GameConfig, dry_run: bool) -> None:
     """Undo compose/apply for a single game: restore .rpy files from archive.rpa."""
     # Prefer the manifest to scope the restore to touched scripts, falling back
     # to restoring every .rpy stored in the archive.
-    manifest_path = game_root.parent / "composites" / "reports" / "manifest.json"
+    manifest_path = config.resolved_paths()["manifest_path"]
+    game_root = config.game_root
     try:
         if manifest_path.is_file():
             results = restore_from_manifest(game_root, manifest_path, dry_run=dry_run)
@@ -66,7 +69,7 @@ def _restore_compose_game(name: str, game_root: Path, dry_run: bool) -> None:
             print(f"  (no manifest at {manifest_path}; restoring all .rpy from archive.rpa)")
             results = restore_rpy_files(game_root, dry_run=dry_run)
     except Exception as exc:  # noqa: BLE001
-        print(f"  [ERR] restore-compose failed for {name}: {exc}")
+        print(f"  [ERR] restore-compose failed for {config.name}: {exc}")
         return
 
     if not results:
@@ -91,7 +94,13 @@ def run_pipeline(
 
     Args:
         game_name: Process only the game whose directory under
-            ``src/renpy_game`` matches this name (``None`` = all games).
+            ``src/renpy_game`` matches this name.  Only required for the
+            folder-driven modes (``--decompile-only``, ``--pipeline``,
+            ``--restore-decompile``).  The compose-driven modes
+            (``--compose-only``, ``--apply-only``, ``--restore-compose``)
+            work exclusively from ``src/converter/config.json``, which records
+            ``game_folder``, ``rpy_files``, ``ren_py_files``, and
+            ``image_categories`` produced by decompile.
         dry_run: Compose/restore without writing; skips the apply pass.
         decompile_only: Stop after decompile + extract.
         compose_only: Compose + write manifest, then stop (skip apply).
@@ -114,8 +123,51 @@ def run_pipeline(
         print("Error: --restore-* cannot be combined with --decompile-only/--compose-only/--apply-only/--pipeline.")
         return 1
 
-    # find_game_folders() also caches the first game's relative path via
-    # set_game_folder_rel_path() so other subpackages can read it later.
+    # --- Config-driven modes: compose / apply / restore-compose ---
+    # These operate exclusively on the game_folder recorded in
+    # src/converter/config.json (produced by decompile).  No --game lookup is
+    # needed — the config is the source of truth for game_folder, rpy_files,
+    # ren_py_files, and image_categories.
+    if compose_only or apply_only or restore_compose:
+        sync_exclusions(CONFIG_PATH)
+        config = load_config(CONFIG_PATH)
+        print(f"\n=== Pipeline: {config.name} ===")
+
+        if restore_compose:
+            _restore_compose_game(config, dry_run)
+            print("\n=== Pipeline complete ===")
+            return 0
+
+        run_decompile = False
+        run_compose = not apply_only
+        run_apply = not (compose_only or dry_run)
+
+        # --- Stage 1: compose (manifest + PNGs) ---
+        if run_compose:
+            manifest = Composer(config).compose(dry_run=dry_run)
+            ManifestWriter(config).write(manifest, dry_run=dry_run)
+            if compose_only or dry_run:
+                print("\n=== Pipeline complete ===")
+                return 0
+
+        # --- Stage 2: apply (adopt composites into live .rpy scripts) ---
+        if run_apply:
+            Applier(config).apply()
+
+        print("\n=== Pipeline complete ===")
+        return 0
+
+    # --- Folder-driven modes: decompile / pipeline / restore-decompile ---
+    # These are deprecated: compose-driven modes (--compose-only/--apply-only/
+    # --restore-compose) work exclusively from src/converter/config.json.
+    # --game is honored only here and defaults to the first game found under
+    # src/renpy_game.
+    if decompile_only or pipeline or restore_decompile:
+        print(
+            "[DEPRECATED] --decompile-only/--pipeline/--restore-decompile are "
+            "folder-driven modes and will be removed in a future release. Use "
+            "the config-driven compose/apply/restore-compose modes instead.",
+        )
     folders = find_game_folders()
     if game_name:
         folders = [f for f in folders if f[0].name == game_name]
@@ -132,10 +184,6 @@ def run_pipeline(
             _restore_decompile_game(target_folder, dry_run)
             continue
 
-        if restore_compose:
-            _restore_compose_game(name, target_folder, dry_run)
-            continue
-
         # --- Forward pipeline ---
         run_decompile = not (apply_only or compose_only)
         run_compose = not apply_only or pipeline
@@ -147,12 +195,14 @@ def run_pipeline(
             if decompile_only:
                 continue
 
-        # --- Stage 2: build compose config from conventions ---
-        # default_config() locates the real \game folder under
-        # src/renpy_game/<name>/... (e.g. .../<name>-pc/game) and sets
-        # archive_dir = game_root / "archive", which is where decompile
-        # extracted each .rpa (archive.rpa -> archive/).
-        config = default_config(name) if (run_compose or run_apply) else None
+        # --- Stage 2: sync exclusions + load decompile config ---
+        config = None
+        if run_compose or run_apply:
+            # Sync user-defined exclusions (exclusion.patterns) into config.json
+            # before composing, then load the generalized config produced by
+            # decompile (game_folder, image_categories, rpy_files, ren_py_files).
+            sync_exclusions(CONFIG_PATH)
+            config = load_config(CONFIG_PATH)
 
         # --- Stage 3: compose (manifest + PNGs) ---
         if run_compose:
@@ -175,7 +225,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     ap.add_argument(
         "--game",
-        help="Game name under src/renpy_game (default: process every game found)",
+        help="Game name under src/renpy_game (only needed for --decompile-only/--pipeline/--restore-decompile; compose modes use src/converter/config.json)",
     )
     ap.add_argument(
         "--dry-run",
@@ -185,7 +235,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument(
         "--decompile-only",
         action="store_true",
-        help="Only decompile .rpyc and extract .rpa, then stop.",
+        help="(deprecated) Only decompile .rpyc and extract .rpa, then stop.",
     )
     ap.add_argument(
         "--compose-only",
@@ -195,7 +245,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument(
         "--pipeline",
         action="store_true",
-        help="Run decompile + compose, then stop (skip apply). Full pipeline without the destructive apply step.",
+        help="(deprecated) Run decompile + compose, then stop (skip apply).",
     )
     ap.add_argument(
         "--apply-only",
@@ -205,7 +255,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument(
         "--restore-decompile",
         action="store_true",
-        help="Undo decompile outputs (remove generated .rpy and extracted archive dirs).",
+        help="(deprecated) Undo decompile outputs (remove generated .rpy and extracted archive dirs).",
     )
     ap.add_argument(
         "--restore-compose",

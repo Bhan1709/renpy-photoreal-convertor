@@ -198,8 +198,9 @@ class CharacterAssociator:
         if script_lines:
             script_items: list[tuple[Path, tuple[str, ...]]] = list(script_lines.items())
         else:
+            include = set(self.config.rpy_files) if self.config.rpy_files else None
             script_items = [
-                (script, None) for script in files(self.config)
+                (script, None) for script in files(self.config, include=include)
             ]
         for script, lines in script_items:
             if lines is None:
