@@ -32,7 +32,7 @@ Apply (adopt into live scripts)::
 
 Restore (revert modified .rpy files from archive)::
 
-    from converter.compose.restore import restore_rpy_files, restore_from_manifest
+    from converter.restore import restore_rpy_files, restore_from_manifest
     results = restore_rpy_files(config)  # all .rpy files
     results = restore_from_manifest(config)  # only files touched by apply
 
