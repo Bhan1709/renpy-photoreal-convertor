@@ -20,7 +20,7 @@ import argparse
 import shutil
 import sys
 
-from converter.restore import restore_from_manifest
+from converter.restore import restore_decompile, restore_from_manifest
 
 from .applier import Applier
 from .composer import Composer
@@ -64,6 +64,8 @@ def main(argv=None) -> int:
     # Restore operations
     ap.add_argument("--restore-compose", action="store_true",
                     help="Restore .rpy files touched by the apply pass (per manifest)")
+    ap.add_argument("--restore-decompile", action="store_true",
+                    help="Remove the extracted game folder and config.json (undo decompile)")
 
     args = ap.parse_args(argv)
 
@@ -77,6 +79,15 @@ def main(argv=None) -> int:
         )
         action = "Would restore" if args.dry_run else "Restored"
         print(f"{action} {len(results)} .rpy file(s) from manifest:")
+        for rel, status in sorted(results.items()):
+            print(f"  {rel}: {status}")
+        return 0
+
+    # --- Restore-decompile mode (standalone, skip compose/apply) ---
+    if args.restore_decompile:
+        results = restore_decompile(dry_run=args.dry_run)
+        action = "Would remove" if args.dry_run else "Removed"
+        print(f"{action} the following decompile artifacts:")
         for rel, status in sorted(results.items()):
             print(f"  {rel}: {status}")
         return 0

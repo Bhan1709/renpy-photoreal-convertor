@@ -20,11 +20,15 @@ Usage::
         Path("src/renpy_game/MyGame/game"),
         Path("composites/reports/manifest_index.json"),
     )
+
+    # Undo a full decompile: remove the extracted game folder and config.json.
+    results = restore_decompile()
 """
 
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 
 from .errors import RestoreError
@@ -154,3 +158,82 @@ def restore_from_manifest(
         return {}
 
     return restore_rpy_files(game_root, only_files=only_files, dry_run=dry_run)
+
+
+# --------------------------------------------------------------------------- #
+# Decompile restore
+# --------------------------------------------------------------------------- #
+
+DEFAULT_CONFIG_PATH: Path = Path(__file__).resolve().parents[3] / "src/converter/config.json"
+
+
+def restore_decompile(
+    config_path: str | Path | None = None,
+    *,
+    dry_run: bool = False,
+) -> dict[str, str]:
+    """Undo a full decompile: remove the extracted game folder and config.json.
+
+    Reads the decompile-generated ``config.json`` to discover the
+    ``game_folder`` that was extracted, then removes that directory tree and
+    deletes ``config.json`` itself.
+
+    Args:
+        config_path: Path to the decompile-generated ``config.json``.
+            Defaults to ``src/converter/config.json`` relative to the project
+            root.
+        dry_run: If True, report what would be removed without writing.
+
+    Returns:
+        A dict mapping removed paths to a status string
+        (``"removed"``, ``"would_remove"``, or ``"skipped"``).
+    """
+    cp = Path(config_path) if config_path is not None else DEFAULT_CONFIG_PATH
+    if not cp.is_absolute():
+        cp = Path(__file__).resolve().parents[3] / cp
+
+    results: dict[str, str] = {}
+
+    if not cp.is_file():
+        results[str(cp)] = "skipped: config.json not found"
+        return results
+
+    # Read config.json to discover the game_folder before deleting anything.
+    try:
+        data = json.loads(cp.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        results[str(cp)] = f"skipped: cannot read config.json ({exc})"
+        return results
+
+    game_folder = data.get("game_folder")
+    game_root: Path | None = None
+    if game_folder:
+        gp = Path(game_folder)
+        if not gp.is_absolute():
+            gp = cp.parent.parent.parent / gp  # project root / game_folder
+        game_root = gp
+
+    # Remove the extracted game folder.
+    if game_root is not None and game_root.exists():
+        if dry_run:
+            results[str(game_root)] = "would_remove"
+        else:
+            try:
+                shutil.rmtree(game_root)
+                results[str(game_root)] = "removed"
+            except OSError as exc:
+                results[str(game_root)] = f"skipped: {exc}"
+    elif game_root is not None:
+        results[str(game_root)] = "skipped: game folder not found"
+
+    # Delete config.json itself.
+    if dry_run:
+        results[str(cp)] = "would_remove"
+    else:
+        try:
+            cp.unlink()
+            results[str(cp)] = "removed"
+        except OSError as exc:
+            results[str(cp)] = f"skipped: {exc}"
+
+    return results
