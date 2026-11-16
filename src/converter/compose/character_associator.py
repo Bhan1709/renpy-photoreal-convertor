@@ -15,15 +15,14 @@ from .config import GameConfig
 from .errors import ComposeError
 from .models import Layer
 from .parser import files
-
-_CHARACTER_DEF_RE = re.compile(
-    r"""^\s*define\s+([A-Za-z_]\w*)\s*=\s*Character\(\s*(['"])(.*?)\2(.*?)\)\s*$"""
+from .regexp import (
+    CHARACTER_DEF_RE,
+    HEADING_RE,
+    IDENTIFIER_RE,
+    IMAGE_TAG_RE,
+    TOKEN_RE,
+    WORD_RE,
 )
-_IMAGE_TAG_RE = re.compile(r"""image\s*=\s*(['"])(.*?)\1""")
-_HEADING_RE = re.compile(r"^\s*#{3,}\s*\S")
-_TOKEN_RE = re.compile(r"[A-Z]+(?=[A-Z][a-z]|\d|$)|[A-Z]?[a-z]+|\d+")
-_IDENTIFIER_RE = re.compile(r"[A-Za-z_]\w*")
-_WORD_RE = re.compile(r"[A-Za-z]+")
 
 
 class CharacterAssociator:
@@ -69,7 +68,7 @@ class CharacterAssociator:
                 evidence[canonical].add(source)
 
         def add_identifier_tokens(value: str, source: str) -> None:
-            for token in _TOKEN_RE.findall(value):
+            for token in TOKEN_RE.findall(value):
                 if len(token) >= 2:
                     add_alias(token, source, allow_short=True)
 
@@ -87,7 +86,7 @@ class CharacterAssociator:
             body = getattr(block, "body", [])
             for _, raw in body:
                 text = raw.split("#", 1)[0]
-                for token in _IDENTIFIER_RE.findall(text):
+                for token in IDENTIFIER_RE.findall(text):
                     evidence_source = (
                         f"script_identifier:{block.path.relative_to(self.config.game_root).as_posix()}:{block.line}"
                     )
@@ -109,7 +108,7 @@ class CharacterAssociator:
                 headings = [
                     (i, raw)
                     for i, raw in enumerate(before, base_line)
-                    if _HEADING_RE.match(raw)
+                    if HEADING_RE.match(raw)
                 ]
                 if headings:
                     index, raw = headings[-1]
@@ -132,7 +131,7 @@ class CharacterAssociator:
         for location in usage_locations or []:
             statement = location.get("statement", "")
             usage_source = f"script_usage:{location.get('script')}:{location.get('line')}"
-            for token in _IDENTIFIER_RE.findall(statement):
+            for token in IDENTIFIER_RE.findall(statement):
                 add_identifier_tokens(token, usage_source)
             for alias, canonicals in aliases.items():
                 if len(alias) < 3:
@@ -213,17 +212,17 @@ class CharacterAssociator:
                 except OSError:
                     continue
             for raw in lines:
-                match = _CHARACTER_DEF_RE.match(raw.split("#", 1)[0].strip())
+                match = CHARACTER_DEF_RE.match(raw.split("#", 1)[0].strip())
                 if not match:
                     continue
                 speaker, _, display_name, tail = match.groups()
                 display = _sub_non_alnum(display_name).lower()
-                image_match = _IMAGE_TAG_RE.search(tail)
+                image_match = IMAGE_TAG_RE.search(tail)
                 image_tag = image_match.group(2).lower() if image_match else ""
                 candidates: set[str] = set()
                 if display in folders:
                     candidates.add(display)
-                for word in _WORD_RE.findall(display_name.lower()):
+                for word in WORD_RE.findall(display_name.lower()):
                     if word in folders:
                         candidates.add(word)
                 if image_tag in folders:

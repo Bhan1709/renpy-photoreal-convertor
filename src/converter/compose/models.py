@@ -62,6 +62,51 @@ class Layer:
         """Return a copy with the given fields replaced."""
         return field_replace(self, **changes)
 
+    def to_dict(self) -> dict:
+        """Serialise to a JSON-friendly dict."""
+        return {
+            "source": self.source,
+            "line": self.line,
+            "group": self.group,
+            "conditions": list(self.conditions),
+            "attribute": self.attribute,
+            "default_attribute": self.default_attribute,
+            "offset": list(self.offset) if self.offset else None,
+            "offset_rel": list(self.offset_rel) if self.offset_rel else None,
+            "chain_id": self.chain_id,
+            "resolved_path": str(self.resolved_path) if self.resolved_path else None,
+            "resolution_method": self.resolution_method,
+            "warning": self.warning,
+            "unresolved_conditions": list(self.unresolved_conditions),
+            "via_image_tag": self.via_image_tag,
+            "role": self.role,
+            "canvas_size": list(self.canvas_size) if self.canvas_size else None,
+            "declaration_expression": self.declaration_expression,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> Layer:
+        """Build a :class:`Layer` from a JSON-loaded dict."""
+        return cls(
+            source=data["source"],
+            line=data["line"],
+            group=data.get("group", ""),
+            conditions=tuple(data.get("conditions", [])),
+            attribute=data.get("attribute"),
+            default_attribute=data.get("default_attribute", False),
+            offset=tuple(data["offset"]) if data.get("offset") else None,
+            offset_rel=tuple(data["offset_rel"]) if data.get("offset_rel") else None,
+            chain_id=data.get("chain_id"),
+            resolved_path=Path(data["resolved_path"]) if data.get("resolved_path") else None,
+            resolution_method=data.get("resolution_method"),
+            warning=data.get("warning"),
+            unresolved_conditions=tuple(data.get("unresolved_conditions", [])),
+            via_image_tag=data.get("via_image_tag"),
+            role=data.get("role", ""),
+            canvas_size=tuple(data["canvas_size"]) if data.get("canvas_size") else None,
+            declaration_expression=data.get("declaration_expression"),
+        )
+
 
 def field_replace(obj, **changes):
     """Helper to replace fields on a frozen dataclass instance."""
@@ -115,6 +160,71 @@ class CompositeRecord:
         """Return a copy with the given fields replaced."""
         return field_replace(self, **changes)
 
+    def to_dict(self) -> dict:
+        """Serialise to a JSON-friendly dict."""
+        d: dict = {
+            "composite_path": self.composite_path,
+            "name": self.name,
+            "kind": self.kind,
+            "status": self.status,
+            "definition": {"script": self.definition.script, "line": self.definition.line},
+            "usage_locations": [
+                {
+                    "script": loc.script,
+                    "line": loc.line,
+                    "statement": loc.statement,
+                    **({"state_snapshot": loc.state_snapshot} if loc.state_snapshot else {}),
+                }
+                for loc in self.usage_locations
+            ],
+            "ordered_layers": [l.to_dict() for l in self.ordered_layers],
+            "dimensions": list(self.dimensions) if self.dimensions else None,
+            "dynamic_conditions": list(self.dynamic_conditions),
+            "resolved_conditions": list(self.resolved_conditions),
+            "family": self.family,
+        }
+        if self.characters is not None:
+            d["characters"] = list(self.characters)
+        if self.character_name is not None:
+            d["character_name"] = self.character_name
+        if self.character_association_status is not None:
+            d["character_association_status"] = self.character_association_status
+        if self.dialog_context is not None:
+            d["dialog_context"] = list(self.dialog_context)
+        return d
+
+    @classmethod
+    def from_dict(cls, data: dict) -> CompositeRecord:
+        """Build a :class:`CompositeRecord` from a JSON-loaded dict."""
+        return cls(
+            composite_path=data["composite_path"],
+            name=data["name"],
+            kind=data["kind"],
+            status=data["status"],
+            definition=DefinitionLocation(
+                script=data["definition"]["script"],
+                line=data["definition"]["line"],
+            ),
+            usage_locations=tuple(
+                UsageLocation(
+                    script=loc["script"],
+                    line=loc["line"],
+                    statement=loc["statement"],
+                    state_snapshot=loc.get("state_snapshot"),
+                )
+                for loc in data.get("usage_locations", [])
+            ),
+            ordered_layers=tuple(Layer.from_dict(l) for l in data.get("ordered_layers", [])),
+            dimensions=tuple(data["dimensions"]) if data.get("dimensions") else None,
+            dynamic_conditions=tuple(data.get("dynamic_conditions", [])),
+            resolved_conditions=tuple(data.get("resolved_conditions", [])),
+            family=data.get("family", data.get("kind", "")),
+            characters=tuple(data.get("characters", [])) if data.get("characters") else None,
+            character_name=data.get("character_name"),
+            character_association_status=data.get("character_association_status"),
+            dialog_context=tuple(data.get("dialog_context", [])) if data.get("dialog_context") else None,
+        )
+
 
 @dataclass(frozen=True)
 class CompositeManifest:
@@ -135,56 +245,7 @@ class CompositeManifest:
     def from_dict(cls, data: dict) -> CompositeManifest:
         """Build a manifest from a JSON-loaded dict (used by the apply pass)."""
         composites = tuple(
-            CompositeRecord(
-                composite_path=r["composite_path"],
-                name=r["name"],
-                kind=r["kind"],
-                status=r["status"],
-                definition=DefinitionLocation(
-                    script=r["definition"]["script"],
-                    line=r["definition"]["line"],
-                ),
-                usage_locations=tuple(
-                    UsageLocation(
-                        script=loc["script"],
-                        line=loc["line"],
-                        statement=loc["statement"],
-                        state_snapshot=loc.get("state_snapshot"),
-                    )
-                    for loc in r.get("usage_locations", [])
-                ),
-                ordered_layers=tuple(
-                    Layer(
-                        source=l["source"],
-                        line=l["line"],
-                        group=l.get("group", ""),
-                        conditions=tuple(l.get("conditions", [])),
-                        attribute=l.get("attribute"),
-                        default_attribute=l.get("default_attribute", False),
-                        offset=tuple(l["offset"]) if l.get("offset") else None,
-                        offset_rel=tuple(l["offset_rel"]) if l.get("offset_rel") else None,
-                        chain_id=l.get("chain_id"),
-                        resolved_path=Path(l["resolved_path"]) if l.get("resolved_path") else None,
-                        resolution_method=l.get("resolution_method"),
-                        warning=l.get("warning"),
-                        unresolved_conditions=tuple(l.get("unresolved_conditions", [])),
-                        via_image_tag=l.get("via_image_tag"),
-                        role=l.get("role", ""),
-                        canvas_size=tuple(l["canvas_size"]) if l.get("canvas_size") else None,
-                        declaration_expression=l.get("declaration_expression"),
-                    )
-                    for l in r.get("ordered_layers", [])
-                ),
-                dimensions=tuple(r["dimensions"]) if r.get("dimensions") else None,
-                dynamic_conditions=tuple(r.get("dynamic_conditions", [])),
-                resolved_conditions=tuple(r.get("resolved_conditions", [])),
-                family=r.get("family", r.get("kind", "")),
-                characters=tuple(r.get("characters", [])) if r.get("characters") else None,
-                character_name=r.get("character_name"),
-                character_association_status=r.get("character_association_status"),
-                dialog_context=tuple(r.get("dialog_context", [])) if r.get("dialog_context") else None,
-            )
-            for r in data.get("composites", [])
+            CompositeRecord.from_dict(r) for r in data.get("composites", [])
         )
         return cls(
             composites=composites,
@@ -195,124 +256,10 @@ class CompositeManifest:
             summary=data.get("summary", {}),
         )
 
-    @staticmethod
-    def _record_from_dict(data: dict) -> CompositeRecord:
-        """Build a single CompositeRecord from a JSON-loaded dict."""
-        return CompositeRecord(
-            composite_path=data["composite_path"],
-            name=data["name"],
-            kind=data["kind"],
-            status=data["status"],
-            definition=DefinitionLocation(
-                script=data["definition"]["script"],
-                line=data["definition"]["line"],
-            ),
-            usage_locations=tuple(
-                UsageLocation(
-                    script=loc["script"],
-                    line=loc["line"],
-                    statement=loc["statement"],
-                    state_snapshot=loc.get("state_snapshot"),
-                )
-                for loc in data.get("usage_locations", [])
-            ),
-            ordered_layers=tuple(
-                Layer(
-                    source=l["source"],
-                    line=l["line"],
-                    group=l.get("group", ""),
-                    conditions=tuple(l.get("conditions", [])),
-                    attribute=l.get("attribute"),
-                    default_attribute=l.get("default_attribute", False),
-                    offset=tuple(l["offset"]) if l.get("offset") else None,
-                    offset_rel=tuple(l["offset_rel"]) if l.get("offset_rel") else None,
-                    chain_id=l.get("chain_id"),
-                    resolved_path=Path(l["resolved_path"]) if l.get("resolved_path") else None,
-                    resolution_method=l.get("resolution_method"),
-                    warning=l.get("warning"),
-                    unresolved_conditions=tuple(l.get("unresolved_conditions", [])),
-                    via_image_tag=l.get("via_image_tag"),
-                    role=l.get("role", ""),
-                    canvas_size=tuple(l["canvas_size"]) if l.get("canvas_size") else None,
-                    declaration_expression=l.get("declaration_expression"),
-                )
-                for l in data.get("ordered_layers", [])
-            ),
-            dimensions=tuple(data["dimensions"]) if data.get("dimensions") else None,
-            dynamic_conditions=tuple(data.get("dynamic_conditions", [])),
-            resolved_conditions=tuple(data.get("resolved_conditions", [])),
-            family=data.get("family", data.get("kind", "")),
-            characters=tuple(data.get("characters", [])) if data.get("characters") else None,
-            character_name=data.get("character_name"),
-            character_association_status=data.get("character_association_status"),
-            dialog_context=tuple(data.get("dialog_context", [])) if data.get("dialog_context") else None,
-        )
-
     def to_dict(self) -> dict:
         """Serialise to a JSON-friendly dict."""
         return {
-            "composites": [
-                {
-                    "composite_path": r.composite_path,
-                    "name": r.name,
-                    "kind": r.kind,
-                    "status": r.status,
-                    "definition": {
-                        "script": r.definition.script,
-                        "line": r.definition.line,
-                    },
-                    "usage_locations": [
-                        {
-                            "script": loc.script,
-                            "line": loc.line,
-                            "statement": loc.statement,
-                            **({"state_snapshot": loc.state_snapshot} if loc.state_snapshot else {}),
-                        }
-                        for loc in r.usage_locations
-                    ],
-                    "ordered_layers": [
-                        {
-                            "source": l.source,
-                            "line": l.line,
-                            "group": l.group,
-                            "conditions": list(l.conditions),
-                            "attribute": l.attribute,
-                            "default_attribute": l.default_attribute,
-                            "offset": list(l.offset) if l.offset else None,
-                            "offset_rel": list(l.offset_rel) if l.offset_rel else None,
-                            "chain_id": l.chain_id,
-                            "resolved_path": str(l.resolved_path) if l.resolved_path else None,
-                            "resolution_method": l.resolution_method,
-                            "warning": l.warning,
-                            "unresolved_conditions": list(l.unresolved_conditions),
-                            "via_image_tag": l.via_image_tag,
-                            "role": l.role,
-                            "canvas_size": list(l.canvas_size) if l.canvas_size else None,
-                            "declaration_expression": l.declaration_expression,
-                        }
-                        for l in r.ordered_layers
-                    ],
-                    "dimensions": list(r.dimensions) if r.dimensions else None,
-                    "dynamic_conditions": list(r.dynamic_conditions),
-                    "resolved_conditions": list(r.resolved_conditions),
-                    "family": r.family,
-                    **(
-                        {"characters": list(r.characters)} if r.characters else {}
-                    ),
-                    **(
-                        {"character_name": r.character_name} if r.character_name else {}
-                    ),
-                    **(
-                        {"character_association_status": r.character_association_status}
-                        if r.character_association_status
-                        else {}
-                    ),
-                    **(
-                        {"dialog_context": list(r.dialog_context)} if r.dialog_context else {}
-                    ),
-                }
-                for r in self.composites
-            ],
+            "composites": [r.to_dict() for r in self.composites],
             "dynamic_states": self.dynamic_states,
             "image_declarations": self.image_declarations,
             "dynamic_declarations": self.dynamic_declarations,

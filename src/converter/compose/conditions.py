@@ -225,6 +225,37 @@ def eval_cond(expr: str, env: dict[str, object]) -> bool | None | object:
     return result
 
 
+def evaluate_layer_conditions(
+    layer: Layer, env: dict[str, object],
+) -> tuple[bool | None, list[str]]:
+    """Evaluate a single unchained layer's conditions against an environment.
+
+    Returns ``(outcome, unresolved_conditions)``:
+
+    * ``outcome=True`` — all conditions resolved to True; layer should be included.
+    * ``outcome=False`` — at least one condition resolved to False; layer should be excluded.
+    * ``outcome=None`` (UNKNOWN) — at least one condition could not be statically
+      evaluated; layer status is uncertain and ``unresolved_conditions`` lists them.
+
+    Layers with no conditions always return ``(True, [])``.
+    """
+    if not layer.conditions:
+        return True, []
+
+    unresolved: list[str] = []
+    outcome: bool | None = True
+    for condition in layer.conditions:
+        value = eval_cond(condition, env)
+        if value is None:  # UNKNOWN
+            unresolved.append(condition)
+            outcome = None
+            break
+        if value is False:
+            outcome = False
+            break
+    return outcome, unresolved
+
+
 def select_layers_for_chain(
     layers: list[Layer], call_state: CallState,
 ) -> tuple[list[Layer], list[str]]:

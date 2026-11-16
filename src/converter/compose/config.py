@@ -2,18 +2,27 @@
 
 Defines :class:`GameConfig`, which describes how a single Ren'Py game maps its
 four canonical component categories (bg, char, scene, gui) onto on-disk asset
-folders, plus a loader that can read per-game JSON config files or fall back to
-sensible conventions.
+folders, plus a single loader that reads the decompile-generated
+``src/converter/config.json``.
+
+All paths in ``config.json`` are relative to the project root (the directory
+containing ``src/``).  ``game_folder`` is resolved against the project root,
+and ``archive_dir`` is always ``game_folder / archive``.  Output locations
+default to ``<game_folder>/composites/...`` via :meth:`resolved_paths`.
 """
 
 from __future__ import annotations
 
 import json
 import re
-from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import cast
+
+from .errors import ConfigError
+
+# Project root: this file lives at src/converter/compose/config.py, so
+# parents[3] is the repository root where config.json and src/ live.
+PROJECT_ROOT: Path = Path(__file__).resolve().parents[3]
 
 # Canonical component categories shared by every Ren'Py game.
 CANONICAL_CATEGORIES: frozenset[str] = frozenset({"bg", "char", "scene", "gui"})
@@ -57,7 +66,7 @@ class GameConfig:
         name: Human-readable game identifier (used for reports/output naming).
         game_root: Absolute path to the Ren'Py ``game`` folder (containing the
             ``.rpy`` scripts and, typically, an ``archive/`` subdirectory).
-        archive_dir: Absolute path to the extracted asset archive. Defaults to
+        archive_dir: Absolute path to the extracted asset archive.  Always
             ``game_root / "archive"``.
         categories: Mapping of canonical category -> asset folder name under
             ``archive_dir``.  Must cover all of :data:`CANONICAL_CATEGORIES`.
@@ -67,11 +76,18 @@ class GameConfig:
             that should be redirected to an alternate path when resolving.
         game_defaults: Default Ren'Py variable values used for static condition
             evaluation (e.g. ``{"month": 6, "day": 1}``).
+        rpy_files: Scripts to scan during compose, relative to ``game_root``.
+            When set (from the decompile-generated config.json), compose only
+            parses these .rpy files instead of sweeping the whole game folder.
+        ren_py_files: ``_ren.py`` scripts to scan, relative to ``game_root``.
         output_dir: Directory where generated composite PNGs are written.
+            Defaults to ``<game_root>/composites``.
         manifest_path: Path to the manifest JSON produced by the compose pass.
+            Defaults to ``<output_dir>/reports/manifest.json``.
         declaration_path: Path to ``composite_images.rpy`` written by the apply
             pass (inside the live ``game`` folder).
         report_path: Path to the adoption report JSON written by the apply pass.
+            Defaults to ``<output_dir>/reports/adoption_report.json``.
     """
 
     name: str
@@ -83,9 +99,6 @@ class GameConfig:
     )
     path_aliases: dict[str, str] = field(default_factory=lambda: dict(DEFAULT_PATH_ALIASES))
     game_defaults: dict[str, object] = field(default_factory=lambda: dict(DEFAULT_GAME_DEFAULTS))
-    # Scripts to scan during compose, relative to game_root.  When set (from the
-    # decompile-generated config.json), compose only parses these .rpy / _ren.py
-    # files instead of sweeping the whole game folder.
     rpy_files: list[str] | None = None
     ren_py_files: list[str] | None = None
     output_dir: Path | None = None
@@ -93,19 +106,13 @@ class GameConfig:
     declaration_path: Path | None = None
     report_path: Path | None = None
 
-    # Cached compiled regexes (Optimization #2).  Populated once in
-    # __post_init__ because GameConfig is frozen and categories never change
-    # after construction.
+    # Cached compiled regexes.  Populated once in __post_init__ because
+    # GameConfig is frozen and categories never change after construction.
     _path_regex: re.Pattern[str] = field(init=False, compare=False, repr=False)
     _category_folder_regex: re.Pattern[str] = field(init=False, compare=False, repr=False)
 
     def __post_init__(self) -> None:
-        """Compile path regexes exactly once per config instance.
-
-        ``path_regex()`` used to call ``re.compile`` on every invocation and was
-        called once per scanned line during parsing; compiling here removes that
-        repeated work entirely.
-        """
+        """Compile path regexes exactly once per config instance."""
         object.__setattr__(self, "_path_regex", self._compile_path_regex())
         object.__setattr__(self, "_category_folder_regex", self._compile_category_folder_regex())
 
@@ -160,23 +167,19 @@ class GameConfig:
         return re.compile(rf"(?:{alternation})/", re.IGNORECASE)
 
     def path_regex(self) -> re.Pattern[str]:
-        """Return the compiled regex matching asset paths under any configured folder.
-
-        Matches ``<folder>/<path>.<ext>`` for every configured category folder,
-        case-insensitively.  The pattern is compiled once in :meth:`__post_init__`
-        (Optimization #2) instead of on every call.
-        """
+        """Return the compiled regex matching asset paths under any configured folder."""
         return self._path_regex
 
     def category_folder_regex(self) -> re.Pattern[str]:
-        """Return the compiled regex matching ``<folder>/`` prefixes for any configured folder.
-
-        Compiled once in :meth:`__post_init__` (Optimization #2).
-        """
+        """Return the compiled regex matching ``<folder>/`` prefixes for any configured folder."""
         return self._category_folder_regex
 
     def resolved_paths(self) -> dict[str, Path]:
-        """Convenience: all important absolute paths, defaulting output locations."""
+        """Convenience: all important absolute paths.
+
+        Output locations default to ``<game_root>/composites`` (i.e.
+        ``<game_folder>/composites``) when not explicitly set.
+        """
         out = self.output_dir or (self.game_root / "composites")
         return {
             "output_dir": out,
@@ -196,6 +199,8 @@ class GameConfig:
             "non_character_folders": sorted(self.non_character_folders),
             "path_aliases": dict(self.path_aliases),
             "game_defaults": self.game_defaults,
+            "rpy_files": self.rpy_files,
+            "ren_py_files": self.ren_py_files,
             "output_dir": str(paths["output_dir"]),
             "manifest_path": str(paths["manifest_path"]),
             "declaration_path": str(paths["declaration_path"]),
@@ -203,213 +208,71 @@ class GameConfig:
         }
 
 
-def load_decompile_config(config_path: str | Path) -> GameConfig:
-    """Build a :class:`GameConfig` from the decompile-generated config.json.
+def _resolve_project(value: str) -> Path:
+    """Resolve a path string against the project root.
 
-    Reads ``src/converter/config.json`` (produced by :mod:`converter.decompile`)
-    which contains ``game_folder``, ``rpy_files``, ``ren_py_files``,
-    ``extracted_archives``, ``image_categories`` and ``exclusion``.  Maps these
-    onto :class:`GameConfig` so compose runs based on the decompile-discovered
-    directories rather than folder-name conventions.
+    Absolute paths are returned as-is.  Relative paths are joined with
+    :data:`PROJECT_ROOT` (the repository root containing ``src/``).
+    """
+    p = Path(value)
+    return p if p.is_absolute() else (PROJECT_ROOT / p).resolve()
 
-    The ``image_categories`` map (category -> folder under ``game_folder``) is
-    converted into the canonical ``categories`` mapping.  A leading
-    ``archive/`` segment is stripped so folder names are relative to
-    ``archive_dir`` (``game_folder / "archive"``).
+
+def load_config(config_path: str | Path) -> GameConfig:
+    """Load a :class:`GameConfig` from the decompile-generated ``config.json``.
+
+    The file must use the decompile schema: ``game_folder`` plus
+    ``image_categories`` (as written by :mod:`converter.decompile.config`).
+    Paths in the JSON are relative to the project root.
+
+    Output locations are not stored in the JSON; they default to
+    ``<game_folder>/composites/...`` via :meth:`GameConfig.resolved_paths`.
     """
     config_path = Path(config_path)
+    if not config_path.is_absolute():
+        config_path = PROJECT_ROOT / config_path
+
     data = json.loads(config_path.read_text(encoding="utf-8"))
 
-    # game_folder (and rpy_files/ren_py_files) are recorded relative to the repo
-    # root / CWD where decompile ran, not relative to config.json's location
-    # (src/converter/).  Resolve against CWD.
-    def resolve_cwd(value: str) -> Path:
-        p = Path(value)
-        return p if p.is_absolute() else p.resolve()
+    if "game_folder" not in data:
+        raise ConfigError(
+            f"config.json at {config_path} is missing 'game_folder'; "
+            "run decompile first to generate it."
+        )
 
-    game_folder = resolve_cwd(str(data["game_folder"]))
+    game_folder = _resolve_project(str(data["game_folder"]))
     archive_dir = game_folder / "archive"
 
-    # image_categories: {"image_categories": {"bg": "archive/bgs", ...}}
-    cat_map_raw = ((data.get("image_categories") or {}).get("image_categories") or {})
+    # image_categories: {"classification_method": "...",
+    #                    "image_categories": {"bg": "bgs", "char": "chars", ...}}
+    cat_wrapper = data.get("image_categories") or {}
+    cat_map_raw: dict[str, str] = {}
+    if isinstance(cat_wrapper, dict):
+        inner = cat_wrapper.get("image_categories")
+        if isinstance(inner, dict):
+            cat_map_raw = {str(k): str(v) for k, v in inner.items()}
+
     categories: dict[str, str] = {}
     for category in CANONICAL_CATEGORIES:
         if category in cat_map_raw:
-            folder = str(cat_map_raw[category])
+            folder = cat_map_raw[category]
+            # Strip leading "archive/" prefix (decompile records paths relative
+            # to the game folder, but categories are relative to archive_dir).
             if folder.lower().startswith("archive/"):
                 folder = folder[len("archive/"):]
             categories[category] = folder
 
-    rpy_files = data.get("rpy_files") or []
-    ren_py_files = data.get("ren_py_files") or []
+    if not categories:
+        categories = dict(DEFAULT_CATEGORY_FOLDERS)
+
+    rpy_files = [str(p) for p in (data.get("rpy_files") or [])]
+    ren_py_files = [str(p) for p in (data.get("ren_py_files") or [])]
 
     return GameConfig(
         name=str(data.get("source_game") or config_path.stem),
         game_root=game_folder,
         archive_dir=archive_dir,
-        categories=categories or dict(DEFAULT_CATEGORY_FOLDERS),
-        rpy_files=[str(p) for p in rpy_files],
-        ren_py_files=[str(p) for p in ren_py_files],
-    )
-
-
-def load_config(path: str | Path) -> GameConfig:
-    """Load a :class:`GameConfig` from a JSON file.
-
-    The JSON may contain any of the :class:`GameConfig` fields.  Paths are
-    interpreted relative to the config file's parent directory unless they are
-    absolute.
-
-    If the file is the decompile-generated config.json (has ``game_folder`` +
-    ``image_categories`` instead of ``game_root``), it is delegated to
-    :func:`load_decompile_config`.
-    """
-    config_path = Path(path)
-    data = json.loads(config_path.read_text(encoding="utf-8"))
-
-    # Decompile schema: game_folder + image_categories -> generalized config.
-    if "game_folder" in data and "game_root" not in data:
-        return load_decompile_config(config_path)
-
-    base = config_path.parent.resolve()
-
-    def rel(value: str) -> Path:
-        p = Path(value)
-        return p if p.is_absolute() else (base / p).resolve()
-
-    categories_raw = data.get("categories", DEFAULT_CATEGORY_FOLDERS)
-    categories: dict[str, str] = dict(categories_raw) if isinstance(categories_raw, dict) else dict(DEFAULT_CATEGORY_FOLDERS)
-
-    non_char_raw = data.get("non_character_folders", DEFAULT_NON_CHARACTER_FOLDERS)
-    non_char: frozenset[str] = frozenset(non_char_raw) if isinstance(non_char_raw, (list, set, frozenset)) else DEFAULT_NON_CHARACTER_FOLDERS
-
-    aliases_raw = data.get("path_aliases", DEFAULT_PATH_ALIASES)
-    aliases: dict[str, str] = dict(aliases_raw) if isinstance(aliases_raw, dict) else dict(DEFAULT_PATH_ALIASES)
-
-    defaults_raw = data.get("game_defaults", DEFAULT_GAME_DEFAULTS)
-    defaults: dict[str, object] = dict(defaults_raw) if isinstance(defaults_raw, dict) else dict(DEFAULT_GAME_DEFAULTS)
-
-    return GameConfig(
-        name=str(data.get("name", config_path.stem)),
-        game_root=rel(str(data["game_root"])),
-        archive_dir=rel(str(data.get("archive_dir", str(rel(str(data["game_root"])) / "archive")))),
         categories=categories,
-        non_character_folders=non_char,
-        path_aliases=aliases,
-        game_defaults=defaults,
-        output_dir=rel(str(data["output_dir"])) if "output_dir" in data else None,
-        manifest_path=rel(str(data["manifest_path"])) if "manifest_path" in data else None,
-        declaration_path=rel(str(data["declaration_path"])) if "declaration_path" in data else None,
-        report_path=rel(str(data["report_path"])) if "report_path" in data else None,
+        rpy_files=rpy_files,
+        ren_py_files=ren_py_files,
     )
-
-
-def _locate_game_root(name: str) -> Path:
-    """Locate a Ren'Py ``game`` folder for a game name under conventional layouts.
-
-    Search order:
-
-    1. If ``name`` is an existing directory, use it directly.
-    2. ``src/renpy_game/<name>/<name>-pc/game`` (the common extracted build layout).
-    3. Any ``<something>/game`` folder beneath ``src/renpy_game/<name>``, preferring
-       one whose parent directory ends with ``-pc``.
-    4. The legacy hard-coded convention ``src/renpy_game/<name>/<name>-pc/game``.
-
-    Returns the resolved path (caller should verify it exists).
-    """
-    candidate = Path(name)
-    if candidate.is_dir():
-        return candidate.resolve()
-
-    search_root = Path("src/renpy_game") / name
-    if search_root.is_dir():
-        # Preferred: <name>-pc/game build layout.
-        pc_layout = search_root / f"{name}-pc" / "game"
-        if pc_layout.is_dir():
-            return pc_layout.resolve()
-        # Fall back to any nested "game" folder, preferring a -pc parent.
-        game_dirs = [p for p in search_root.rglob("game") if p.is_dir()]
-        pc_game_dirs = [p for p in game_dirs if p.parent.name.endswith("-pc")]
-        if pc_game_dirs:
-            return pc_game_dirs[0].resolve()
-        if game_dirs:
-            return game_dirs[0].resolve()
-
-    # Legacy hard-coded convention.
-    return (Path("src/renpy_game") / name / f"{name}-pc" / "game").resolve()
-
-
-def default_config(
-    name: str,
-    game_root: str | Path | None = None,
-    archive_dir: str | Path | None = None,
-    categories: Mapping[str, str] | None = None,
-    **overrides: object,
-) -> GameConfig:
-    """Build a :class:`GameConfig` from conventions, suitable for a new game.
-
-    ``game_root`` may be either an explicit path to the Ren'Py ``game`` folder or
-    just a game name; when it is a name, :func:`_locate_game_root` searches the
-    conventional ``src/renpy_game/<name>/...`` layouts to find it.
-
-    ``categories`` defaults to :data:`DEFAULT_CATEGORY_FOLDERS` (bg->bgs,
-    char->chars, scene->xxx, gui->gui).  Output locations default to
-    ``<game_root_parent>/composites/...``.
-    """
-    if game_root is None:
-        resolved_root = _locate_game_root(name)
-    else:
-        resolved_root = Path(game_root).resolve()
-        if not resolved_root.is_dir():
-            resolved_root = _locate_game_root(name)
-
-    if archive_dir is None:
-        archive_dir = resolved_root / "archive"
-    else:
-        archive_dir = Path(archive_dir).resolve()
-
-    paths: dict[str, Path | None] = {"output_dir": None, "manifest_path": None, "declaration_path": None, "report_path": None}
-    tmp = GameConfig(
-        name=name,
-        game_root=resolved_root,
-        archive_dir=archive_dir,
-        categories=dict(categories or DEFAULT_CATEGORY_FOLDERS),
-    )
-    resolved = tmp.resolved_paths()
-    paths["output_dir"] = resolved["output_dir"]
-    paths["manifest_path"] = resolved["manifest_path"]
-    paths["declaration_path"] = resolved["declaration_path"]
-    paths["report_path"] = resolved["report_path"]
-
-    valid_fields = set(GameConfig.__dataclass_fields__)
-    kwargs: dict[str, object] = {}
-    for key, value in overrides.items():
-        if key not in valid_fields:
-            continue
-        if key == "non_character_folders" and not isinstance(value, frozenset):
-            value = frozenset(cast(Iterable[str], value))  # type: ignore[arg-type]
-        kwargs[key] = value
-
-    cfg = GameConfig(
-        name=name,
-        game_root=resolved_root,
-        archive_dir=archive_dir,
-        categories=dict(categories or DEFAULT_CATEGORY_FOLDERS),
-        output_dir=paths["output_dir"],
-        manifest_path=paths["manifest_path"],
-        declaration_path=paths["declaration_path"],
-        report_path=paths["report_path"],
-        **kwargs,  # type: ignore[arg-type]
-    )
-
-    # Persist the resolved config so the user can review the exact values being
-    # used when default_config() is chosen (no explicit --config JSON).
-    try:
-        config_json_path = cfg.resolved_paths()["output_dir"] / "config.json"
-        config_json_path.parent.mkdir(parents=True, exist_ok=True)
-        config_json_path.write_text(json.dumps(cfg.to_dict(), indent=2), encoding="utf-8")
-    except OSError:
-        # Best-effort: a missing config file must not abort the compose pass.
-        pass
-
-    return cfg

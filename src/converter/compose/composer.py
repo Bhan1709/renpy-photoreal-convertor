@@ -5,11 +5,14 @@ compositing to produce a :class:`~converter.compose.models.CompositeManifest`.
 
 This is the main entry point for the compose pass: :class:`Composer` and its
 :meth:`Composer.compose` method.
+
+Record construction (_emit_record and helpers) lives in :mod:`.record`.
+Composite deduplication and emission (_CompositeEmitter) lives in :mod:`.emitter`.
+All compiled regular expressions live in :mod:`.regexp`.
 """
 
 from __future__ import annotations
 
-import hashlib
 import json
 import re
 from collections import defaultdict
@@ -19,28 +22,34 @@ from tqdm import tqdm  # type: ignore[import-untyped]
 
 from .character_associator import CharacterAssociator
 from .compositor import Compositor
-from .conditions import eval_cond, select_layers_for_chain, state_at_call
-from .config import GameConfig
-from .errors import ComposeError
-from .models import (
-    CompositeManifest,
-    CompositeRecord,
-    DefinitionLocation,
-    Layer,
-    UsageLocation,
+from .conditions import (
+    evaluate_layer_conditions,
+    select_layers_for_chain,
+    state_at_call,
 )
+from .config import GameConfig
+from .emitter import _CompositeEmitter
+from .models import CompositeManifest, Layer
 from .parser import (
+    SHOW_SCENE_RE,
     ImageDeclaration,
     ScriptBlock,
     ScriptIndex,
-    find_nearby_dialog,
     index_scripts,
     parse_screen_stack,
 )
+from .record import _restore_layer_order
 from .resolver import Resolver
 
-_SHOW_RE = re.compile(r"^\s*(?:show|scene)\s+(?!screen\b)([\w.]+)(?:\s+([^\n#]+))?")
-_DECLARATION_USE_RE = re.compile(r"^\s*(?:show|scene)\s+([\w.]+)")
+
+def _load_previous_dynamic_states(config: GameConfig) -> list[dict]:
+    previous_manifest_path = config.resolved_paths()["manifest_path"]
+    if previous_manifest_path.is_file():
+        try:
+            return json.loads(previous_manifest_path.read_text(encoding="utf-8")).get("dynamic_states", [])
+        except (OSError, json.JSONDecodeError):
+            return []
+    return []
 
 
 class Composer:
@@ -77,89 +86,37 @@ class Composer:
             script_lines={fi.path: fi.lines for fi in index.per_file.values()},
         )
 
-        # We cannot know up front exactly how many usages will pass through
-        # emit_wrapper (some are skipped because the tag/screen is undefined,
-        # the stack is empty, or the declaration is dynamic), so we start the
-        # progress bar without a fixed total.  It will show iterations
-        # processed and rate; the final count is recorded in usages_processed.
-        bar = tqdm(desc="composites processed")
+        # The total is constant for the whole compose run: it is the number of
+        # show/scene/show-screen usage statements across every indexed script.
+        # Every call to the emitter updates the bar exactly once, so the bar
+        # shows % complete + ETA and never needs a final correction.
+        total_usages = sum(len(fi.usages) for fi in index.per_file.values())
+        bar = tqdm(total=total_usages, desc="composites processed")
 
-        records: list[CompositeRecord] = []
-        records_by_key: dict[tuple[str, str, str], CompositeRecord] = {}
-        # Maps dedup key -> position in ``records`` list for O(1) replacement
-        # instead of an O(n) linear scan calling _record_key() on every entry.
-        key_to_index: dict[tuple[str, str, str], int] = {}
-        use_count = 0
-        usages_processed = 0
-
-        def emit_wrapper(
-            name: str, kind: str, layers: list[Layer], locations: list[dict], block: ScriptBlock,
-        ) -> None:
-            nonlocal use_count, usages_processed
-
-            usages_processed += 1
-            normalized = _normalize_layers(layers, self.config)
-            if not normalized:
-                bar.update(1)
-                return
-            key = _record_key(kind, name, normalized)
-            digest = key[2]
-
-            if key in records_by_key:
-                # Duplicate composite: merge usage locations only.  Skip the
-                # expensive render / association / dialog work, which was
-                # already performed for the first occurrence of this key.
-                existing = records_by_key[key]
-                new_locs = [
-                    loc for loc in locations
-                    if (loc["script"], loc["line"]) not in
-                    {(l.script, l.line) for l in existing.usage_locations}
-                ]
-                if new_locs:
-                    existing_keys = {(l.script, l.line) for l in existing.usage_locations}
-                    merged_list = list(existing.usage_locations)
-                    for loc in new_locs:
-                        k = (loc["script"], loc["line"])
-                        if k not in existing_keys:
-                            merged_list.append(_loc_to_usage(loc))
-                            existing_keys.add(k)
-                    merged = tuple(sorted(merged_list, key=lambda l: (l.script, l.line)))
-                    existing = existing.replace(usage_locations=merged)
-                    records_by_key[key] = existing
-                    # O(1) replacement via key->index map instead of O(n) scan
-                    idx = key_to_index.get(key)
-                    if idx is not None:
-                        records[idx] = existing
-                bar.update(1)
-                return
-
-            record = _emit_record(
-                name, kind, normalized, locations, block, index, self.config, self.resolver,
-                self.compositor, self.associator, dry_run=dry_run, digest=digest,
-            )
-            if record is None:
-                bar.update(1)
-                return
-            records_by_key[key] = record
-            key_to_index[key] = len(records)
-            records.append(record)
-            use_count += 1
-            bar.update(1)
+        emitter = _CompositeEmitter(
+            self.config,
+            self.resolver,
+            self.compositor,
+            self.associator,
+            index,
+            bar,
+            dry_run=dry_run,
+        )
 
         # --- Pass 1: layeredimage show/scene statements ---
         _process_layeredimage_uses_from_index(
-            index, definitions, defaults, emit_wrapper, self.config
+            index, definitions, defaults, emitter, self.config
         )
 
         # --- Pass 2: ordinary image declarations ---
         dynamic_declarations: list[dict] = []
         _process_image_declarations_from_index(
-            index, image_declarations, emit_wrapper, dynamic_declarations, self.config
+            index, image_declarations, emitter, dynamic_declarations, self.config
         )
 
         # --- Pass 3: screen stacks ---
         _process_screen_stacks_from_index(
-            index, screens, definitions, defaults, emit_wrapper, self.config
+            index, screens, definitions, defaults, emitter, self.config
         )
 
         bar.close()
@@ -184,110 +141,19 @@ class Composer:
         ]
 
         return CompositeManifest(
-            composites=tuple(records),
+            composites=tuple(emitter.records),
             dynamic_states=previous_dynamic_states,
             image_declarations=declaration_records,
             dynamic_declarations=dynamic_declarations,
             unresolved=(),
             summary={
                 "scripts_scanned": len(index.files),
-                "composites": len(records),
-                "uses_processed": usages_processed,
+                "composites": len(emitter.records),
+                "uses_processed": emitter.usages_processed,
                 "image_declarations_indexed": len(declaration_records),
                 "dynamic_declarations": len(dynamic_declarations),
             },
         )
-
-
-# ---------------------------------------------------------------------- #
-# Helpers
-# ---------------------------------------------------------------------- #
-
-def _loc_to_usage(loc: dict) -> UsageLocation:
-    return UsageLocation(
-        script=loc["script"], line=loc["line"], statement=loc["statement"],
-        state_snapshot=loc.get("state_snapshot"),
-    )
-
-
-def _normalize_layers(layers: list[Layer], config: GameConfig) -> list[Layer]:
-    """Keep only layers whose source lives under a configured asset folder.
-
-    Pure filtering/copying — no disk or image work — so it is cheap to run for
-    every usage before the dedup check.
-    """
-    prefixes = tuple(f"{n}/" for n in config.categories.values())
-    return [
-        Layer(
-            source=x.source, line=x.line, group=x.group, conditions=x.conditions,
-            attribute=x.attribute, default_attribute=x.default_attribute,
-            offset=x.offset, offset_rel=x.offset_rel, chain_id=x.chain_id,
-            resolved_path=x.resolved_path, resolution_method=x.resolution_method,
-            warning=x.warning, unresolved_conditions=x.unresolved_conditions,
-            via_image_tag=x.via_image_tag, role=x.role, canvas_size=x.canvas_size,
-            declaration_expression=x.declaration_expression,
-        )
-        for x in layers
-        if any(x.source.lower().startswith(p) for p in prefixes)
-    ]
-
-
-def _restore_layer_order(layers: list[Layer], source_order: list[Layer]) -> list[Layer]:
-    """Restore declaration/stack order after conditional layers were grouped.
-
-    The condition-selection pass separates unconditional layers from ``if``
-    chains for evaluation. Emitting those buckets directly changes z-order:
-    conditional layers that were declared before facial attributes can end up
-    on top of them. Match selected layers back to their original positions.
-    """
-    def key(layer: Layer) -> tuple:
-        return (
-            layer.source, layer.line, layer.group, layer.conditions,
-            layer.attribute, layer.chain_id, layer.via_image_tag, layer.role,
-        )
-
-    positions: dict[tuple, int] = {}
-    for index, layer in enumerate(source_order):
-        positions.setdefault(key(layer), index)
-    return sorted(layers, key=lambda layer: positions.get(key(layer), len(positions)))
-
-
-def _record_key(kind: str, name: str, normalized: list[Layer]) -> tuple[str, str, str]:
-    """Dedup key for a composite: (kind, name, sha1 of normalized layer semantics)."""
-    semantic = json.dumps(
-        [
-            kind,
-            name,
-            [
-                (
-                    x.source,
-                    list(x.conditions),
-                    x.attribute,
-                    x.offset,
-                    x.offset_rel,
-                    x.canvas_size,
-                )
-                for x in normalized
-            ],
-        ],
-        sort_keys=True,
-    )
-    digest = hashlib.sha1(semantic.encode()).hexdigest()[:12]
-    return (kind, name, digest)
-
-
-def _require_config() -> GameConfig:
-    raise ComposeError("compose config not initialized; pass a GameConfig explicitly")
-
-
-def _load_previous_dynamic_states(config: GameConfig) -> list[dict]:
-    previous_manifest_path = config.resolved_paths()["manifest_path"]
-    if previous_manifest_path.is_file():
-        try:
-            return json.loads(previous_manifest_path.read_text(encoding="utf-8")).get("dynamic_states", [])
-        except (OSError, json.JSONDecodeError):
-            return []
-    return []
 
 
 # ---------------------------------------------------------------------- #
@@ -311,7 +177,7 @@ def _process_layeredimage_uses_from_index(
         for usage in file_index.usages:
             if usage.kind != "show_scene":
                 continue
-            m = _SHOW_RE.search(usage.statement)
+            m = SHOW_SCENE_RE.search(usage.statement)
             if not m or m.group(1) not in definitions:
                 continue
             tag, tail = m.group(1), (m.group(2) or "")
@@ -344,8 +210,6 @@ def _enumerate_condition_variants(
     Unchained layers with unknown conditions branch (include/exclude).
     Chained layers (if/elif/else) produce one variant per possible branch.
     """
-    from .conditions import eval_cond
-
     # Base: layers that are always included (no conditions, or conditions
     # that statically evaluate to True).
     base: list[Layer] = []
@@ -354,20 +218,7 @@ def _enumerate_condition_variants(
     unchained_unknown: list[tuple[Layer, tuple[str, ...]]] = []
 
     for layer in unchained:
-        if not layer.conditions:
-            base.append(layer)
-            continue
-        outcome = True
-        unresolved: list[str] = []
-        for condition in layer.conditions:
-            value = eval_cond(condition, values)
-            if value is None:  # UNKNOWN
-                unresolved.append(condition)
-                outcome = None  # type: ignore[assignment]
-                break
-            if value is False:
-                outcome = False
-                break
+        outcome, unresolved = evaluate_layer_conditions(layer, values)
         if outcome is True:
             base.append(layer)
         elif outcome is None:
@@ -387,17 +238,7 @@ def _enumerate_condition_variants(
         unknown_layers: list[tuple[Layer, tuple[str, ...]]] = []
 
         for layer in cond_layers:
-            outcome = True
-            chain_unresolved: list[str] = []
-            for condition in layer.conditions:
-                value = eval_cond(condition, values)
-                if value is None:  # UNKNOWN
-                    chain_unresolved.append(condition)
-                    outcome = None  # type: ignore[assignment]
-                    break
-                if value is False:
-                    outcome = False
-                    break
+            outcome, chain_unresolved = evaluate_layer_conditions(layer, values)
             if outcome is True:
                 true_layers.append(layer)
             elif outcome is None:
@@ -478,20 +319,10 @@ def _emit_layeredimage_uses(
     resolved: list[Layer] = []
     unresolved_conditions: list[str] = []
     for layer in unchained:
-        result = True
-        layer_unresolved: list[str] = []
-        for condition in layer.conditions:
-            outcome = eval_cond(condition, call_state.values)
-            if outcome is None:  # UNKNOWN
-                layer_unresolved.append(condition)
-                result = None  # type: ignore[assignment]
-                break
-            if outcome is False:
-                result = False
-                break
-        if result is True:
+        outcome, layer_unresolved = evaluate_layer_conditions(layer, call_state.values)
+        if outcome is True:
             resolved.append(layer)
-        elif result is None:
+        elif outcome is None:
             unresolved_conditions.extend(layer_unresolved)
 
     # Evaluate chained layers via select_layers_for_chain.
@@ -687,17 +518,9 @@ def _process_screen_stacks_from_index(
                 # Evaluate unchained layers: only True conditions are selected.
                 # UNKNOWN conditions are recorded but the layer is NOT selected.
                 for layer in unchained:
-                    outcome = True
-                    layer_unresolved: list[str] = []
-                    for condition in layer.conditions:
-                        value = eval_cond(condition, call_state.values)
-                        if value is None:  # UNKNOWN
-                            layer_unresolved.append(condition)
-                            outcome = None  # type: ignore[assignment]
-                            break
-                        if value is False:
-                            outcome = False
-                            break
+                    outcome, layer_unresolved = evaluate_layer_conditions(
+                        layer, call_state.values
+                    )
                     if outcome is True:
                         selected.append(layer)
                     elif outcome is None:
@@ -777,143 +600,3 @@ def _process_screen_stacks_from_index(
                         ],
                         block,
                     )
-
-
-# ---------------------------------------------------------------------- #
-# Record emission (shared by all passes)
-# ---------------------------------------------------------------------- #
-
-def _emit_record(
-    name: str, kind: str, normalized: list[Layer], locations: list[dict], block: ScriptBlock,
-    index: ScriptIndex, config: GameConfig, resolver: Resolver, compositor: Compositor,
-    associator: CharacterAssociator, *,
-    dry_run: bool = False, digest: str | None = None,
-) -> CompositeRecord | None:
-    """Register a composite record (and optionally render its PNG).
-
-    ``normalized`` must already be the prefix-filtered layer list; the dedup
-    key is computed by the caller, so this function only performs the
-    per-unique-composite work (render / association / dialog) once.
-    Returns ``None`` if the stack could not be normalized to a configured
-    asset folder or rendering failed.
-    """
-    dynamic = any(x.unresolved_conditions for x in normalized)
-
-    folder = next(
-        (x.source.split("/")[:-1] for x in normalized if "/" in x.source), [kind]
-    )
-    family = config.category_for_folder(folder[0]) if folder and folder[0] else kind
-    if family is None:
-        family = folder[0] if folder else kind
-    sub = Path(*folder[1:]) if len(folder) > 1 else Path()
-    status = "dynamic_review" if dynamic else "static"
-    paths = config.resolved_paths()
-    digest = digest or _record_key(kind, name, normalized)[2]
-    target = paths["output_dir"] / status / family / sub / f"{name}__{digest}.png"
-    dimensions: tuple[int, int] | None = None
-
-    # The digest above now encodes offsets, offset_rel, and canvas size, so the
-    # PNG filename is a self-validating cache key: if the output file exists,
-    # its inputs are unchanged and PIL compositing can be skipped entirely.
-    # No separate .hash sidecar is needed.
-    if not dry_run:
-        target.parent.mkdir(parents=True, exist_ok=True)
-        if target.is_file():
-            # Re-read dimensions from the existing PNG without re-compositing.
-            try:
-                from PIL import Image as _PILImage
-
-                with _PILImage.open(target) as _im:
-                    dimensions = _im.size
-            except (OSError, ValueError):
-                dimensions = None
-        else:
-            image = compositor.composite(normalized, canvas_size=None)
-            if image is None:
-                return None
-            dimensions = (int(image.size[0]), int(image.size[1]))
-            image.save(target)
-
-    family2 = ""
-    for x in normalized:
-        if "/" in x.source:
-            f2 = config.category_for_folder(x.source.split("/", 1)[0].lower())
-            if f2 is None:
-                f2 = x.source.split("/", 1)[0].lower()
-            family2 = f2
-            break
-
-    scene_folder = config.folder_for("scene").lower()
-    is_xxx = any(
-        x.source.split("/", 1)[0].lower() == scene_folder
-        for x in normalized if "/" in x.source
-    )
-
-    usage_locations = tuple(
-        UsageLocation(
-            script=loc["script"], line=loc["line"], statement=loc["statement"],
-            state_snapshot=loc.get("state_snapshot"),
-        )
-        for loc in locations
-    )
-
-    record = CompositeRecord(
-        composite_path=target.relative_to(config.game_root.parent).as_posix(),
-        name=name,
-        kind=kind,
-        status=status,
-        definition=DefinitionLocation(
-            script=block.path.relative_to(config.game_root.parent).as_posix(),
-            line=block.line,
-        ),
-        usage_locations=usage_locations,
-        ordered_layers=tuple(normalized),
-        dimensions=dimensions,
-        dynamic_conditions=tuple(
-            sorted({c for x in normalized for c in x.unresolved_conditions})
-        ),
-        resolved_conditions=tuple(
-            sorted({c for x in normalized for c in x.conditions})
-        ),
-        family="xxx" if is_xxx else (family2 or kind),
-    )
-
-    if is_xxx:
-        char_locs = [{"script": l.script, "line": l.line, "statement": l.statement} for l in usage_locations]
-        file_index = index.per_file.get(block.path)
-        chars = associator.associate(
-            list(normalized), name, block, char_locs,
-            lines=file_index.lines if file_index is not None else None,
-        )
-        record = record.replace(
-            characters=tuple(chars),
-            character_association_status="associated" if chars else "missing",
-            family="xxx",
-        )
-    elif family2 == "char":
-        record = record.replace(family="char")
-        char_folder = None
-        for x in normalized:
-            parts = x.source.split("/", 1)
-            if len(parts) > 1 and parts[0].lower() == "chars":
-                char_folder = parts[1].split("/", 1)[0]
-                break
-        if char_folder:
-            record = record.replace(character_name=associator.display_name(char_folder))
-    elif family2 == "scene":
-        record = record.replace(family="scene")
-        file_index = index.per_file.get(block.path)
-        dialog = find_nearby_dialog(
-            block.path,
-            block.line,
-            lines=list(file_index.lines) if file_index is not None else None,
-        )
-        if dialog:
-            record = record.replace(
-                dialog_context=tuple(
-                    {"speaker": d.speaker, "text": d.text, "line": d.line}
-                    for d in dialog
-                )
-            )
-
-    return record

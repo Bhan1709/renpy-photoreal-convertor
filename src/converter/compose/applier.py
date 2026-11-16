@@ -28,10 +28,10 @@ from .config import GameConfig
 from .errors import ApplyError, ManifestError
 from .manifest import KNOWN_FAMILIES
 from .models import AdoptionReport, CompositeManifest, CompositeRecord
+from .regexp import SHOW_RE
 
 KEYWORDS = {"at", "with", "zorder", "as", "parent", "to"}
 EXPR_KEYWORDS = {"True", "False", "and", "or", "not", "None"}
-SHOW_RE = re.compile(r"^(show|scene)\s+\S+")
 
 
 class _CompositeUsageInfo(TypedDict):
@@ -49,8 +49,10 @@ class Applier:
 
     def __init__(self, config: GameConfig) -> None:
         self.config = config
-        self._source_lines: dict[str, tuple[list[int], list[tuple[int, str]]]] = {}
-        self._source_text: dict[str, list[str]] = {}
+        # Single cache for raw script lines, shared by all file-reading methods.
+        self._source_text_cache: dict[str, tuple[str, ...]] = {}
+        # Derived cache for (labels, writes) computed from raw lines.
+        self._written_cache: dict[str, tuple[list[int], list[tuple[int, str]]]] = {}
         self._definition_condition_cache: dict[
             tuple[str, int, str], dict[int, tuple[str, ...]] | None
         ] = {}
@@ -88,7 +90,7 @@ class Applier:
         for cat_path in category_files:
             cat_data = json.loads(cat_path.read_text(encoding="utf-8"))
             for c in cat_data.get("composites", []):
-                record = CompositeManifest._record_from_dict(c)
+                record = CompositeRecord.from_dict(c)
                 all_records.append(record)
                 if record.status != "static":
                     continue
@@ -291,6 +293,18 @@ class Applier:
     def _report_path(self) -> Path:
         return self.config.resolved_paths()["report_path"]
 
+    def _read_source_lines(self, path: Path) -> tuple[str, ...] | None:
+        """Read and cache raw lines from a script file, shared by all readers."""
+        key = str(path)
+        if key in self._source_text_cache:
+            return self._source_text_cache[key]
+        try:
+            lines = tuple(path.read_text(encoding="utf-8-sig", errors="replace").splitlines())
+        except OSError:
+            return None
+        self._source_text_cache[key] = lines
+        return lines
+
     # ------------------------------------------------------------------ #
     # Composite discovery
     # ------------------------------------------------------------------ #
@@ -336,13 +350,14 @@ class Applier:
     def _written_before(self, path: Path, line: int, reset_map: dict[str, list[tuple[str, str]]]) -> set[str]:
         """Return variable names written before ``line`` in ``path``."""
         key = str(path)
-        if key not in self._source_lines:
-            labels: list[int] = [0]
-            writes: list[tuple[int, str]] = []
-            try:
-                lines = path.read_text(encoding="utf-8-sig", errors="replace").splitlines()
-            except OSError:
+        if key in self._written_cache:
+            labels, writes = self._written_cache[key]
+        else:
+            lines = self._read_source_lines(path)
+            if lines is None:
                 return set()
+            labels = [0]
+            writes = []
             for number, raw in enumerate(lines, 1):
                 text = raw.split("#", 1)[0].strip()
                 if re.match(r"label\s+[\w.]+(?:\([^\n]*\))?\s*:", text):
@@ -355,20 +370,14 @@ class Applier:
                     writes.extend((number, name) for name, _value in reset_map[m_call.group(1)])
                 for name in re.findall(r"SetVariable\(\s*['\"]([A-Za-z_]\w*)['\"]", text):
                     writes.append((number, name))
-            self._source_lines[key] = (labels, writes)
-            self._source_text[key] = lines
-        labels, writes = self._source_lines[key]
+            self._written_cache[key] = (labels, writes)
         start = labels[max(0, bisect.bisect_right(labels, line - 1) - 1)]
         return {name for number, name in writes if start <= number < line}
 
     def _line_uses_tag(self, path: Path, line: int, tag: str) -> bool:
-        key = str(path)
-        if key not in self._source_text:
-            try:
-                self._source_text[key] = path.read_text(encoding="utf-8-sig", errors="replace").splitlines()
-            except OSError:
-                return False
-        lines = self._source_text[key]
+        lines = self._read_source_lines(path)
+        if lines is None:
+            return False
         if not 1 <= line <= len(lines):
             return False
         return bool(re.match(
@@ -466,9 +475,8 @@ class Applier:
         if not source.is_file():
             self._definition_condition_cache[cache_key] = None
             return None
-        try:
-            lines = source.read_text(encoding="utf-8-sig", errors="replace").splitlines()
-        except OSError:
+        lines = self._read_source_lines(source)
+        if lines is None:
             self._definition_condition_cache[cache_key] = None
             return None
         start = definition.line
