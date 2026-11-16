@@ -27,7 +27,9 @@ Public API::
 
 from __future__ import annotations
 
+from .config import load_config, write_config
 from .constants import (
+    CATEGORY_FOLDER_PATTERNS,
     CONFIG_PATH,
     COPY_EXTENSIONS,
     COPY_FILENAMES,
@@ -35,29 +37,27 @@ from .constants import (
     IMAGE_EXTENSIONS,
     RENPY_GAMES,
     ROOT,
-    CATEGORY_FOLDER_PATTERNS,
 )
+from .decompile_files import decompile_rpyc_files
 from .discovery import (
     find_game_folder,
     find_game_folders,
-    set_game_folder_rel_path,
     get_game_folder_rel_path,
+    set_game_folder_rel_path,
 )
-from .staging import copy_game_files
-from .extract import extract_rpa_file, extract_all_rpa
-from .decompile_files import decompile_rpyc_files
+from .exclusions import filter_source_files, matches_exclusion, sync_exclusions
+from .extract import extract_all_rpa, extract_rpa_file
+from .flow import process_all_games, process_game
+from .restore import restore_decompile
 from .scan import (
-    scan_source_files,
     scan_extracted_archives,
     scan_image_categories,
-    _image_mode,
+    scan_source_files,
 )
-from .config import write_config, load_config
-from .exclusions import matches_exclusion, filter_source_files, sync_exclusions
-from .flow import process_game, process_all_games
-from .restore import restore_decompile
+from .staging import copy_game_files
 
 __all__ = [
+    "CATEGORY_FOLDER_PATTERNS",
     "CONFIG_PATH",
     "COPY_EXTENSIONS",
     "COPY_FILENAMES",
@@ -65,24 +65,23 @@ __all__ = [
     "IMAGE_EXTENSIONS",
     "RENPY_GAMES",
     "ROOT",
-    "CATEGORY_FOLDER_PATTERNS",
+    "copy_game_files",
+    "decompile_rpyc_files",
+    "extract_all_rpa",
+    "extract_rpa_file",
+    "filter_source_files",
     "find_game_folder",
     "find_game_folders",
-    "set_game_folder_rel_path",
     "get_game_folder_rel_path",
-    "copy_game_files",
-    "extract_rpa_file",
-    "extract_all_rpa",
-    "decompile_rpyc_files",
-    "scan_source_files",
-    "scan_extracted_archives",
-    "scan_image_categories",
-    "write_config",
     "load_config",
     "matches_exclusion",
-    "filter_source_files",
-    "sync_exclusions",
-    "process_game",
     "process_all_games",
+    "process_game",
     "restore_decompile",
+    "scan_extracted_archives",
+    "scan_image_categories",
+    "scan_source_files",
+    "set_game_folder_rel_path",
+    "sync_exclusions",
+    "write_config",
 ]

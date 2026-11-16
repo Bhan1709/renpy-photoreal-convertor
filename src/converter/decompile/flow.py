@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .constants import CONFIG_PATH, GAME_FOLDER, RENPY_GAMES, ROOT
-from .discovery import find_game_folder, set_game_folder_rel_path
-from .decompile_files import decompile_rpyc_files
-from .extract import extract_all_rpa
 from .config import write_config
+from .constants import CONFIG_PATH, GAME_FOLDER, RENPY_GAMES, ROOT
+from .decompile_files import decompile_rpyc_files
+from .discovery import find_game_folder, set_game_folder_rel_path
+from .extract import extract_all_rpa
 from .scan import scan_image_categories
 from .staging import copy_game_files
 
