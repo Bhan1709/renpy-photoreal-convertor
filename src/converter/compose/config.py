@@ -292,7 +292,10 @@ def load_config(config_path: str | Path) -> GameConfig:
     # parser.files() and character_associator.
     exc = data.get("exclusion") or {}
     script_exc = exc.get("script") or {}
+    image_exc = exc.get("image") or {}
     script_patterns_raw = script_exc.get("patterns") or []
+    image_patterns_raw = image_exc.get("patterns") or []
+
     script_exclusion_patterns = [re.compile(p) for p in script_patterns_raw]
 
     if script_exclusion_patterns:

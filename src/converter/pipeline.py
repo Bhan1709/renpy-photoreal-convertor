@@ -81,9 +81,15 @@ def _restore_compose_game(config: GameConfig, dry_run: bool) -> None:
 def _prompt_exclusion_patterns(config_path: Path = CONFIG_PATH) -> None:
     """Prompt the user to add exclusion patterns to ``config.json``.
 
-    Reads the current ``exclusion.patterns`` from ``config.json``, asks the
-    user for additional comma-separated patterns, merges them in, and writes
-    the file back.  Pressing Enter keeps the current patterns unchanged.
+    Reads the current ``exclusion.script.patterns`` and
+    ``exclusion.image.patterns`` from ``config.json``, asks the user for
+    additional comma-separated patterns for each type, merges them in, and
+    writes the file back.  Pressing Enter keeps the current patterns unchanged.
+
+    Script exclusions filter matching entries from ``rpy_files``/``ren_py_files``
+    (the include set used by parser.files() and character_associator).
+    Image exclusions filter layers whose source path matches a pattern in
+    record._normalize_layers, preventing those image folders from being scanned.
     """
     if not config_path.is_file():
         print(f"Config not found: {config_path}")
@@ -96,21 +102,50 @@ def _prompt_exclusion_patterns(config_path: Path = CONFIG_PATH) -> None:
         print(f"Could not read config {config_path}: {exc}")
         return
 
-    current = (data.get("exclusion", {}) or {}).get("patterns", [])
-    print(f"\nCurrent exclusion patterns: {current}")
+    exclusion = data.get("exclusion", {}) or {}
+    script_current = exclusion.get("script", {}).get("patterns", [])
+    image_current = exclusion.get("image", {}).get("patterns", [])
+
+    print(f"\nCurrent script exclusion patterns: {script_current}")
     raw = input(
-        "Enter additional exclusion patterns (comma-separated) "
+        "Enter additional script exclusion patterns (comma-separated) "
         "or press Enter to keep current: "
     ).strip()
-    if not raw:
+    script_patterns = (
+        [p.strip() for p in raw.split(",") if p.strip()] if raw else []
+    )
+    if script_patterns:
+        script_current = sorted(set(script_current) | set(script_patterns))
+
+    print(f"\nCurrent image exclusion patterns: {image_current}")
+    raw = input(
+        "Enter additional image exclusion patterns (comma-separated) "
+        "or press Enter to keep current: "
+    ).strip()
+    image_patterns = (
+        [p.strip() for p in raw.split(",") if p.strip()] if raw else []
+    )
+    if image_patterns:
+        image_current = sorted(set(image_current) | set(image_patterns))
+
+    if not script_patterns and not image_patterns:
         return
 
-    patterns = [p.strip() for p in raw.split(",") if p.strip()]
-    merged = sorted(set(current) | set(patterns))
-    data.setdefault("exclusion", {})["patterns"] = merged
+    data["exclusion"] = {
+        "script": {
+            "patterns": script_current,
+            "note": "Patterns matched against rpy_files/ren_py_files entries; matching entries are removed from the scan list",
+        },
+        "image": {
+            "patterns": image_current,
+            "note": "Patterns matched against image source paths; layers whose source starts with a matching folder are excluded from compose scanning",
+        },
+    }
     try:
         config_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-        print(f"Updated exclusion patterns: {merged}")
+        print(
+            f"Updated exclusion patterns: script={script_current}, image={image_current}"
+        )
     except OSError as exc:
         print(f"Could not write config {config_path}: {exc}")
 

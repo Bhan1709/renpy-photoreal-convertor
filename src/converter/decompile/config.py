@@ -36,8 +36,14 @@ def write_config(
         "extracted_archives": extracted_archives or [],
         "image_categories": image_categories or {},
         "exclusion": {
-            "patterns": [],
-            "note": "Glob/substring patterns to exclude from downstream processing",
+            "script": {
+                "patterns": [],
+                "note": "Patterns matched against rpy_files/ren_py_files entries; matching entries are removed from the scan list",
+            },
+            "image": {
+                "patterns": [],
+                "note": "Patterns matched against image source paths; layers whose source starts with a matching folder are excluded from compose scanning",
+            },
         },
     }
 
@@ -52,6 +58,10 @@ def load_config(config_path: Path = CONFIG_PATH) -> dict:
 
     Returns the parsed JSON dict, or an empty dict if the file is missing
     or invalid (so callers can degrade gracefully).
+
+    Expects ``exclusion`` to use the dual
+    ``exclusion.script.patterns`` / ``exclusion.image.patterns`` format
+    written by :func:`write_config`.
     """
     try:
         return json.loads(config_path.read_text(encoding="utf-8"))
