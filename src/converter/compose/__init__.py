@@ -67,7 +67,13 @@ from .models import (
     Layer,
     UsageLocation,
 )
-from .restore import RestoreError, find_archive, restore_from_manifest, restore_rpy_files
+
+from converter.restore import (
+    RestoreError,
+    find_archive,
+    restore_from_manifest,
+    restore_rpy_files,
+)
 
 __all__ = [
     "Applier",
