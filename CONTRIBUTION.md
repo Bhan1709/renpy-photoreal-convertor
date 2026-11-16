@@ -64,12 +64,11 @@ confirm they pass:
 
 ```bash
 uv run ruff
-uv run mypy --explicit-package-bases src/converter/decompile/
+uv run mypy src/
 ```
 
 - `uv run ruff` — lints the codebase. Must pass with zero errors.
-- `uv run mypy --explicit-package-bases src/converter/decompile/` — type-checks
-  the decompile subpackage. Must pass with zero issues.
+- `uv run mypy src/` — type-checks the source tree. Must pass with zero issues.
 
 If either check fails, fix the issues before opening the PR.
 
@@ -102,7 +101,7 @@ fix, not the implementation details.
 ## Checks
 
 - [ ] `uv run ruff` — passed
-- [ ] `uv run mypy --explicit-package-bases src/converter/decompile/` — passed
+- [ ] `uv run mypy src/` — passed
 ```
 
 Do not make the summary overly long. Link to detailed discussion in the issue

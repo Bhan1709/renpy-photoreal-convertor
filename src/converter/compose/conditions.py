@@ -249,7 +249,7 @@ def select_layers_for_chain(
     if not layers:
         return [], []
 
-    results = []
+    results: list[tuple[Layer, bool | None, list[str]]] = []
     for layer in layers:
         outcome = True
         unresolved: list[str] = []

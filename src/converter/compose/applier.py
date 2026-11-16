@@ -21,7 +21,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import NotRequired, TypedDict
 
-from tqdm import tqdm
+from tqdm import tqdm  # type: ignore[import-untyped]
 
 from .conditions import get_reset_defaults_map
 from .config import GameConfig

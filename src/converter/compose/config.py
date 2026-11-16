@@ -10,9 +10,10 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import cast
 
 # Canonical component categories shared by every Ren'Py game.
 CANONICAL_CATEGORIES: frozenset[str] = frozenset({"bg", "char", "scene", "gui"})
@@ -386,7 +387,7 @@ def default_config(
         if key not in valid_fields:
             continue
         if key == "non_character_folders" and not isinstance(value, frozenset):
-            value = frozenset(value)  # type: ignore[arg-type]
+            value = frozenset(cast(Iterable[str], value))  # type: ignore[arg-type]
         kwargs[key] = value
 
     cfg = GameConfig(

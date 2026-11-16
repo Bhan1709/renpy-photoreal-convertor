@@ -22,6 +22,7 @@ and merges all category manifests in memory.
 from __future__ import annotations
 
 import json
+from typing import cast
 
 from .config import GameConfig
 from .errors import ManifestError
@@ -100,7 +101,9 @@ class ManifestWriter:
             index_path = reports_dir / "manifest_index.json"
             index_path.write_text(json.dumps(index_manifest, indent=2), encoding="utf-8")
 
-            association_summary = manifest.summary.get("xxx_character_associations", {})
+            association_summary = cast(
+                dict, manifest.summary.get("xxx_character_associations", {})
+            )
 
         _print_summary(manifest, association_summary)
         return manifest

@@ -71,7 +71,10 @@ def main(argv=None) -> int:
 
     # --- Restore-compose mode (standalone, skip compose/apply) ---
     if args.restore_compose:
-        results = restore_from_manifest(config, dry_run=args.dry_run)
+        paths = config.resolved_paths()
+        results = restore_from_manifest(
+            config.game_root, paths["manifest_path"], dry_run=args.dry_run
+        )
         action = "Would restore" if args.dry_run else "Restored"
         print(f"{action} {len(results)} .rpy file(s) from manifest:")
         for rel, status in sorted(results.items()):

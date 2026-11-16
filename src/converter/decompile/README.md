@@ -303,7 +303,7 @@ run = "python src/converter/decompile/decompile.py"
 
 [tasks.exclusions-sync]
 description = "Filter config.json matching patterns by exclusion.patterns"
-run = "python src/converter/decompile/sync_exclusions.py"
+run = "python src/converter/decompile/sync_exclusions_cli.py"
 ```
 
 ### `pyproject.toml` (dependencies)

@@ -200,7 +200,7 @@ class CharacterAssociator:
         else:
             include = set(self.config.rpy_files) if self.config.rpy_files else None
             script_items = [
-                (script, None) for script in files(self.config, include=include)
+                (script, ()) for script in files(self.config, include=include)
             ]
         for script, lines in script_items:
             if lines is None:

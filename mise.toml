@@ -35,7 +35,7 @@ run = "python src/converter/decompile/decompile.py"
 
 [tasks.exclusions-sync]
 description = "Remove exclusion-pattern-matched entries from rpy_files/ren_py_files in src/converter/config.json"
-run = "python src/converter/decompile/sync_exclusions.py"
+run = "python src/converter/decompile/sync_exclusions_cli.py"
 
 [tasks.compose]
 description = "Compose composites + write manifest for a game (skip apply). Uses src/converter/config.json (no --game needed)."

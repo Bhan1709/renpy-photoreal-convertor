@@ -3,7 +3,7 @@
 All logic now lives in focused submodules.  This module re-exports the public
 API so existing imports (e.g. from :mod:`converter.pipeline`) keep working::
 
-    from src.converter.decompile.decompile import (
+    from converter.decompile.decompile import (
         decompile_rpyc_files,
         extract_rpa_file,
         find_game_folders,
@@ -59,7 +59,7 @@ except ImportError:  # pragma: no cover - run as script
     if str(_repo_root) not in sys.path:
         sys.path.insert(0, str(_repo_root))
 
-    from src.converter.decompile import (
+    from converter.decompile import (
         CATEGORY_FOLDER_PATTERNS,
         CONFIG_PATH,
         COPY_EXTENSIONS,
