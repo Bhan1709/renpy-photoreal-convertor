@@ -19,7 +19,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
-from src.converter.decompile.decompile import sync_exclusions  # noqa: E402
+from src.converter.decompile.decompile import sync_exclusions
 
 CONFIG_PATH = Path("src/converter/config.json")
 

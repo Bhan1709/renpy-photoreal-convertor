@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import fnmatch
+import json
 from pathlib import Path
 
 from .config import load_config
@@ -23,11 +24,8 @@ def matches_exclusion(path: str, patterns: list[str]) -> bool:
             continue
         if pattern in path:
             return True
-        try:
-            if fnmatch.fnmatchcase(path, pattern):
-                return True
-        except Exception:  # pragma: no cover - defensive
-            pass
+        if fnmatch.fnmatchcase(path, pattern):
+            return True
     return False
 
 

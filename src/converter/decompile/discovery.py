@@ -38,7 +38,7 @@ def find_game_folder(renpy_games: Path = RENPY_GAMES) -> Path | None:
 
     try:
         dest = GAME_FOLDER.resolve()
-    except Exception:  # pragma: no cover - defensive
+    except Exception:  # pragma: no cover - defensive  # noqa: BLE001
         dest = GAME_FOLDER
 
     matches: list[Path] = []
@@ -47,7 +47,7 @@ def find_game_folder(renpy_games: Path = RENPY_GAMES) -> Path | None:
             continue
         try:
             resolved = item.resolve()
-        except Exception:  # pragma: no cover - defensive
+        except Exception:  # pragma: no cover - defensive  # noqa: BLE001
             resolved = item
         if resolved == dest:
             # Skip our own consolidated output folder on re-runs.

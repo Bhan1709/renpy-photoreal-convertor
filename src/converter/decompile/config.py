@@ -55,6 +55,6 @@ def load_config(config_path: Path = CONFIG_PATH) -> dict:
     """
     try:
         return json.loads(config_path.read_text(encoding="utf-8"))
-    except (FileNotFoundError, json.JSONDecodeError, OSError) as exc:  # noqa: BLE001
+    except (FileNotFoundError, json.JSONDecodeError, OSError) as exc:
         print(f"  [WARN] Could not load config {config_path}: {exc}")
         return {}

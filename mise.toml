@@ -12,9 +12,9 @@ description = "Run OpenCode monitor with a specified config profile"
 usage = 'arg "<profile>" default="nvidia-glm" help="Profile key from config.json"'
 run = "python -m agent {{ usage.profile }}"
 
-[tasks.glm]
-description = "Shortcut: Launch OpenCode with NVIDIA GLM-5.3 Flash"
-run = "python -m agent nvidia-glm"
+[tasks.nvidia]
+description = "Shortcut: Launch OpenCode with NVIDIA Nemotron-3.5-Super-VL"
+run = "python -m agent nvidia-nemotron-3.5-super-vl"
 
 [tasks.stop-proxy]
 description = "Stop the shared NVIDIA rate-limit proxy"
