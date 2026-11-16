@@ -23,8 +23,10 @@ from tqdm import tqdm  # type: ignore[import-untyped]
 from .character_associator import CharacterAssociator
 from .compositor import Compositor
 from .conditions import (
-    evaluate_layer_conditions,
-    select_layers_for_chain,
+    UNKNOWN,
+    condition_variables,
+    eval_cond,
+    parse_literal,
     state_at_call,
 )
 from .config import GameConfig
@@ -197,87 +199,256 @@ def _process_layeredimage_uses_from_index(
             )
 
 
+# ``var == literal``, ``low <= var <= high`` and bare ``var`` condition atoms.
+_CONDITION_EQ_RE = re.compile(
+    r"\b([A-Za-z_]\w*)\s*==\s*"
+    r"(-?\d+(?:\.\d+)?|True|False|None|'[^']*'|\"[^\"]*\")(?!\w)"
+)
+_CONDITION_BETWEEN_RE = re.compile(
+    r"(-?\d+(?:\.\d+)?)\s*<=\s*([A-Za-z_]\w*)\s*<=\s*(-?\d+(?:\.\d+)?)"
+)
+_CONDITION_BARE_RE = re.compile(r"^\s*(not\s+)?([A-Za-z_]\w*)\s*$")
+
+
+def _condition_vars(condition: str) -> set[str]:
+    """Extract variable names from a condition expression."""
+    return condition_variables(condition)
+
+
+def _condition_candidates(conditions: list[str]) -> dict[str, list[object]]:
+    """Collect candidate values for each variable mentioned in ``conditions``.
+
+    Only values that can make the variable satisfy a condition atom are
+    collected: equality literals, lower bounds of range tests, and truthy /
+    falsy values for bare boolean tests.  Ordering follows source order so the
+    first candidate is a stable reference value.
+    """
+    candidates: dict[str, list[object]] = {}
+
+    def add(name: str, value: object) -> None:
+        bucket = candidates.setdefault(name, [])
+        if value not in bucket:
+            bucket.append(value)
+
+    for condition in conditions:
+        for name, literal in _CONDITION_EQ_RE.findall(condition):
+            value = parse_literal(literal)
+            if value is not UNKNOWN:
+                add(name, value)
+        for low, name, high in _CONDITION_BETWEEN_RE.findall(condition):
+            low_value = parse_literal(low)
+            high_value = parse_literal(high)
+            if low_value is not UNKNOWN and high_value is not UNKNOWN:
+                add(name, low_value)
+        bare = _CONDITION_BARE_RE.match(condition)
+        if bare:
+            # Bare boolean tests have two feasible states; the falsy one is
+            # the neutral reference (no extra overlay) and the truthy one is
+            # emitted as an additional scenario.
+            add(bare.group(2), False)
+            add(bare.group(2), True)
+    return candidates
+
+
+def _conditions_true(conditions: tuple[str, ...], env: dict[str, object]) -> bool:
+    """Return True when every condition holds in ``env`` (UNKNOWN counts as False).
+
+    ``<else>`` markers are skipped: callers evaluate chain branches in source
+    order and stop at the first match, so an ``else`` branch only wins when no
+    earlier branch did.
+    """
+    for condition in conditions:
+        if "<else>" in condition:
+            continue
+        if eval_cond(condition, env) is not True:
+            return False
+    return True
+
+
+def _branch_groups(chain_layers: list[Layer]) -> list[tuple[tuple[str, ...], list[Layer]]]:
+    """Split one if/elif/else chain into ordered branch groups.
+
+    Layers that share a condition tuple belong to the same branch (a branch
+    may contribute several images), so they must be included or excluded
+    together.
+    """
+    groups: list[tuple[tuple[str, ...], list[Layer]]] = []
+    for layer in sorted(chain_layers, key=lambda item: item.line):
+        if groups and groups[-1][0] == layer.conditions:
+            groups[-1][1].append(layer)
+        else:
+            groups.append((layer.conditions, [layer]))
+    return groups
+
+
+def _layers_for_assignment(
+    unchained: list[Layer],
+    chained: dict[str, list[Layer]],
+    env: dict[str, object],
+) -> list[Layer]:
+    """Resolve the layers Ren'Py would show for one variable assignment.
+
+    This mirrors layeredimage semantics: unchained layers are shown when all
+    their conditions hold, and each if/elif/else chain contributes only the
+    first branch whose conditions hold (falling back to ``else``).
+    """
+    layers: list[Layer] = []
+    for layer in unchained:
+        if _conditions_true(layer.conditions, env):
+            layers.append(layer)
+    for chain_layers in chained.values():
+        for conditions, branch_layers in _branch_groups(chain_layers):
+            if _conditions_true(conditions, env):
+                layers.extend(branch_layers)
+                break
+    return layers
+
+
+def _env_key(env: dict[str, object]) -> tuple[tuple[str, str], ...]:
+    """Return a stable key for a variable assignment."""
+    return tuple(sorted((name, repr(value)) for name, value in env.items()))
+
+
+def _satisfying_assignment(conditions: tuple[str, ...]) -> dict[str, object] | None:
+    """Build a variable assignment that makes all ``conditions`` hold.
+
+    Returns ``None`` when the constraints conflict or cannot be expressed with
+    the supported atoms.
+    """
+    env: dict[str, object] = {}
+    for condition in conditions:
+        for name, literal in _CONDITION_EQ_RE.findall(condition):
+            value = parse_literal(literal)
+            if value is UNKNOWN:
+                return None
+            if name in env and env[name] != value:
+                return None
+            env[name] = value
+        for low, name, high in _CONDITION_BETWEEN_RE.findall(condition):
+            low_value = parse_literal(low)
+            high_value = parse_literal(high)
+            if not isinstance(low_value, (int, float)) or not isinstance(
+                high_value, (int, float)
+            ):
+                return None
+            if name in env:
+                current = env[name]
+                if not isinstance(current, (int, float)) or not (
+                    low_value <= current <= high_value
+                ):
+                    return None
+            else:
+                env[name] = low_value
+        bare = _CONDITION_BARE_RE.match(condition)
+        if bare:
+            name = bare.group(2)
+            value = not bool(bare.group(1))
+            if name in env and env[name] != value:
+                return None
+            env[name] = value
+    if not _conditions_true(conditions, env):
+        return None
+    return env
+
+
 def _enumerate_condition_variants(
     unchained: list[Layer],
     chained: dict[str, list[Layer]],
     values: dict[str, object],
 ) -> list[list[Layer]]:
+    """Enumerate feasible layer sets for one usage, one per runtime state.
+
+    Earlier versions combined per-branch options independently, which mixed
+    mutually exclusive layers (e.g. ``amberArmL == 3`` and ``amberArmL == 5``,
+    or ``hair1`` and ``hair2``) into a single image because every ``if`` is its
+    own chain.  Instead, variants are now derived from *consistent variable
+    assignments*:
+
+    * Start from the statically reconstructed call state.
+    * Pick a reference value for every unresolved variable.
+    * Vary one variable at a time (plus one scenario per coupled multi-variable
+      condition) away from that reference.
+    * Resolve the full layer set for each assignment, then deduplicate.
+
+    This covers every branch without taking a cartesian product over chains,
+    so no variant can contain two mutually exclusive overlays.
+
+    Values already known at the call site (``$`` assignments and game
+    ``default`` statements) are treated as fixed: forcing every defaulted
+    variable to vary instead yields thousands of near-identical composites per
+    usage.  Variables with no static value at all are the ones enumerated.
     """
-    Enumerate all feasible variant layer sets when some conditions are
-    statically unresolved. Each variant is a list of layers that would be
-    composited together for one possible runtime condition outcome.
-
-    Unchained layers with unknown conditions branch (include/exclude).
-    Chained layers (if/elif/else) produce one variant per possible branch.
-    """
-    # Base: layers that are always included (no conditions, or conditions
-    # that statically evaluate to True).
-    base: list[Layer] = []
-
-    # Unchained layers whose conditions are statically unknown.
-    unchained_unknown: list[tuple[Layer, tuple[str, ...]]] = []
-
+    conditions: list[str] = []
     for layer in unchained:
-        outcome, unresolved = evaluate_layer_conditions(layer, values)
-        if outcome is True:
-            base.append(layer)
-        elif outcome is None:
-            unchained_unknown.append((layer, tuple(unresolved)))
-        # outcome is False: layer is dropped from every variant.
-
-    # Per-chain branch options. Each chain is an independent if/elif/else
-    # group; we produce one option per feasible branch outcome.
-    chain_options: list[list[list[Layer]]] = []
-
+        conditions.extend(layer.conditions)
     for chain_layers in chained.values():
-        # Separate else (no conditions) from conditional layers.
-        else_layers = [l for l in chain_layers if not l.conditions]
-        cond_layers = [l for l in chain_layers if l.conditions]
+        for layer in chain_layers:
+            conditions.extend(layer.conditions)
 
-        true_layers: list[Layer] = []
-        unknown_layers: list[tuple[Layer, tuple[str, ...]]] = []
+    candidates = _condition_candidates(conditions)
+    referenced: set[str] = set()
+    for condition in conditions:
+        referenced.update(_condition_vars(condition))
 
-        for layer in cond_layers:
-            outcome, chain_unresolved = evaluate_layer_conditions(layer, values)
-            if outcome is True:
-                true_layers.append(layer)
-            elif outcome is None:
-                unknown_layers.append((layer, tuple(chain_unresolved)))
-            # outcome is False: layer is dropped.
+    # Variables whose value is not fixed by the reconstructed call state.
+    varying = referenced - set(values)
 
-        if true_layers:
-            # Some conditions are True — only those layers are selected.
-            # Else layers are excluded (if/elif takes priority).
-            chain_options.append([true_layers])
-        elif unknown_layers:
-            # All conditional conditions unknown — one variant per branch.
-            options = [[layer] for layer, _ in unknown_layers]
-            if else_layers:
-                options.append(list(else_layers))  # else/fallback variant
-            chain_options.append(options)
-        elif else_layers:
-            # Only else layers — always selected.
-            chain_options.append([list(else_layers)])
-        else:
-            chain_options.append([[]])
+    # Reference assignment: known state plus a canonical value for unknowns.
+    reference: dict[str, object] = dict(values)
+    for name in sorted(varying):
+        options = candidates.get(name)
+        if options:
+            reference[name] = options[0]
 
-    # Cartesian product of all branch choices.
-    variants: list[list[Layer]] = [list(base)]
+    assignments: list[dict[str, object]] = [reference]
+    seen_envs = {_env_key(reference)}
 
-    for layer, _ in unchained_unknown:
-        new_variants = []
-        for v in variants:
-            new_variants.append(list(v))                       # without this layer
-            new_variants.append(list(v) + [layer])             # with this layer
-        variants = new_variants
+    def add_assignment(env: dict[str, object]) -> None:
+        key = _env_key(env)
+        if key in seen_envs:
+            return
+        seen_envs.add(key)
+        assignments.append(env)
 
-    for options in chain_options:
-        new_variants = []
-        for v in variants:
-            for option in options:
-                new_variants.append(list(v) + list(option))
-        variants = new_variants
+    # One scenario per alternative value of each varying variable.
+    for name in sorted(varying):
+        for value in candidates.get(name, ()):
+            if name in reference and reference[name] == value:
+                continue
+            add_assignment({**reference, name: value})
 
+    # One scenario per coupled, multi-variable condition (e.g.
+    # ``amberBoobs == 3 and amberOutfit == 0``) so combined overlays are
+    # produced without enumerating every other variable's values.
+    seen_conditions: set[tuple[str, ...]] = set()
+    for layer in unchained:
+        seen_conditions.add(layer.conditions)
+    for chain_layers in chained.values():
+        seen_conditions.update(conditions for conditions, _ in _branch_groups(chain_layers))
+
+    for group in sorted(seen_conditions):
+        used = set()
+        for condition in group:
+            used.update(_condition_vars(condition))
+        if len(used & varying) < 2:
+            continue
+        assignment = _satisfying_assignment(group)
+        if assignment is None:
+            continue
+        add_assignment({**reference, **assignment})
+
+    variants: list[list[Layer]] = []
+    seen_variants: set[tuple[tuple[object, ...], ...]] = set()
+    for env in assignments:
+        resolved = _layers_for_assignment(unchained, chained, env)
+        key = tuple(
+            (layer.source, layer.line, layer.conditions, layer.attribute, layer.chain_id)
+            for layer in resolved
+        )
+        if key in seen_variants:
+            continue
+        seen_variants.add(key)
+        variants.append(resolved)
     return variants
 
 
@@ -314,43 +485,9 @@ def _emit_layeredimage_uses(
         else:
             unchained.append(layer)
 
-    # Evaluate unchained layers: only True conditions are selected.
-    # UNKNOWN conditions are recorded but the layer is NOT selected.
-    resolved: list[Layer] = []
-    unresolved_conditions: list[str] = []
-    for layer in unchained:
-        outcome, layer_unresolved = evaluate_layer_conditions(layer, call_state.values)
-        if outcome is True:
-            resolved.append(layer)
-        elif outcome is None:
-            unresolved_conditions.extend(layer_unresolved)
-
-    # Evaluate chained layers via select_layers_for_chain.
-    for cid, chain_layers in chained.items():
-        chain_selected, chain_unresolved = select_layers_for_chain(chain_layers, call_state)
-        unresolved_conditions.extend(chain_unresolved)
-        resolved.extend(chain_selected)
-
-    # If there are unresolved conditions, generate one static composite per
-    # feasible runtime condition outcome instead of a single dynamic_review
-    # superset.  Each variant gets status="static" and can be selected at
-    # runtime by a ConditionSwitch built by the apply pass.
-    if unresolved_conditions:
-        variants = _enumerate_condition_variants(unchained, chained, call_state.values)
-        locations = [
-            {
-                "script": f.relative_to(config.game_root.parent).as_posix(),
-                "line": no,
-                "statement": statement,
-            }
-        ]
-        for variant_layers in variants:
-            variant_layers = _restore_layer_order(variant_layers, selected)
-            emit_wrapper(tag, "layeredimage", variant_layers, locations, block)
-        return
-
-    resolved = _restore_layer_order(resolved, selected)
-
+    # Resolve one composite per feasible runtime state.  The reconstructed
+    # call state is used as the reference; only variables with no static value
+    # are enumerated, so each variant is internally consistent.
     locations = [
         {
             "script": f.relative_to(config.game_root.parent).as_posix(),
@@ -358,8 +495,12 @@ def _emit_layeredimage_uses(
             "statement": statement,
         }
     ]
-    if resolved:
-        emit_wrapper(tag, "layeredimage", resolved, locations, block)
+    for variant_layers in _enumerate_condition_variants(
+        unchained, chained, call_state.values
+    ):
+        ordered = _restore_layer_order(variant_layers, selected)
+        if ordered:
+            emit_wrapper(tag, "layeredimage", ordered, locations, block)
 
 
 # ---------------------------------------------------------------------- #
@@ -503,8 +644,6 @@ def _process_screen_stacks_from_index(
                 call_state = state_at_call(
                     f, usage.line, defaults, config, lines=file_index.lines
                 )
-                selected: list[Layer] = []
-                unknown_conditions: list[str] = []
 
                 chained: dict[str, list[Layer]] = defaultdict(list)
                 unchained: list[Layer] = []
@@ -515,88 +654,29 @@ def _process_screen_stacks_from_index(
                     else:
                         unchained.append(layer)
 
-                # Evaluate unchained layers: only True conditions are selected.
-                # UNKNOWN conditions are recorded but the layer is NOT selected.
-                for layer in unchained:
-                    outcome, layer_unresolved = evaluate_layer_conditions(
-                        layer, call_state.values
-                    )
-                    if outcome is True:
-                        selected.append(layer)
-                    elif outcome is None:
-                        unknown_conditions.extend(layer_unresolved)
-
-                # Evaluate chained layers via select_layers_for_chain.
-                for cid, chain_layers in chained.items():
-                    chain_selected, chain_unresolved = select_layers_for_chain(
-                        chain_layers, call_state
-                    )
-                    unknown_conditions.extend(chain_unresolved)
-                    selected.extend(chain_selected)
-
-                # If there are unknown conditions, generate one static composite per
-                # feasible runtime condition outcome instead of a single dynamic_review
-                # superset.  Each variant gets status="static" and can be selected at
-                # runtime by a ConditionSwitch built by the apply pass.
-                if unknown_conditions:
-                    variants = _enumerate_condition_variants(unchained, chained, call_state.values)
-                    relevant_names = {
-                        used_name
-                        for layer in stack
-                        for condition in layer.conditions
-                        for used_name in re.findall(r"\b[A-Za-z_]\w*\b", condition)
-                        if used_name not in {"True", "False", "and", "or", "not"}
+                # Variables that are statically known only through ``default``
+                # are treated as fixed at their default value; only genuinely
+                # unresolved variables produce alternative composites.
+                relevant_names: set[str] = set()
+                for layer in stack:
+                    for condition in layer.conditions:
+                        relevant_names.update(_condition_vars(condition))
+                state_snapshot = {
+                    key: call_state.values[key]
+                    for key in sorted(relevant_names)
+                    if key in call_state.values
+                }
+                locations = [
+                    {
+                        "script": f.relative_to(config.game_root.parent).as_posix(),
+                        "line": usage.line,
+                        "statement": usage.statement,
+                        "state_snapshot": state_snapshot,
                     }
-                    state_snapshot = {
-                        key: call_state.values[key]
-                        for key in sorted(relevant_names)
-                        if key in call_state.values
-                    }
-                    locations = [
-                        {
-                            "script": f.relative_to(config.game_root.parent).as_posix(),
-                            "line": usage.line,
-                            "statement": usage.statement,
-                            "state_snapshot": state_snapshot,
-                        }
-                    ]
-                    for variant_layers in variants:
-                        variant_layers = _restore_layer_order(variant_layers, stack)
-                        emit_wrapper(
-                            name,
-                            "screen",
-                            variant_layers,
-                            locations,
-                            block,
-                        )
-                    continue
-
-                selected = _restore_layer_order(selected, stack)
-
-                if selected:
-                    relevant_names = {
-                        used_name
-                        for layer in stack
-                        for condition in layer.conditions
-                        for used_name in re.findall(r"\b[A-Za-z_]\w*\b", condition)
-                        if used_name not in {"True", "False", "and", "or", "not"}
-                    }
-                    state_snapshot = {
-                        key: call_state.values[key]
-                        for key in sorted(relevant_names)
-                        if key in call_state.values
-                    }
-                    emit_wrapper(
-                        name,
-                        "screen",
-                        selected,
-                        [
-                            {
-                                "script": f.relative_to(config.game_root.parent).as_posix(),
-                                "line": usage.line,
-                                "statement": usage.statement,
-                                "state_snapshot": state_snapshot,
-                            }
-                        ],
-                        block,
-                    )
+                ]
+                for variant_layers in _enumerate_condition_variants(
+                    unchained, chained, call_state.values
+                ):
+                    ordered = _restore_layer_order(variant_layers, stack)
+                    if ordered:
+                        emit_wrapper(name, "screen", ordered, locations, block)
