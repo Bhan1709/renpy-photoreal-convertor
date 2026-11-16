@@ -1,0 +1,15 @@
+#!/bin/sh
+# Pre-commit hook: prevent committing directly to trunk branches.
+# Install: cp .githooks/pre-commit .git/hooks/pre-commit (or set core.hooksPath)
+
+branch=$(git branch --show-current)
+
+case "$branch" in
+  main|master|develop)
+    echo "ERROR: Committing directly to '$branch' is not allowed."
+    echo "       Create a feature branch first (e.g. git checkout -b feature/your-change)."
+    exit 1
+    ;;
+esac
+
+exit 0

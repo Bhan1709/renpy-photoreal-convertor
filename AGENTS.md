@@ -61,6 +61,8 @@ Do **not** hardcode Python versions or paths; respect `.python-version` and mise
 
 - **Do not commit or push unless explicitly asked.** Agents must not create git commits, push branches, or alter the commit history unless the user specifically requests it. Limit yourself to reading files, making code edits, and running commands/tests — leave version-control actions to the user.
 - **Never commit directly to `main`.** All changes must be made on a dedicated feature branch (e.g. `feature/your-change-name`), never on `main` or the default branch. Create a branch before committing, then open a pull request for review. See `CONTRIBUTION.md` for branch naming (Conventional Branch) and commit message (Conventional Commits) requirements.
+- **Pre-commit hook.** A hook at `.githooks/pre-commit` blocks commits on `main`, `master`, or `develop`. It is active via `git config core.hooksPath .githooks` (already set). If it ever fires, create a feature branch and try again.
+- **GitHub branch protection.** `main` is protected on GitHub: direct pushes are blocked; all changes must come through a pull request with at least one approving review.
 - **Clean up temporary files.** Remove any temporary files, scratch scripts, test outputs, or artifacts created during testing before you finish. Do not leave test files, debug output, or temporary data in the repository.
 - **Show full console output.** Do not truncate command or tool output unless the user specifically asks for it. Always return the complete log so nothing is hidden.
 - **Do not commit secrets.** `mise.local.toml` is gitignored and may contain `NVIDIA_API_KEY` — never add real keys to tracked files.

@@ -29,6 +29,18 @@ Examples:
 
 Lowercase only, kebab-case description, no leading/trailing hyphens.
 
+## Branch protections
+
+Two layers prevent direct commits to `main`:
+
+1. **Pre-commit hook** (`.githooks/pre-commit`): blocks `git commit` on `main`,
+   `master`, or `develop`. Active via `git config core.hooksPath .githooks`. If
+   it fires, create a feature branch and try again.
+
+2. **GitHub branch protection**: `main` is protected on GitHub — direct pushes
+   are blocked. All changes must come through a pull request with at least one
+   approving review.
+
 ## Making changes
 
 1. Create a branch from `main`:
