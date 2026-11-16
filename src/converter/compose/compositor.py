@@ -95,7 +95,7 @@ class CPUCompositor:
                 layer = layer.replace(
                     warning=f"size {im.size} differs from canvas {size}; top-left composited"
                 )
-            offset = self._resolve_offset(layer, size)
+            offset = self._resolve_offset(layer, size, im.size)
             canvas.alpha_composite(im, (int(offset[0]), int(offset[1])))
         return canvas
 
@@ -108,12 +108,21 @@ class CPUCompositor:
             return "unique_folder_suffix_correlation"
         return None
 
-    def _resolve_offset(self, layer: Layer, size: tuple[int, int]) -> tuple[int, int]:
+    def _resolve_offset(self, layer: Layer, size: tuple[int, int], image_size: tuple[int, int] | None = None) -> tuple[int, int]:
         offset = layer.offset
         if offset is None:
             rel = layer.offset_rel
-            if rel is not None:
-                offset = (int(rel[0] * size[0]), int(rel[1] * size[1]))
+            if rel is not None and image_size is not None:
+                # xalign/yalign specify where the child's alignment point
+                # (default center) sits within the container, as a fraction.
+                # Ren'Py treats xalign as both the container position fraction
+                # and the child alignment fraction, so the top-left offset is:
+                #   fraction * canvas_size - fraction * image_size
+                # = fraction * (canvas_size - image_size)
+                offset = (
+                    int(rel[0] * (size[0] - image_size[0])),
+                    int(rel[1] * (size[1] - image_size[1])),
+                )
             else:
                 offset = (0, 0)
         return (int(offset[0]), int(offset[1]))
