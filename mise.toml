@@ -35,7 +35,7 @@ run = "python src/converter/decompile/decompile.py"
 
 [tasks.clean-decompile]
 description = "Remove decompile artifacts: src/renpy_game/game folder and src/converter/config.json"
-run = "python -c \"import shutil, pathlib; gf=pathlib.Path('src/renpy_game/game'); cp=pathlib.Path('src/converter/config.json'); removed=[]\nif gf.exists(): shutil.rmtree(gf); removed.append(str(gf))\nif cp.exists(): cp.unlink(); removed.append(str(cp))\nprint('cleaned decompile artifacts:', removed if removed else 'none')\""
+run = "python -c \"from converter.restore import restore_decompile; restore_decompile()\""
 
 [tasks.decompile-clean]
 description = "Clean decompile artifacts then regenerate them (clean + decompile)"
