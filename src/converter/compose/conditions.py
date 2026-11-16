@@ -2,7 +2,8 @@
 
 Responsibility: evaluate Ren'Py ``if``/``elif``/``else`` conditions against a
 statically-reconstructed variable state (built from ``default`` statements,
-``$`` assignments, and ``*ResetDefault`` labels in ``characters.rpy``).
+``$`` assignments, and assignments performed by simple called labels such as
+``undressEmma`` or ``*ResetDefault``).
 
 No runtime execution — this is pure static analysis.
 """
@@ -20,6 +21,29 @@ from .models import Layer
 
 UNKNOWN = object()
 
+# Ren'Py/Python expression keywords that never name a game variable.
+EXPR_KEYWORDS: frozenset[str] = frozenset(
+    {"True", "False", "and", "or", "not", "None", "in", "is"}
+)
+
+# Quoted string literals inside conditions (e.g. ``x == "{s}Home{/s}"``).
+_STRING_LITERAL_RE = re.compile(r"'(?:[^'\\]|\\.)*'|\"(?:[^\"\\]|\\.)*\"")
+
+
+def condition_variables(condition: str) -> set[str]:
+    """Return the variable names referenced by ``condition``.
+
+    Words inside string literals are ignored: Ren'Py text tags such as
+    ``"{s}Home{/s}"`` contain tag letters that are not variables.
+    """
+    expr = _STRING_LITERAL_RE.sub("''", condition)
+    return {
+        name
+        for name in re.findall(r"\b[A-Za-z_]\w*\b", expr)
+        if name not in EXPR_KEYWORDS
+    }
+
+
 # Cache for static condition evaluation: (expression, relevant-env-key) -> result.
 # Conditions like "month == 6" are evaluated against many call sites with the
 # same variable values, so caching avoids repeated Python eval() calls
@@ -31,8 +55,8 @@ _eval_cond_cache: dict[tuple, bool | None | object] = {}
 # state when no assignment occurs between them (Optimization #8).
 _state_at_call_cache: dict[tuple, CallState] = {}
 
-# Cache for reset-defaults map: config identity -> mapping.
-_reset_defaults_cache: dict[int, dict[str, list[tuple[str, str]]]] = {}
+# Cache for label-assignment map: config identity -> mapping.
+_label_assignments_cache: dict[int, dict[str, list[tuple[str, str]]]] = {}
 
 
 class ConditionError(ComposeError):
@@ -94,6 +118,10 @@ def state_at_call(
     labels, assignments = _state_cache[key]
 
     label_start = labels[max(0, bisect.bisect_right(labels, line_number - 1) - 1)]
+    # Start from game defaults, then overlay any explicit $ assignments and
+    # *ResetDefault calls that occur before this call site.  Values found this
+    # way are treated as fixed by the compose pass; only variables with no
+    # static value at all are enumerated as alternative composites.
     state = dict(defaults)
     left = bisect.bisect_left(assignments, (label_start, "", None))
     right = bisect.bisect_left(assignments, (line_number, "", None))
@@ -119,7 +147,8 @@ def _scan_file(
     config = config or _require_config()
     labels: list[int] = [0]
     assignments: list[tuple[int, str, object]] = []
-    reset_map = get_reset_defaults_map(config)
+    label_map = get_label_assignments_map(config)
+    label_assign = re.compile(r"^\s*call\s+([A-Za-z_]\w*)\b")
 
     if lines is None:
         try:
@@ -139,9 +168,9 @@ def _scan_file(
                 parsed = defaults[value]
             if parsed is not UNKNOWN:
                 assignments.append((i, name, parsed))
-        m_call = re.match(r"^\s*call\s+([A-Za-z_]\w*ResetDefault)\b", text)
-        if m_call and m_call.group(1) in reset_map:
-            for name, value in reset_map[m_call.group(1)]:
+        m_call = label_assign.match(text)
+        if m_call and m_call.group(1) in label_map:
+            for name, value in label_map[m_call.group(1)]:
                 parsed = parse_literal(value)
                 if parsed is UNKNOWN and value in defaults:
                     parsed = defaults[value]
@@ -151,40 +180,84 @@ def _scan_file(
     return labels, assignments
 
 
-def get_reset_defaults_map(config: GameConfig | None = None) -> dict[str, list[tuple[str, str]]]:
-    """Parse ``characters.rpy`` for ``*ResetDefault`` labels and their assignments."""
+_LABEL_RE = re.compile(r"^\s*label\s+([A-Za-z_]\w*)(?:\s*\([^)]*\))?\s*:\s*$")
+_ASSIGNMENT_RE = re.compile(r"^\s*\$\s*([A-Za-z_]\w*)\s*=\s*(.+?)\s*$")
+
+
+def get_label_assignments_map(
+    config: GameConfig | None = None,
+) -> dict[str, list[tuple[str, str]]]:
+    """Map simple labels to the variables they assign.
+
+    A label qualifies when its body contains only ``$ name = value``
+    assignments, ``pass``, and ``return`` (optionally with an expression).
+    Calling such a label deterministically writes those variables, so the
+    compose pass can apply them at ``call`` sites — for example
+    ``call undressEmma`` sets ``emmaOutfit = 0`` and friends.
+
+    Labels with branches, menus, or other statements are omitted because their
+    effects depend on runtime control flow.
+    """
     config = config or _require_config()
     cache_key = id(config)
-    cached = _reset_defaults_cache.get(cache_key)
+    cached = _label_assignments_cache.get(cache_key)
     if cached is not None:
         return cached
+
+    if config.rpy_files:
+        include = {rel.replace("\\", "/") for rel in config.rpy_files}
+        paths = [
+            p for p in config.game_root.rglob("*.rpy")
+            if p.relative_to(config.game_root).as_posix() in include
+        ]
+    else:
+        paths = [
+            p for p in config.game_root.rglob("*.rpy")
+            if p.name != "composite_images.rpy"
+            and "cache" not in p.parts
+            and "archive" not in p.parts
+        ]
+
     mapping: dict[str, list[tuple[str, str]]] = {}
-    char_file = config.game_root / "characters.rpy"
-    if not char_file.exists():
-        _reset_defaults_cache[cache_key] = mapping
-        return mapping
-    current_label: str | None = None
-    try:
-        for line in char_file.read_text(encoding="utf-8-sig", errors="replace").splitlines():
-            text = line.split("#", 1)[0].strip()
-            m = re.match(r"^\s*label\s+([A-Za-z_]\w*ResetDefault):", text)
-            if m:
-                current_label = m.group(1)
-                assert current_label is not None
-                mapping[current_label] = []
+    for path in sorted(paths, key=lambda p: p.as_posix().lower()):
+        try:
+            lines = path.read_text(encoding="utf-8-sig", errors="replace").splitlines()
+        except OSError:
+            continue
+
+        current: str | None = None
+        assignments: list[tuple[str, str]] = []
+        simple = True
+        for raw in lines:
+            text = raw.split("#", 1)[0].strip()
+            m_label = _LABEL_RE.match(text)
+            if m_label:
+                if current is not None and simple and assignments:
+                    mapping[current] = assignments
+                current = m_label.group(1)
+                assignments = []
+                simple = True
                 continue
-            if current_label is not None:
-                if re.match(r"^\s*return\b", text):
-                    current_label = None
-                    continue
-                m_assign = re.match(r"^\s*\$\s*([A-Za-z_]\w*)\s*=\s*(.*?)\s*$", text)
-                if m_assign:
-                    name, value = m_assign.group(1), m_assign.group(2)
-                    assert current_label is not None
-                    mapping[current_label].append((name, value))
-    except OSError:
-        pass
-    _reset_defaults_cache[cache_key] = mapping
+            if current is None:
+                continue
+            if not text:
+                continue
+            if re.match(r"^return\b", text):
+                if simple and assignments:
+                    mapping[current] = assignments
+                current = None
+                continue
+            if re.fullmatch(r"pass", text):
+                continue
+            m_assign = _ASSIGNMENT_RE.match(text)
+            if m_assign:
+                assignments.append((m_assign.group(1), m_assign.group(2)))
+            else:
+                simple = False
+        if current is not None and simple and assignments:
+            mapping[current] = assignments
+
+    _label_assignments_cache[cache_key] = mapping
     return mapping
 
 
@@ -204,12 +277,7 @@ def eval_cond(expr: str, env: dict[str, object]) -> bool | None | object:
     # Build a cache key from the expression plus the values of the variables it
     # references.  The same condition evaluated against the same state yields
     # the same result, so we can skip the Python eval() on repeats.
-    var_names = [
-        v for v in sorted(
-            {v for v in re.findall(r"\b[A-Za-z_]\w*\b", expr)
-             if v not in {"True", "False", "and", "or", "not", "None"}}
-        )
-    ]
+    var_names = sorted(condition_variables(expr))
     cache_key = (expr, tuple((v, repr(env.get(v, "__missing__"))) for v in var_names))
     cached = _eval_cond_cache.get(cache_key)
     if cached is not None:
@@ -246,7 +314,7 @@ def evaluate_layer_conditions(
     outcome: bool | None = True
     for condition in layer.conditions:
         value = eval_cond(condition, env)
-        if value is None:  # UNKNOWN
+        if value is UNKNOWN:  # UNKNOWN
             unresolved.append(condition)
             outcome = None
             break

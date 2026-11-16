@@ -23,7 +23,7 @@ from typing import NotRequired, TypedDict
 
 from tqdm import tqdm  # type: ignore[import-untyped]
 
-from .conditions import get_reset_defaults_map
+from .conditions import condition_variables, get_label_assignments_map
 from .config import GameConfig
 from .errors import ApplyError, ManifestError
 from .manifest import KNOWN_FAMILIES
@@ -31,7 +31,6 @@ from .models import AdoptionReport, CompositeManifest, CompositeRecord
 from .regexp import SHOW_RE
 
 KEYWORDS = {"at", "with", "zorder", "as", "parent", "to"}
-EXPR_KEYWORDS = {"True", "False", "and", "or", "not", "None"}
 
 
 class _CompositeUsageInfo(TypedDict):
@@ -74,7 +73,7 @@ class Applier:
         dynamic_states = index_payload["dynamic_states"]
         summary = dict(index_payload.get("summary", {}))
 
-        reset_map = get_reset_defaults_map(self.config)
+        reset_map = get_label_assignments_map(self.config)
 
         mapping: dict[tuple[str, int], _CompositeUsageInfo] = {}
         used: dict[str, str | None] = {}
@@ -365,7 +364,7 @@ class Applier:
                 m = re.match(r"\$\s*([A-Za-z_]\w*)\s*=", text)
                 if m:
                     writes.append((number, m.group(1)))
-                m_call = re.match(r"call\s+([A-Za-z_]\w*ResetDefault)\b", text)
+                m_call = re.match(r"call\s+([A-Za-z_]\w*)\b", text)
                 if m_call and m_call.group(1) in reset_map:
                     writes.extend((number, name) for name, _value in reset_map[m_call.group(1)])
                 for name in re.findall(r"SetVariable\(\s*['\"]([A-Za-z_]\w*)['\"]", text):
@@ -586,7 +585,7 @@ def _condition_variables(record) -> set[str]:
     names: set[str] = set()
     for layer in record.ordered_layers:
         for cond in layer.conditions:
-            names.update(v for v in re.findall(r"\b[A-Za-z_]\w*\b", cond) if v not in EXPR_KEYWORDS)
+            names.update(condition_variables(cond))
     return names
 
 
