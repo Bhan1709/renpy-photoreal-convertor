@@ -33,6 +33,14 @@ run = "python -m agent qwen-3-vl-{{ usage.ctx }}"
 description = 'Generalized decompile: finds the first \game folder under src/renpy_game, copies relevant files into src/renpy_game/game, extracts .rpa archives, decompiles .rpyc files, and writes src/converter/config.json'
 run = "python src/converter/decompile/decompile.py"
 
+[tasks.clean-decompile]
+description = "Remove decompile artifacts: src/renpy_game/game folder and src/converter/config.json"
+run = "python -c \"import shutil, pathlib; gf=pathlib.Path('src/renpy_game/game'); cp=pathlib.Path('src/converter/config.json'); removed=[]\nif gf.exists(): shutil.rmtree(gf); removed.append(str(gf))\nif cp.exists(): cp.unlink(); removed.append(str(cp))\nprint('cleaned decompile artifacts:', removed if removed else 'none')\""
+
+[tasks.decompile-clean]
+description = "Clean decompile artifacts then regenerate them (clean + decompile)"
+run = "mise run clean-decompile && mise run decompile"
+
 [tasks.exclusions-sync]
 description = "Remove exclusion-pattern-matched entries from rpy_files/ren_py_files in src/converter/config.json"
 run = "python src/converter/decompile/sync_exclusions_cli.py"
