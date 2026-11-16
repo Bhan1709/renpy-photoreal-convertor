@@ -36,7 +36,7 @@ def filter_source_files(
 
     Reads the ``rpy_files`` and ``ren_py_files`` matching patterns recorded
     by :func:`converter.decompile.config.write_config` and removes any path
-    that matches an exclusion pattern from ``config["exclusion"]["patterns"]``.
+    that matches an exclusion pattern from ``config["exclusion"]["script"]["patterns"]``.
 
     Returns a dict with keys ``"rpy"``, ``"ren_py"`` and ``"extracted_archives"``.
     ``"extracted_archives"`` is the list of ``{"archive", "extracted_folder"}``
@@ -48,7 +48,8 @@ def filter_source_files(
     ren_py_files = config.get("ren_py_files", [])
     extracted_archives = config.get("extracted_archives", []) or []
     exclusion = config.get("exclusion", {}) or {}
-    patterns = exclusion.get("patterns", []) or []
+    script_exc = exclusion.get("script", {}) or {}
+    patterns = script_exc.get("patterns", []) or []
 
     included_rpy = [p for p in rpy_files if not matches_exclusion(p, patterns)]
     included_ren_py = [p for p in ren_py_files if not matches_exclusion(p, patterns)]
@@ -64,8 +65,8 @@ def sync_exclusions(config_path: Path = Path("src/converter/config.json")) -> di
     r"""Persist exclusions into ``config.json``.
 
     Reads ``config.json`` and removes any entry from ``rpy_files`` and
-    ``ren_py_files`` that matches a pattern in ``exclusion.patterns``, then
-    writes the updated config back.  This is the persistent counterpart of
+    ``ren_py_files`` that matches a pattern in ``exclusion.script.patterns``,
+    then writes the updated config back.  This is the persistent counterpart of
     :func:`filter_source_files` (which only returns the filtered lists in
     memory).
 
@@ -78,7 +79,8 @@ def sync_exclusions(config_path: Path = Path("src/converter/config.json")) -> di
         return {}
 
     exclusion = config.get("exclusion", {}) or {}
-    patterns = exclusion.get("patterns", []) or []
+    script_exc = exclusion.get("script", {}) or {}
+    patterns = script_exc.get("patterns", []) or []
 
     before_rpy = config.get("rpy_files", [])
     before_ren_py = config.get("ren_py_files", [])
