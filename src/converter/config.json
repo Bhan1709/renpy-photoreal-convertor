@@ -1,0 +1,50 @@
+{
+  "schema": 1,
+  "game_folder": "src\\renpy_game\\game",
+  "source_game": "CampMourningWood-0.25.0.1-pc",
+  "source_path": "src\\renpy_game\\CampMourningWood-0.25.0.1-pc",
+  "rpy_files": [
+    "cabins.rpy",
+    "camp.rpy",
+    "characters.rpy",
+    "deniseEvents.rpy",
+    "dnd.rpy",
+    "eventReplays.rpy",
+    "gui.rpy",
+    "intro.rpy",
+    "lauraSocial.rpy",
+    "nightCycle.rpy",
+    "options.rpy",
+    "patReward.rpy",
+    "quests.rpy",
+    "screens.rpy",
+    "script.rpy",
+    "social.rpy",
+    "socialHazel.rpy",
+    "socialJane.rpy",
+    "work.rpy",
+    "xxx.rpy"
+  ],
+  "ren_py_files": [],
+  "extracted_archives": [
+    {
+      "archive": "archive.rpa",
+      "extracted_folder": "archive"
+    }
+  ],
+  "image_categories": {
+    "classification_method": "folder_based",
+    "image_categories": {
+      "bg": "archive/bgs",
+      "char": "archive/chars",
+      "gui": "archive/gui",
+      "scene": "archive/xxx"
+    }
+  },
+  "exclusion": {
+    "patterns": [
+      "archive/"
+    ],
+    "note": "Glob/substring patterns to exclude from downstream processing"
+  }
+}
