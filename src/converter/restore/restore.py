@@ -1,22 +1,33 @@
-"""Restore logic for the compose subpackage.
+"""Restore logic: revert modified Ren'Py ``.rpy`` source files from an archive.
 
-Restores Ren'Py ``.rpy`` source files that were modified by the apply pass,
-by re-extracting them from the game's ``archive.rpa``.
+Restores Ren'Py ``.rpy`` source files that were modified by a compose/apply
+pass, by re-extracting them from the game's ``archive.rpa``.
 
-This provides a safety net: if the apply pass makes unwanted changes to live
-scripts, running restore brings them back to their original archived state.
+This subpackage is intentionally independent of :mod:`converter.compose` — it
+only needs a ``game_root`` (the Ren'Py ``\\game`` folder) and, optionally, a
+manifest path.  This makes it reusable by the decompile/pipeline layers as
+well as by compose.
+
+Usage::
+
+    from converter.restore import restore_rpy_files, restore_from_manifest
+
+    # Restore every .rpy stored in archive.rpa back into game_root.
+    results = restore_rpy_files(Path("src/renpy_game/MyGame/game"))
+
+    # Restore only the scripts the apply pass touched (per manifest).
+    results = restore_from_manifest(
+        Path("src/renpy_game/MyGame/game"),
+        Path("composites/reports/manifest_index.json"),
+    )
 """
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
-from .config import GameConfig
-from .errors import ComposeError
-
-
-class RestoreError(ComposeError):
-    """Raised when restoring .rpy files from the archive fails."""
+from .errors import RestoreError
 
 
 def find_archive(game_root: Path) -> Path | None:
@@ -35,7 +46,7 @@ def find_archive(game_root: Path) -> Path | None:
 
 
 def restore_rpy_files(
-    config: GameConfig,
+    game_root: Path,
     *,
     archive_path: Path | None = None,
     only_files: list[str] | None = None,
@@ -48,7 +59,8 @@ def restore_rpy_files(
     pass (or any other process).
 
     Args:
-        config: The :class:`GameConfig` describing the game.
+        game_root: The Ren'Py ``\\game`` folder (contains the ``.rpy`` scripts
+            and, typically, an ``archive.rpa``).
         archive_path: Explicit path to the archive.  Defaults to
             ``game_root / archive.rpa``.
         only_files: If provided, only restore these relative paths (e.g.
@@ -60,10 +72,10 @@ def restore_rpy_files(
         A dict mapping restored relative paths to a status string
         (``"restored"``, ``"would_restore"``, or ``"skipped"``).
     """
-    archive = archive_path or find_archive(config.game_root)
+    archive = archive_path or find_archive(game_root)
     if archive is None:
         raise RestoreError(
-            f"No archive.rpa found in {config.game_root}; cannot restore .rpy files"
+            f"No archive.rpa found in {game_root}; cannot restore .rpy files"
         )
 
     try:
@@ -81,7 +93,7 @@ def restore_rpy_files(
             if only_files is not None and filename not in only_files:
                 continue
 
-            target = config.game_root / filename
+            target = game_root / filename
             if dry_run:
                 results[filename] = "would_restore"
                 continue
@@ -98,34 +110,35 @@ def restore_rpy_files(
 
 
 def restore_from_manifest(
-    config: GameConfig,
-    manifest_path: Path | None = None,
+    game_root: Path,
+    manifest_path: str | Path | None = None,
     *,
     dry_run: bool = False,
 ) -> dict[str, str]:
-    """Restore only the .rpy files that the apply pass touched.
+    """Restore only the .rpy files that a compose/apply pass touched.
 
-    Reads the adoption report / manifest to determine which scripts had
-    replacements applied, then restores only those files from the archive.
+    Reads the manifest JSON to determine which scripts had usage locations
+    (and therefore potential replacements), then restores only those files
+    from the archive.
 
     Args:
-        config: The :class:`GameConfig` describing the game.
+        game_root: The Ren'Py ``\\game`` folder.
         manifest_path: Path to the manifest JSON.  Defaults to
-            ``config.resolved_paths()["manifest_path"]``.
+            ``game_root.parent / "composites" / "reports" / "manifest.json"``.
         dry_run: If True, report what would be restored without writing.
 
     Returns:
         A dict mapping restored relative paths to a status string.
     """
-    import json
-
-    mp = manifest_path or config.resolved_paths()["manifest_path"]
+    mp = Path(manifest_path) if manifest_path is not None else None
+    if mp is None:
+        mp = game_root.parent / "composites" / "reports" / "manifest.json"
     if not mp.is_file():
         raise RestoreError(f"Manifest not found: {mp}")
 
     data = json.loads(mp.read_text(encoding="utf-8"))
 
-    # Collect all unique script paths that had usage locations or replacements.
+    # Collect all unique script paths that had usage locations.
     scripts_to_restore: set[str] = set()
     for record in data.get("composites", []):
         for loc in record.get("usage_locations", []):
@@ -140,4 +153,4 @@ def restore_from_manifest(
     if not only_files:
         return {}
 
-    return restore_rpy_files(config, only_files=only_files, dry_run=dry_run)
+    return restore_rpy_files(game_root, only_files=only_files, dry_run=dry_run)

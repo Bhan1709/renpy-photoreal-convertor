@@ -23,7 +23,8 @@ from .applier import Applier
 from .composer import Composer
 from .config import GameConfig, default_config, load_config
 from .manifest import ManifestWriter
-from .restore import find_archive, restore_from_manifest, restore_rpy_files
+
+from converter.restore import find_archive, restore_from_manifest, restore_rpy_files
 
 
 def build_config(args) -> GameConfig:
