@@ -166,7 +166,7 @@ class Applier:
                 if not (0 <= index < len(lines)) or lines[index].split("#", 1)[0].strip() != info["statement"]:
                     unchanged += 1
                     continue
-                rewritten = _rewrite_script_line(lines[index], info["statement"], info["name"])
+                rewritten = _rewrite_script_line(lines[index], info["statement"], info["name"])  # type: ignore[typeddict-item]
                 if not rewritten.endswith(("\n", "\r")):
                     rewritten += newline
                 lines[index] = rewritten
@@ -189,7 +189,7 @@ class Applier:
             for line_no, info in sorted(entries, reverse=True):
                 index = line_no - 1
                 if 0 <= index < len(lines) and re.match(
-                    rf"^(?:show|scene)\s+{re.escape(info['tag'])}(?:\s|:|$)",
+                    rf"^(?:show|scene)\s+{re.escape(info['tag'])}(?:\s|:|$)",  # type: ignore[typeddict-item]
                     lines[index].strip(),
                 ):
                     runtime_already_applied += 1
