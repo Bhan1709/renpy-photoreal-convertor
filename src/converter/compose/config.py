@@ -101,6 +101,12 @@ class GameConfig:
     game_defaults: dict[str, object] = field(default_factory=lambda: dict(DEFAULT_GAME_DEFAULTS))
     rpy_files: list[str] | None = None
     ren_py_files: list[str] | None = None
+    script_exclusion_patterns: list[re.Pattern[str]] = field(
+        default_factory=list, compare=False
+    )
+    image_exclusion_patterns: list[re.Pattern[str]] = field(
+        default_factory=list, compare=False
+    )
     output_dir: Path | None = None
     manifest_path: Path | None = None
     declaration_path: Path | None = None
@@ -136,6 +142,18 @@ class GameConfig:
             if name == folder:
                 return category
         return None
+
+    def is_script_excluded(self, path: str) -> bool:
+        """Return True if ``path`` matches any script exclusion pattern."""
+        return any(p.search(path) for p in self.script_exclusion_patterns)
+
+    def is_image_excluded(self, source: str) -> bool:
+        """Return True if ``source`` matches any image exclusion pattern.
+
+        ``source`` is a forward-slash asset path relative to the archive
+        directory (e.g. ``bgs/bgHome.png``).
+        """
+        return any(p.search(source) for p in self.image_exclusion_patterns)
 
     def char_dir(self) -> Path:
         return self.archive_dir / self.folder_for("char")
@@ -268,6 +286,30 @@ def load_config(config_path: str | Path) -> GameConfig:
     rpy_files = [str(p) for p in (data.get("rpy_files") or [])]
     ren_py_files = [str(p) for p in (data.get("ren_py_files") or [])]
 
+    # --- Script exclusions -------------------------------------------------- #
+    # Remove any entry from rpy_files/ren_py_files that matches a script
+    # exclusion pattern.  The remaining list is used as the include set by
+    # parser.files() and character_associator.
+    exc = data.get("exclusion") or {}
+    script_exc = exc.get("script") or {}
+    script_patterns_raw = script_exc.get("patterns") or []
+    script_exclusion_patterns = [re.compile(p) for p in script_patterns_raw]
+
+    if script_exclusion_patterns:
+        rpy_files = [
+            p for p in rpy_files if not any(x.search(p) for x in script_exclusion_patterns)
+        ]
+        ren_py_files = [
+            p for p in ren_py_files if not any(x.search(p) for x in script_exclusion_patterns)
+        ]
+
+    # --- Image exclusions --------------------------------------------------- #
+    # Patterns matched against image source paths downstream in the compose
+    # pass (record._normalize_layers).  Stored compiled on the config.
+    image_exc = exc.get("image") or {}
+    image_patterns_raw = image_exc.get("patterns") or []
+    image_exclusion_patterns = [re.compile(p) for p in image_patterns_raw]
+
     return GameConfig(
         name=str(data.get("source_game") or config_path.stem),
         game_root=game_folder,
@@ -275,4 +317,6 @@ def load_config(config_path: str | Path) -> GameConfig:
         categories=categories,
         rpy_files=rpy_files,
         ren_py_files=ren_py_files,
+        script_exclusion_patterns=script_exclusion_patterns,
+        image_exclusion_patterns=image_exclusion_patterns,
     )
