@@ -332,6 +332,115 @@ def _process_layeredimage_uses_from_index(
             )
 
 
+def _enumerate_condition_variants(
+    unchained: list[Layer],
+    chained: dict[str, list[Layer]],
+    values: dict[str, object],
+) -> list[list[Layer]]:
+    """
+    Enumerate all feasible variant layer sets when some conditions are
+    statically unresolved. Each variant is a list of layers that would be
+    composited together for one possible runtime condition outcome.
+
+    Unchained layers with unknown conditions branch (include/exclude).
+    Chained layers (if/elif/else) produce one variant per possible branch.
+    """
+    from .conditions import eval_cond
+
+    # Base: layers that are always included (no conditions, or conditions
+    # that statically evaluate to True).
+    base: list[Layer] = []
+
+    # Unchained layers whose conditions are statically unknown.
+    unchained_unknown: list[tuple[Layer, tuple[str, ...]]] = []
+
+    for layer in unchained:
+        if not layer.conditions:
+            base.append(layer)
+            continue
+        outcome = True
+        unresolved: list[str] = []
+        for condition in layer.conditions:
+            value = eval_cond(condition, values)
+            if value is None:  # UNKNOWN
+                unresolved.append(condition)
+                outcome = None  # type: ignore[assignment]
+                break
+            if value is False:
+                outcome = False
+                break
+        if outcome is True:
+            base.append(layer)
+        elif outcome is None:
+            unchained_unknown.append((layer, tuple(unresolved)))
+        # outcome is False: layer is dropped from every variant.
+
+    # Per-chain branch options. Each chain is an independent if/elif/else
+    # group; we produce one option per feasible branch outcome.
+    chain_options: list[list[list[Layer]]] = []
+
+    for chain_layers in chained.values():
+        # Separate else (no conditions) from conditional layers.
+        else_layers = [l for l in chain_layers if not l.conditions]
+        cond_layers = [l for l in chain_layers if l.conditions]
+
+        true_layers: list[Layer] = []
+        unknown_layers: list[tuple[Layer, tuple[str, ...]]] = []
+
+        for layer in cond_layers:
+            outcome = True
+            unresolved: list[str] = []
+            for condition in layer.conditions:
+                value = eval_cond(condition, values)
+                if value is None:  # UNKNOWN
+                    unresolved.append(condition)
+                    outcome = None  # type: ignore[assignment]
+                    break
+                if value is False:
+                    outcome = False
+                    break
+            if outcome is True:
+                true_layers.append(layer)
+            elif outcome is None:
+                unknown_layers.append((layer, tuple(unresolved)))
+            # outcome is False: layer is dropped.
+
+        if true_layers:
+            # Some conditions are True — only those layers are selected.
+            # Else layers are excluded (if/elif takes priority).
+            chain_options.append([true_layers])
+        elif unknown_layers:
+            # All conditional conditions unknown — one variant per branch.
+            options = [[layer] for layer, _ in unknown_layers]
+            if else_layers:
+                options.append(list(else_layers))  # else/fallback variant
+            chain_options.append(options)
+        elif else_layers:
+            # Only else layers — always selected.
+            chain_options.append([list(else_layers)])
+        else:
+            chain_options.append([[]])
+
+    # Cartesian product of all branch choices.
+    variants: list[list[Layer]] = [list(base)]
+
+    for layer, _ in unchained_unknown:
+        new_variants = []
+        for v in variants:
+            new_variants.append(list(v))                       # without this layer
+            new_variants.append(list(v) + [layer])             # with this layer
+        variants = new_variants
+
+    for options in chain_options:
+        new_variants = []
+        for v in variants:
+            for option in options:
+                new_variants.append(list(v) + list(option))
+        variants = new_variants
+
+    return variants
+
+
 def _emit_layeredimage_uses(
     tag: str, tail: str, block: ScriptBlock, candidates: list[Layer],
     f: Path, no: int, statement: str, defaults: dict[str, object],
@@ -355,8 +464,6 @@ def _emit_layeredimage_uses(
         return
 
     call_state = state_at_call(f, no, defaults, config, lines=lines)
-    resolved: list[Layer] = []
-    unresolved_conditions: list[str] = []
 
     chained: dict[str, list[Layer]] = defaultdict(list)
     unchained: list[Layer] = []
@@ -368,8 +475,9 @@ def _emit_layeredimage_uses(
             unchained.append(layer)
 
     # Evaluate unchained layers: only True conditions are selected.
-    # UNKNOWN conditions are recorded but the layer is NOT selected —
-    # unconditional layers are kept as a preview instead (matches legacy behavior).
+    # UNKNOWN conditions are recorded but the layer is NOT selected.
+    resolved: list[Layer] = []
+    unresolved_conditions: list[str] = []
     for layer in unchained:
         result = True
         layer_unresolved: list[str] = []
@@ -393,29 +501,23 @@ def _emit_layeredimage_uses(
         unresolved_conditions.extend(chain_unresolved)
         resolved.extend(chain_selected)
 
-    # If there are unresolved conditions, keep unconditional layers as a
-    # marked partial preview (matches legacy behavior: never drop everything
-    # just because some conditions can't be statically evaluated).
+    # If there are unresolved conditions, generate one static composite per
+    # feasible runtime condition outcome instead of a single dynamic_review
+    # superset.  Each variant gets status="static" and can be selected at
+    # runtime by a ConditionSwitch built by the apply pass.
     if unresolved_conditions:
-        selected_keys = {(l.source, l.line, l.attribute) for l in resolved}
-        for layer in unchained:
-            if not layer.conditions and (layer.source, layer.line, layer.attribute) not in selected_keys:
-                resolved.append(layer)
-                selected_keys.add((layer.source, layer.line, layer.attribute))
-        # Also add unconditional chained layers not already selected.
-        for cid, chain_layers in chained.items():
-            for layer in chain_layers:
-                if not layer.conditions and (layer.source, layer.line, layer.attribute) not in selected_keys:
-                    resolved.append(layer)
-                    selected_keys.add((layer.source, layer.line, layer.attribute))
-
-    # Mark all conditionally-selected layers with the unresolved conditions.
-    if unresolved_conditions:
-        resolved = [
-            l.with_unresolved(tuple(sorted(set(l.unresolved_conditions) | set(unresolved_conditions))))
-            if l.conditions else l
-            for l in resolved
+        variants = _enumerate_condition_variants(unchained, chained, call_state.values)
+        locations = [
+            {
+                "script": f.relative_to(config.game_root.parent).as_posix(),
+                "line": no,
+                "statement": statement,
+            }
         ]
+        for variant_layers in variants:
+            variant_layers = _restore_layer_order(variant_layers, selected)
+            emit_wrapper(tag, "layeredimage", variant_layers, locations, block)
+        return
 
     resolved = _restore_layer_order(resolved, selected)
 
@@ -584,8 +686,7 @@ def _process_screen_stacks_from_index(
                         unchained.append(layer)
 
                 # Evaluate unchained layers: only True conditions are selected.
-                # UNKNOWN conditions are recorded but the layer is NOT selected —
-                # unconditional layers are kept as a preview instead (matches legacy behavior).
+                # UNKNOWN conditions are recorded but the layer is NOT selected.
                 for layer in unchained:
                     outcome = True
                     layer_unresolved: list[str] = []
@@ -611,27 +712,42 @@ def _process_screen_stacks_from_index(
                     unknown_conditions.extend(chain_unresolved)
                     selected.extend(chain_selected)
 
-                # If there are unknown conditions, keep unconditional layers as a
-                # marked partial preview (matches legacy behavior).
+                # If there are unknown conditions, generate one static composite per
+                # feasible runtime condition outcome instead of a single dynamic_review
+                # superset.  Each variant gets status="static" and can be selected at
+                # runtime by a ConditionSwitch built by the apply pass.
                 if unknown_conditions:
-                    selected_keys = {(l.source, l.line, l.attribute) for l in selected}
-                    for layer in unchained:
-                        if not layer.conditions and (layer.source, layer.line, layer.attribute) not in selected_keys:
-                            selected.append(layer)
-                            selected_keys.add((layer.source, layer.line, layer.attribute))
-                    for cid, chain_layers in chained.items():
-                        for layer in chain_layers:
-                            if not layer.conditions and (layer.source, layer.line, layer.attribute) not in selected_keys:
-                                selected.append(layer)
-                                selected_keys.add((layer.source, layer.line, layer.attribute))
-
-                # Mark conditionally-selected layers with unresolved conditions.
-                if unknown_conditions:
-                    selected = [
-                        l.with_unresolved(tuple(sorted(set(l.unresolved_conditions) | set(unknown_conditions))))
-                        if l.conditions else l
-                        for l in selected
+                    variants = _enumerate_condition_variants(unchained, chained, call_state.values)
+                    relevant_names = {
+                        used_name
+                        for layer in stack
+                        for condition in layer.conditions
+                        for used_name in re.findall(r"\b[A-Za-z_]\w*\b", condition)
+                        if used_name not in {"True", "False", "and", "or", "not"}
+                    }
+                    state_snapshot = {
+                        key: call_state.values[key]
+                        for key in sorted(relevant_names)
+                        if key in call_state.values
+                    }
+                    locations = [
+                        {
+                            "script": f.relative_to(config.game_root.parent).as_posix(),
+                            "line": usage.line,
+                            "statement": usage.statement,
+                            "state_snapshot": state_snapshot,
+                        }
                     ]
+                    for variant_layers in variants:
+                        variant_layers = _restore_layer_order(variant_layers, stack)
+                        emit_wrapper(
+                            name,
+                            "screen",
+                            variant_layers,
+                            locations,
+                            block,
+                        )
+                    continue
 
                 selected = _restore_layer_order(selected, stack)
 
