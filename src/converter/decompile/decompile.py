@@ -33,6 +33,20 @@ CONFIG_PATH = ROOT / "converter" / "config.json"
 COPY_EXTENSIONS = {".rpa", ".rpyc", ".rpy"}
 COPY_FILENAMES = {"_ren.py"}
 
+# Image file extensions we care about for category classification.
+IMAGE_EXTENSIONS = {".png", ".webp", ".avif", ".jpeg", ".jpg"}
+
+# Ren'Py folder name patterns per image category (matched case-insensitively).
+# "images" is deliberately omitted: it is ambiguous (used for both char and
+# scene) so it is safer to fall back to mode-based classification when only
+# "images" exists.
+CATEGORY_FOLDER_PATTERNS: dict[str, set[str]] = {
+    "bg": {"bgs", "bg", "background", "backgrounds"},
+    "gui": {"gui", "ui", "interface"},
+    "char": {"chars", "char", "character", "characters"},
+    "scene": {"scene", "scenes", "xxx"},
+}
+
 # Cache for the located game folder relative path (kept for backward
 # compatibility so other subpackages can still query it).
 _game_folder_rel_path: Path | None = None
@@ -270,19 +284,107 @@ def scan_extracted_archives(game_folder: Path) -> list[dict[str, str]]:
     return extracted
 
 
+def _image_mode(path: Path) -> str | None:
+    r"""Return the Pillow color mode of an image without loading pixels.
+
+    ``Image.open()`` is lazy: it reads the header only.  ``.mode`` is
+    available from the header and does not force pixel decoding into memory.
+    """
+    from PIL import Image
+
+    try:
+        with Image.open(path) as im:
+            return im.mode
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def scan_image_categories(game_folder: Path) -> dict:
+    r"""Detect image category folders under ``game_folder``.
+
+    Walks the game folder looking for directories whose names match the
+    Ren'Py category folder patterns (case-insensitive).  The first match per
+    category wins.
+
+    Returns::
+
+        {
+            "classification_method": "folder_based",
+            "image_categories": {
+                "bg": "archive/bgs",
+                "char": "archive/chars",
+                "gui": "archive/gui",
+                "scene": "archive/xxx",
+            },
+        }
+
+    If no category folders are found, falls back to classifying each image by
+    its Pillow color mode (RGBA → char, RGB → scene)::
+
+        {
+            "classification_method": "mode_based",
+            "image_categories": {
+                "char": ["chars/alice.png", ...],
+                "scene": ["scenes/room1.png", ...],
+            },
+        }
+    """
+    # --- Folder-based detection -------------------------------------
+    found: dict[str, str] = {}
+    for item in game_folder.rglob("*"):
+        if not item.is_dir():
+            continue
+        name_lower = item.name.lower()
+        for category, patterns in CATEGORY_FOLDER_PATTERNS.items():
+            if category in found:
+                continue
+            if name_lower in patterns:
+                found[category] = item.relative_to(game_folder).as_posix()
+                break
+
+    if found:
+        return {
+            "classification_method": "folder_based",
+            "image_categories": found,
+        }
+
+    # --- Mode-based fallback ----------------------------------------
+    char_images: list[str] = []
+    scene_images: list[str] = []
+    for item in sorted(game_folder.rglob("*")):
+        if not item.is_file():
+            continue
+        if item.suffix.lower() not in IMAGE_EXTENSIONS:
+            continue
+        mode = _image_mode(item)
+        if mode == "RGBA":
+            char_images.append(item.relative_to(game_folder).as_posix())
+        elif mode == "RGB":
+            scene_images.append(item.relative_to(game_folder).as_posix())
+
+    return {
+        "classification_method": "mode_based",
+        "image_categories": {
+            "char": char_images,
+            "scene": scene_images,
+        },
+    }
+
+
 def write_config(
     game_folder: Path,
     source_game: str,
     source_path: Path,
     extracted_archives: list[dict[str, str]] | None = None,
+    image_categories: dict | None = None,
     config_path: Path = CONFIG_PATH,
 ) -> Path:
     r"""Write ``config.json`` with matching patterns and an exclusion parameter.
 
     The config records every discovered ``.rpy`` and ``_ren.py`` file as a
-    matching pattern, the extracted ``.rpa`` archive folders, plus an
-    ``exclusion`` block the user can populate with glob/substring patterns to
-    exclude from downstream processing.
+    matching pattern, the extracted ``.rpa`` archive folders, the image
+    category naming map, plus an ``exclusion`` block the user can populate
+    with glob/substring patterns to exclude from downstream processing.
     """
     source_files = scan_source_files(game_folder)
 
@@ -294,6 +396,7 @@ def write_config(
         "rpy_files": source_files["rpy"],
         "ren_py_files": source_files["ren_py"],
         "extracted_archives": extracted_archives or [],
+        "image_categories": image_categories or {},
         "exclusion": {
             "patterns": [],
             "note": "Glob/substring patterns to exclude from downstream processing",
@@ -471,11 +574,14 @@ def process_game(
         extracted = extract_all_rpa(game_folder)
         summary["extracted_archives"] = extracted
         summary["decompiled"] = decompile_rpyc_files(game_folder)
+        image_categories = scan_image_categories(game_folder)
+        summary["image_categories"] = image_categories
         config_out = write_config(
             game_folder,
             source_game=game_dir.name,
             source_path=game_dir,
             extracted_archives=extracted,
+            image_categories=image_categories,
             config_path=config_path,
         )
         summary["config"] = str(config_out)
