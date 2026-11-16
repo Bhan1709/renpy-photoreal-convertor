@@ -373,6 +373,47 @@ def filter_source_files(
     }
 
 
+def sync_exclusions(config_path: Path = CONFIG_PATH) -> dict:
+    r"""Persist exclusions into ``config.json``.
+
+    Reads ``config.json`` and removes any entry from ``rpy_files`` and
+    ``ren_py_files`` that matches a pattern in ``exclusion.patterns``, then
+    writes the updated config back.  This is the persistent counterpart of
+    :func:`filter_source_files` (which only returns the filtered lists in
+    memory).
+
+    Returns a dict with the before/after counts for ``rpy`` and ``ren_py``.
+    Returns an empty dict if the config is missing or invalid.
+    """
+    config = load_config(config_path)
+    if not config:
+        print(f"Config not found or invalid: {config_path}")
+        return {}
+
+    exclusion = config.get("exclusion", {}) or {}
+    patterns = exclusion.get("patterns", []) or []
+
+    before_rpy = config.get("rpy_files", [])
+    before_ren_py = config.get("ren_py_files", [])
+
+    config["rpy_files"] = [
+        p for p in before_rpy if not matches_exclusion(p, patterns)
+    ]
+    config["ren_py_files"] = [
+        p for p in before_ren_py if not matches_exclusion(p, patterns)
+    ]
+
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
+
+    return {
+        "rpy_before": len(before_rpy),
+        "rpy_after": len(config["rpy_files"]),
+        "ren_py_before": len(before_ren_py),
+        "ren_py_after": len(config["ren_py_files"]),
+    }
+
+
 def process_game(
     renpy_games: Path = RENPY_GAMES,
     dest: Path = GAME_FOLDER,
