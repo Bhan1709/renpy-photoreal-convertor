@@ -177,7 +177,7 @@ class GameConfig:
 
     def resolved_paths(self) -> dict[str, Path]:
         """Convenience: all important absolute paths, defaulting output locations."""
-        out = self.output_dir or (self.game_root.parent / "composites")
+        out = self.output_dir or (self.game_root / "composites")
         return {
             "output_dir": out,
             "manifest_path": self.manifest_path or (out / "reports" / "manifest.json"),
