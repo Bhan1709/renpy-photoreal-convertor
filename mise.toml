@@ -30,9 +30,8 @@ arg "<ctx>" default="32k" help="Context size" {
 run = "python -m agent qwen-3-vl-{{ usage.ctx }}"
 
 [tasks.decompile]
-description = "Decompile .rpyc -> .rpy and extract .rpa archives for a game"
-usage = 'arg "<game>" help="Game directory name under src/renpy_game"'
-run = 'python -m converter.pipeline --game {{ usage.game }} --decompile-only'
+description = "Generalized decompile: finds the first \game folder under src/renpy_game, copies relevant files into src/renpy_game/game, extracts .rpa archives, decompiles .rpyc files, and writes src/converter/config.json"
+run = "python src/converter/decompile/decompile.py"
 
 [tasks.compose]
 description = "Compose composites + write manifest for a game (skip apply)"

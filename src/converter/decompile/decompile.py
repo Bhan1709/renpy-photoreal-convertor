@@ -1,136 +1,154 @@
-"""Decompile and extract Ren'Py games from src\renpy_game directory.
+r"""Generalized Ren'Py decompile & extract subpackage.
 
-Provides reusable game folder location caching for other subpackages.
+Ren'Py games come in all shapes and sizes, but they all ship a ``\game``
+folder.  This subpackage implements a generalized, repeatable flow:
+
+  1. Recursively search ``src/renpy_game`` for the first ``\game`` folder.
+  2. Copy the relevant files (``.rpa``, ``.rpyc``, ``.rpy``, ``_ren.py``)
+     from that game folder into a consolidated ``src/renpy_game/game``
+     folder, preserving relative directory structure.
+  3. Extract every ``.rpa`` alongside itself
+     (``game/archive.rpa`` -> ``game/archive/``).
+  4. Decompile every ``.rpyc`` (recursively) into a sibling ``.rpy``.
+  5. Write ``src/converter/config.json`` storing matching patterns for all
+     ``.rpy`` and ``_ren.py`` files plus an ``exclusion`` parameter the user
+     can use to exclude patterns from downstream processing.
+
+The subpackage depends on ``rpa-toolkit``.
 """
 
-import pathlib
+from __future__ import annotations
 
-# Cache for the game folder relative location, set after first lookup
-_game_folder_rel_path: pathlib.Path | None = None
+import fnmatch
+import json
+import shutil
+from pathlib import Path
+
+ROOT = Path("src")
+RENPY_GAMES = ROOT / "renpy_game"
+GAME_FOLDER = RENPY_GAMES / "game"
+CONFIG_PATH = ROOT / "converter" / "config.json"
+
+# File kinds we consolidate when staging a game.
+COPY_EXTENSIONS = {".rpa", ".rpyc", ".rpy"}
+COPY_FILENAMES = {"_ren.py"}
+
+# Cache for the located game folder relative path (kept for backward
+# compatibility so other subpackages can still query it).
+_game_folder_rel_path: Path | None = None
 
 
-def set_game_folder_rel_path(rel_path: pathlib.Path) -> None:
-    r"""Cache the relative path of the \game folder for other subpackages.
-
-    This should be called after find_game_folders() to make the game folder
-    location available to other converter subpackages.
-
-    Args:
-        rel_path: Path relative to the project root (src/), e.g.,
-            Path("renpy_game/CampMourningWood-0.25.0.1/game")
-    """
+def set_game_folder_rel_path(rel_path: Path) -> None:
+    r"""Cache the relative path of the \game folder for other subpackages."""
     global _game_folder_rel_path
     _game_folder_rel_path = rel_path
 
 
-def get_game_folder_rel_path() -> pathlib.Path | None:
-    r"""Get the cached relative path of the \game folder.
-
-    Returns:
-        The relative path to the \game folder if set, None otherwise.
-        Other subpackages should call set_game_folder_rel_path() first.
-    """
+def get_game_folder_rel_path() -> Path | None:
+    r"""Get the cached relative path of the \game folder."""
     return _game_folder_rel_path
 
 
-ROOT = pathlib.Path("src")
-RENPY_GAMES = ROOT / "renpy_game"
+def find_game_folder(renpy_games: Path = RENPY_GAMES) -> Path | None:
+    r"""Return the first directory named ``game`` found under ``renpy_games``.
 
+    Ren'Py games come in all shapes, but they all ship a ``\game`` folder.
+    We recursively walk ``src/renpy_game`` and return the first match so the
+    rest of the flow operates on a single, well-known location.
 
-def find_game_folders():
-    r"""Find all game folders under src/renpy_game.
-
-    Looks for \game subfolder within each game directory under
-    src/renpy_game. Caches the relative path of the first game folder
-    found via set_game_folder_rel_path() for other subpackages to use.
-
-    Returns:
-        List of tuples: (game_dir, rel_path, target_folder)
-        - game_dir: Absolute path to the game directory (e.g., src/renpy_game/my_game)
-        - rel_path: Relative path from project root to the \game subfolder
-        - target_folder: Absolute path to the \game subfolder itself
+    The consolidated output folder (``src/renpy_game/game``) is deliberately
+    excluded so re-runs do not treat their own output as a source game.
     """
-    global _game_folder_rel_path
+    if not renpy_games.exists():
+        print(f"No {renpy_games} directory found")
+        return None
 
-    if not RENPY_GAMES.exists():
-        print(f"No {RENPY_GAMES} directory found")
-        return []
+    try:
+        dest = GAME_FOLDER.resolve()
+    except Exception:  # pragma: no cover - defensive
+        dest = GAME_FOLDER
 
-    game_folders = []
-    found_first = False
-
-    for item in RENPY_GAMES.iterdir():
-        if item.is_dir():
-            # Look for \game subfolder within each game directory
-            game_subfolder = item / "game"
-            if game_subfolder.exists():
-                rel_path = game_subfolder.relative_to(ROOT)
-                game_folders.append((item, rel_path, game_subfolder))
-
-                # Cache the relative path of the first game folder found
-                # Other subpackages can call get_game_folder_rel_path() to retrieve it
-                if not found_first:
-                    set_game_folder_rel_path(rel_path)
-                    found_first = True
-            else:
-                # No \game subfolder, use the game directory itself
-                rel_path = item.relative_to(ROOT)
-                game_folders.append((item, rel_path, item))
-
-    return game_folders
-
-
-def decompile_rpyc_files(game_folder: pathlib.Path):
-    """Decompile all .rpyc files in the game folder.
-
-    Uses rpa-toolkit to decompile .rpyc files to .rpy source code.
-    """
-    from rpatool import decompile_rpyc_file
-
-    rpyc_files = list(game_folder.rglob("*.rpyc"))
-
-    if not rpyc_files:
-        print(f"No .rpyc files found in {game_folder}")
-        return
-
-    print(f"Decompiling {len(rpyc_files)} .rpyc files in {game_folder}")
-
-    for rpyc_file in rpyc_files:
+    matches: list[Path] = []
+    for item in renpy_games.rglob("*"):
+        if not (item.is_dir() and item.name == "game"):
+            continue
         try:
-            output_path = rpyc_file.with_suffix(".rpy")
-            result = decompile_rpyc_file(rpyc_file, output_path=output_path, overwrite=True)
-            if result.success:
-                print(f"  [OK] Decompiled: {rpyc_file.name} -> {output_path.name}")
-            else:
-                print(f"  [ERR] Error decompiling {rpyc_file.name}: {result.error}")
-        except Exception as e:
-            print(f"  [XX] Failed to decompile {rpyc_file.name}: {e}")
+            resolved = item.resolve()
+        except Exception:  # pragma: no cover - defensive
+            resolved = item
+        if resolved == dest:
+            # Skip our own consolidated output folder on re-runs.
+            continue
+        matches.append(item)
+
+    if not matches:
+        return None
+
+    matches.sort()
+    return matches[0]
 
 
-def extract_rpa_file(rpa_file: pathlib.Path):
-    """Extract a single .rpa file into a directory alongside the .rpa file.
+def find_game_folders() -> list[tuple[Path, Path, Path]]:
+    r"""Backward-compatible wrapper around :func:`find_game_folder`.
 
-    Extracts Ren'Py RPA archive contents into a directory named after the .rpa file,
-    placed in the same directory as the .rpa file. This preserves the relative path
-    structure for easier mapping later.
-
-    For example, if the .rpa file is at:
-        src/renpy_game/CampMourningWood-0.25.0.1/CampMourningWood-0.25.0.1-pc/game/archive.rpa
-    The extracted directory will be at:
-        src/renpy_game/CampMourningWood-0.25.0.1/CampMourningWood-0.25.0.1-pc/game/archive/
-
-    Args:
-        rpa_file: Path to the .rpa file to extract
+    Returns a single-element list of ``(game_dir, rel_path, target_folder)``
+    tuples for the first game folder found, mirroring the legacy API used by
+    :mod:`converter.pipeline`.  Prefer :func:`find_game_folder` / :func:`process_game`
+    for the generalized consolidated-folder flow.
     """
-    from pathlib import Path
+    game_folder = find_game_folder()
+    if game_folder is None:
+        return []
+    game_dir = game_folder.parent
+    rel_path = game_folder.relative_to(ROOT)
+    return [(game_dir, rel_path, game_folder)]
+
+
+def _should_copy(path: Path) -> bool:
+    return path.suffix in COPY_EXTENSIONS or path.name in COPY_FILENAMES
+
+
+def copy_game_files(
+    game_folder: Path, dest: Path = GAME_FOLDER
+) -> list[Path]:
+    r"""Copy relevant files from ``game_folder`` into ``dest``.
+
+    Relative directory structure is preserved, so
+    ``game/archive.rpa`` lands at ``dest/archive.rpa`` and
+    ``game/tl/None/common.rpyc`` lands at ``dest/tl/None/common.rpyc``.
+    ``dest`` is recreated cleanly on every call.
+
+    Returns the list of copied destination paths.
+    """
+    if dest.exists():
+        shutil.rmtree(dest)
+    dest.mkdir(parents=True, exist_ok=True)
+
+    copied: list[Path] = []
+    for path in sorted(game_folder.rglob("*")):
+        if not path.is_file():
+            continue
+        if not _should_copy(path):
+            continue
+        rel = path.relative_to(game_folder)
+        target = dest / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(path, target)
+        copied.append(target)
+
+    return copied
+
+
+def extract_rpa_file(rpa_file: Path) -> None:
+    r"""Extract a single ``.rpa`` alongside itself.
+
+    ``game/archive.rpa`` -> ``game/archive/`` with the archive's contents.
+    The original ``.rpa`` file is preserved.
+    """
     from rpatool.archive import RenPyArchive
 
     try:
-        # The extracted directory goes in the same directory as the .rpa file,
-        # named after the .rpa file stem (without .rpa extension)
         extract_dir = rpa_file.parent / rpa_file.stem
-
-        # Create the directory if it doesn't exist
         extract_dir.mkdir(parents=True, exist_ok=True)
 
         with RenPyArchive(rpa_file, verbose=False) as rpa:
@@ -140,77 +158,271 @@ def extract_rpa_file(rpa_file: pathlib.Path):
                 return
 
             print(f"  Extracting {rpa_file.name} -> {extract_dir}")
-
-            extracted_count = 0
+            count = 0
             for filename in files:
-                # Extract each file from the archive
                 data = rpa.read(filename)
                 target = extract_dir / filename
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_bytes(data)
-                extracted_count += 1
+                count += 1
 
-            print(f"  [OK] Extracted {extracted_count} files from {rpa_file.name} "
+            print(f"  [OK] Extracted {count} file(s) from {rpa_file.name} "
                   f"into {extract_dir}")
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         print(f"  [XX] Failed to extract {rpa_file.name}: {e}")
 
 
-def process_all_games():
-    """Process all games: decompile .rpyc and extract .rpa.
+def extract_all_rpa(game_folder: Path) -> int:
+    r"""Extract every ``.rpa`` under ``game_folder``.
 
-    .rpa files are extracted into a directory alongside the .rpa file,
-    preserving the relative path structure for easier mapping later.
+    Returns the number of archives processed.
     """
-    game_folders = find_game_folders()
+    rpa_files = sorted(game_folder.rglob("*.rpa"))
+    if not rpa_files:
+        print(f"No .rpa files found in {game_folder}")
+        return 0
 
-    if not game_folders:
-        print("No game folders found.")
-        return
+    print(f"Extracting {len(rpa_files)} .rpa file(s) into {game_folder}")
+    for rpa_file in rpa_files:
+        extract_rpa_file(rpa_file)
+    return len(rpa_files)
 
-    for game_dir, rel_path, target_folder in game_folders:
-        print(f"\n=== Processing game at relative path: {rel_path} ===")
-        print(f"Target folder: {target_folder}")
 
-        # Decompile .rpyc files in the target folder
-        decompile_rpyc_files(target_folder)
+def decompile_rpyc_files(game_folder: Path) -> int:
+    r"""Decompile every ``.rpyc`` under ``game_folder`` to a sibling ``.rpy``.
 
-        # Extract .rpa files in the target folder
-        # Extract alongside the .rpa file, preserving directory structure
-        rpa_files = list(target_folder.rglob("*.rpa"))
+    Uses ``rpa-toolkit``.  Returns the number of files successfully
+    decompiled.
+    """
+    from rpatool import decompile_rpyc_file
 
-        if not rpa_files:
-            print(f"No .rpa files found in {target_folder}")
-        else:
-            print(f"Extracting {len(rpa_files)} .rpa files into "
-                  f"{target_folder} (alongside each .rpa file)")
-            for rpa_file in rpa_files:
-                extract_rpa_file(rpa_file)
+    rpyc_files = sorted(game_folder.rglob("*.rpyc"))
+    if not rpyc_files:
+        print(f"No .rpyc files found in {game_folder}")
+        return 0
 
-    print("\n=== Done processing all games ===")
+    print(f"Decompiling {len(rpyc_files)} .rpyc file(s) in {game_folder}")
+    ok = err = fail = 0
+    for rpyc_file in rpyc_files:
+        try:
+            output_path = rpyc_file.with_suffix(".rpy")
+            result = decompile_rpyc_file(
+                rpyc_file, output_path=output_path, overwrite=True
+            )
+            if result.success:
+                print(f"  [OK] Decompiled: {rpyc_file.name} -> {output_path.name}")
+                ok += 1
+            else:
+                print(f"  [ERR] Error decompiling {rpyc_file.name}: {result.error}")
+                err += 1
+        except Exception as e:  # noqa: BLE001
+            print(f"  [XX] Failed to decompile {rpyc_file.name}: {e}")
+            fail += 1
+
+    print(f"  Decompile done: {ok} ok, {err} error(s), {fail} failed")
+    return ok
+
+
+def scan_source_files(game_folder: Path) -> dict[str, list[str]]:
+    r"""Return relative paths of all ``.rpy`` and ``_ren.py`` files.
+
+    These relative paths are the "matching patterns" recorded in
+    ``config.json`` for downstream processing.
+    """
+    rpy_files: list[str] = []
+    ren_py_files: list[str] = []
+    for path in sorted(game_folder.rglob("*")):
+        if not path.is_file():
+            continue
+        rel = path.relative_to(game_folder).as_posix()
+        if path.name == "_ren.py":
+            ren_py_files.append(rel)
+        elif path.suffix == ".rpy":
+            rpy_files.append(rel)
+    return {"rpy": rpy_files, "ren_py": ren_py_files}
+
+
+def write_config(
+    game_folder: Path,
+    source_game: str,
+    source_path: Path,
+    config_path: Path = CONFIG_PATH,
+) -> Path:
+    r"""Write ``config.json`` with matching patterns and an exclusion parameter.
+
+    The config records every discovered ``.rpy`` and ``_ren.py`` file as a
+    matching pattern, plus an ``exclusion`` block the user can populate with
+    glob/substring patterns to exclude from downstream processing.
+    """
+    source_files = scan_source_files(game_folder)
+
+    config = {
+        "schema": 1,
+        "game_folder": str(game_folder),
+        "source_game": source_game,
+        "source_path": str(source_path),
+        "rpy_files": source_files["rpy"],
+        "ren_py_files": source_files["ren_py"],
+        "exclusion": {
+            "patterns": [],
+            "note": "Glob/substring patterns to exclude from downstream processing",
+        },
+    }
+
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
+    print(f"  [OK] Wrote config: {config_path}")
+    return config_path
+
+
+def load_config(config_path: Path = CONFIG_PATH) -> dict:
+    r"""Load the generated ``config.json``.
+
+    Returns the parsed JSON dict, or an empty dict if the file is missing
+    or invalid (so callers can degrade gracefully).
+    """
+    try:
+        return json.loads(config_path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError) as exc:  # noqa: BLE001
+        print(f"  [WARN] Could not load config {config_path}: {exc}")
+        return {}
+
+
+def matches_exclusion(path: str, patterns: list[str]) -> bool:
+    r"""Return True if ``path`` matches any exclusion pattern.
+
+    A pattern matches if it is a substring of ``path`` (e.g. ``archive/``
+    matches ``archive/cabins.rpy``) or if ``path`` glob-matches the pattern.
+    Matching is case-sensitive on the path as stored (forward-slash, relative
+    to the consolidated game folder).
+    """
+    if not patterns:
+        return False
+    for pattern in patterns:
+        if not pattern:
+            continue
+        if pattern in path:
+            return True
+        try:
+            if fnmatch.fnmatchcase(path, pattern):
+                return True
+        except Exception:  # pragma: no cover - defensive
+            pass
+    return False
+
+
+def filter_source_files(
+    config_path: Path = CONFIG_PATH,
+) -> dict[str, list[str]]:
+    r"""Load ``config.json`` and return source files minus excluded ones.
+
+    Reads the ``rpy_files`` and ``ren_py_files`` matching patterns recorded
+    by :func:`write_config` and removes any path that matches an exclusion
+    pattern from ``config["exclusion"]["patterns"]``.
+
+    Returns a dict with keys ``"rpy"`` and ``"ren_py"`` holding the filtered
+    relative path lists.  Returns empty lists if the config is missing.
+    """
+    config = load_config(config_path)
+    rpy_files = config.get("rpy_files", [])
+    ren_py_files = config.get("ren_py_files", [])
+    exclusion = config.get("exclusion", {}) or {}
+    patterns = exclusion.get("patterns", []) or []
+
+    included_rpy = [p for p in rpy_files if not matches_exclusion(p, patterns)]
+    included_ren_py = [p for p in ren_py_files if not matches_exclusion(p, patterns)]
+
+    return {"rpy": included_rpy, "ren_py": included_ren_py}
+
+
+def process_game(
+    renpy_games: Path = RENPY_GAMES,
+    dest: Path = GAME_FOLDER,
+    config_path: Path = CONFIG_PATH,
+    *,
+    dry_run: bool = False,
+) -> dict:
+    r"""Run the full generalized decompile flow for one game.
+
+    Steps:
+
+      1. Find the first ``\game`` folder under ``renpy_games``.
+      2. Copy relevant files into ``dest`` (``src/renpy_game/game``).
+      3. Extract every ``.rpa`` alongside itself.
+      4. Decompile every ``.rpyc`` into a sibling ``.rpy``.
+      5. Write ``config.json`` with matching patterns + exclusion parameter.
+
+    Returns a summary dict.
+    """
+    summary: dict = {
+        "game_folder": None,
+        "source_game": None,
+        "source_path": None,
+        "copied": 0,
+        "extracted_archives": 0,
+        "decompiled": 0,
+        "config": None,
+        "dry_run": dry_run,
+    }
+
+    game_folder = find_game_folder(renpy_games)
+    if game_folder is None:
+        print(f"No \\game folder found under {renpy_games}")
+        return summary
+
+    game_dir = game_folder.parent
+    summary["game_folder"] = str(game_folder)
+    summary["source_game"] = game_dir.name
+    summary["source_path"] = str(game_dir)
+
+    print(f"\n=== Game folder: {game_folder} ===")
+    print(f"Source game: {game_dir.name}")
+
+    if dry_run:
+        print(f"[dry-run] would copy relevant files into {dest}")
+    else:
+        copied = copy_game_files(game_folder, dest)
+        summary["copied"] = len(copied)
+        print(f"  [OK] Copied {len(copied)} file(s) into {dest}")
+        game_folder = dest  # operate on the consolidated copy from here on
+
+    if dry_run:
+        print("[dry-run] would extract .rpa archives and decompile .rpyc files")
+    else:
+        summary["extracted_archives"] = extract_all_rpa(game_folder)
+        summary["decompiled"] = decompile_rpyc_files(game_folder)
+        config_out = write_config(
+            game_folder,
+            source_game=game_dir.name,
+            source_path=game_dir,
+            config_path=config_path,
+        )
+        summary["config"] = str(config_out)
+        try:
+            set_game_folder_rel_path(game_folder.relative_to(ROOT))
+        except ValueError:
+            set_game_folder_rel_path(game_folder)
+
+    print("\n=== Decompile flow complete ===")
+    return summary
+
+
+def process_all_games() -> None:
+    r"""Backward-compatible entry point: process the first game found."""
+    process_game()
 
 
 def restore_decompile(
-    target_folder: pathlib.Path, *, dry_run: bool = False
+    target_folder: Path, *, dry_run: bool = False
 ) -> dict[str, str]:
-    """Undo a previous decompile of a game folder.
+    r"""Undo a previous decompile of a game folder.
 
-    Removes the outputs produced by :func:`decompile_rpyc_files` and
-    :func:`extract_rpa_file`, restoring the game to its original compiled
-    state (``.rpyc`` files and ``.rpa`` archives):
+    Removes generated ``.rpy`` files that have a ``.rpyc`` sibling, and
+    removes extracted archive directories (sibling dirs named after ``.rpa``
+    stems), restoring the folder to its pre-decompile state.
 
-    * ``.rpy`` files that have a corresponding ``.rpyc`` sibling (generated by
-      decompile) are removed.
-    * Extracted archive directories (a directory named after a ``.rpa`` stem,
-      created alongside the ``.rpa`` file) are removed.
-
-    Args:
-        target_folder: The ``\\game`` folder to restore.
-        dry_run: If True, report what would be removed without deleting.
-
-    Returns:
-        A dict mapping removed paths to a status string
-        (``"removed"``, ``"would_remove"``, or ``"skipped"``).
+    Returns a dict mapping path -> status
+    (``"removed"``, ``"would_remove"``, or ``"skipped: ..."``).
     """
     results: dict[str, str] = {}
 
@@ -237,8 +449,6 @@ def restore_decompile(
                 results[key] = "would_remove"
             else:
                 try:
-                    import shutil
-
                     shutil.rmtree(extract_dir)
                     results[key] = "removed"
                 except Exception as exc:  # noqa: BLE001
@@ -248,4 +458,4 @@ def restore_decompile(
 
 
 if __name__ == "__main__":
-    process_all_games()
+    process_game()
