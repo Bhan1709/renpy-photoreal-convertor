@@ -11,7 +11,7 @@ from collections import defaultdict
 from pathlib import Path
 
 from .config import GameConfig
-from .errors import AssetResolutionError, ComposeError
+from .errors import ComposeError
 
 
 class Resolver:
@@ -37,7 +37,7 @@ class Resolver:
         self._resolve_cache: dict[str, Path | None] = {}
         self._build_archive_index()
 
-    def with_aliases(self, aliases: dict[str, str]) -> "Resolver":
+    def with_aliases(self, aliases: dict[str, str]) -> Resolver:
         """Return a copy with additional path aliases applied."""
         new = Resolver(self.config)
         new._aliases = {**self._aliases, **aliases}

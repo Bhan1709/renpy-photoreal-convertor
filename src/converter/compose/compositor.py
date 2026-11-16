@@ -14,7 +14,6 @@ from typing import Protocol
 from PIL import Image
 
 from .config import GameConfig
-from .errors import CompositingError
 from .models import Layer
 from .resolver import Resolver
 
@@ -51,7 +50,7 @@ class CPUCompositor:
             return im
         try:
             im = Image.open(path).convert("RGBA")
-        except Exception:
+        except (OSError, ValueError):
             return None
         if len(self._image_cache) >= self._MAX_IMAGE_CACHE:
             # Evict the oldest entry to bound memory usage.

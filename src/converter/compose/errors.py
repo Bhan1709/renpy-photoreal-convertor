@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Optional
-
 
 class ComposeError(Exception):
     """Base exception for all compose-related errors."""
@@ -30,10 +28,10 @@ class ApplyError(ComposeError):
 
 
 __all__ = [
-    "ComposeError",
-    "ConfigError",
-    "AssetResolutionError",
-    "CompositingError",
-    "ManifestError",
     "ApplyError",
+    "AssetResolutionError",
+    "ComposeError",
+    "CompositingError",
+    "ConfigError",
+    "ManifestError",
 ]

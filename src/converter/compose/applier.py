@@ -23,9 +23,9 @@ from typing import NotRequired, TypedDict
 
 from tqdm import tqdm
 
+from .conditions import get_reset_defaults_map
 from .config import GameConfig
-from .conditions import CallState, get_reset_defaults_map, state_at_call
-from .errors import ApplyError
+from .errors import ApplyError, ManifestError
 from .manifest import KNOWN_FAMILIES
 from .models import AdoptionReport, CompositeManifest, CompositeRecord
 
@@ -178,7 +178,7 @@ class Applier:
         # --- Runtime ConditionSwitch wrappers ---
         runtime_by_file: dict[str, list[tuple[int, _CompositeUsageInfo]]] = {}
         for (script, line), info in runtime_switches.items():
-            rel = script[len("game/"):] if script.startswith("game/") else script
+            rel = script.removeprefix("game/")
             runtime_by_file.setdefault(rel, []).append((line, info))
         runtime_applied = 0
         runtime_already_applied = 0
@@ -447,7 +447,7 @@ class Applier:
             displayable.append(token)
         fallback = " ".join([statement_tokens[1], *displayable])
         digest = hashlib.sha1(
-            f"{exemplar.name}:{signature}:{fallback}".encode("utf-8")
+            f"{exemplar.name}:{signature}:{fallback}".encode()
         ).hexdigest()[:12]
         return {
             "tag": f"compositeRuntime__{digest}",
@@ -546,7 +546,7 @@ class Applier:
     ) -> dict[str, list[tuple[int, _CompositeUsageInfo]]]:
         by_file: dict[str, list[tuple[int, _CompositeUsageInfo]]] = {}
         for (script, line), info in mapping.items():
-            rel = script[len("game/"):] if script.startswith("game/") else script
+            rel = script.removeprefix("game/")
             by_file.setdefault(rel, []).append((line, info))
         return dict(by_file)
 

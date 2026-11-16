@@ -309,18 +309,17 @@ def _run_with_nvidia_proxy(profile: Profile) -> int:
             logger.error("❌ Error: Could not start the NVIDIA proxy: %s", exc)
             return 1
 
-        if not _wait_for_proxy():
-            if not _proxy_is_healthy():
-                if proxy_process.poll() is None:
-                    proxy_process.terminate()
-                logger.error(
-                    "❌ Error: Local NVIDIA proxy failed to become healthy within "
-                    "%.0f seconds. See %s for details.",
-                    PROXY_START_TIMEOUT_SECONDS,
-                    _proxy_log_path(),
-                )
-                return 1
-            # Another launcher won the race to bind the port; reuse its proxy.
+        if not _wait_for_proxy() and not _proxy_is_healthy():
+            if proxy_process.poll() is None:
+                proxy_process.terminate()
+            logger.error(
+                "❌ Error: Local NVIDIA proxy failed to become healthy within "
+                "%.0f seconds. See %s for details.",
+                PROXY_START_TIMEOUT_SECONDS,
+                _proxy_log_path(),
+            )
+            return 1
+        # Another launcher won the race to bind the port; reuse its proxy.
 
         if proxy_process.poll() is None:
             # The proxy intentionally outlives this launcher. Clearing the

@@ -16,6 +16,7 @@ from collections import defaultdict
 from pathlib import Path
 
 from tqdm import tqdm
+
 from .character_associator import CharacterAssociator
 from .compositor import Compositor
 from .conditions import eval_cond, select_layers_for_chain, state_at_call
@@ -29,16 +30,14 @@ from .models import (
     UsageLocation,
 )
 from .parser import (
-    FileIndex,
+    ImageDeclaration,
     ScriptBlock,
     ScriptIndex,
-    ScriptUsage,
     find_nearby_dialog,
     index_scripts,
     parse_screen_stack,
 )
 from .resolver import Resolver
-
 
 _SHOW_RE = re.compile(r"^\s*(?:show|scene)\s+(?!screen\b)([\w.]+)(?:\s+([^\n#]+))?")
 _DECLARATION_USE_RE = re.compile(r"^\s*(?:show|scene)\s+([\w.]+)")
@@ -189,7 +188,7 @@ class Composer:
             dynamic_states=previous_dynamic_states,
             image_declarations=declaration_records,
             dynamic_declarations=dynamic_declarations,
-            unresolved=tuple(),
+            unresolved=(),
             summary={
                 "scripts_scanned": len(index.files),
                 "composites": len(records),
@@ -826,7 +825,7 @@ def _emit_record(
 
                 with _PILImage.open(target) as _im:
                     dimensions = _im.size
-            except (OSError, Exception):
+            except (OSError, ValueError):
                 dimensions = None
         else:
             image = compositor.composite(normalized, canvas_size=None)

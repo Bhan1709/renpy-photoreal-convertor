@@ -22,7 +22,6 @@ and merges all category manifests in memory.
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 from .config import GameConfig
 from .errors import ManifestError

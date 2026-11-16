@@ -216,10 +216,10 @@ def eval_cond(expr: str, env: dict[str, object]) -> bool | None | object:
         return cached  # type: ignore[return-value]
     try:
         # Ren'Py conditions are standard Python comparison/boolean expressions.
-        result: bool | None | object = bool(eval(expr, {"__builtins__": {}}, dict(env)))  # noqa: S307
+        result: bool | None | object = bool(eval(expr, {"__builtins__": {}}, dict(env)))
     except (NameError, TypeError, KeyError):
         result = UNKNOWN
-    except Exception:
+    except (ValueError, SyntaxError, AttributeError):
         result = UNKNOWN
     _eval_cond_cache[cache_key] = result
     return result

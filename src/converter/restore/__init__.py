@@ -13,8 +13,8 @@ from .errors import RestoreError
 from .restore import find_archive, restore_from_manifest, restore_rpy_files
 
 __all__ = [
-    "find_archive",
-    "restore_rpy_files",
-    "restore_from_manifest",
     "RestoreError",
+    "find_archive",
+    "restore_from_manifest",
+    "restore_rpy_files",
 ]

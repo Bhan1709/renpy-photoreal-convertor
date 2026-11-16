@@ -53,12 +53,12 @@ class Layer:
     canvas_size: tuple[int, int] | None = None
     declaration_expression: str | None = None
 
-    def with_unresolved(self, conditions: tuple[str, ...]) -> "Layer":
+    def with_unresolved(self, conditions: tuple[str, ...]) -> Layer:
         """Return a copy with additional unresolved conditions."""
         merged = tuple(sorted(set(self.unresolved_conditions) | set(conditions)))
         return field_replace(self, unresolved_conditions=merged)
 
-    def replace(self, **changes) -> "Layer":
+    def replace(self, **changes) -> Layer:
         """Return a copy with the given fields replaced."""
         return field_replace(self, **changes)
 
@@ -106,12 +106,12 @@ class CompositeRecord:
     character_association_status: str | None = None
     dialog_context: tuple[dict, ...] | None = None
 
-    def with_usage(self, location: UsageLocation) -> "CompositeRecord":
+    def with_usage(self, location: UsageLocation) -> CompositeRecord:
         """Return a copy with an additional usage location appended."""
         locations = tuple(sorted(set(self.usage_locations) | {location}, key=lambda l: (l.script, l.line)))
         return field_replace(self, usage_locations=locations)
 
-    def replace(self, **changes) -> "CompositeRecord":
+    def replace(self, **changes) -> CompositeRecord:
         """Return a copy with the given fields replaced."""
         return field_replace(self, **changes)
 
@@ -132,7 +132,7 @@ class CompositeManifest:
         return list(self.composites)
 
     @classmethod
-    def from_dict(cls, data: dict) -> "CompositeManifest":
+    def from_dict(cls, data: dict) -> CompositeManifest:
         """Build a manifest from a JSON-loaded dict (used by the apply pass)."""
         composites = tuple(
             CompositeRecord(
@@ -352,11 +352,11 @@ class AdoptionReport:
 
 
 __all__ = [
-    "Layer",
-    "DefinitionLocation",
-    "UsageLocation",
-    "CompositeRecord",
-    "CompositeManifest",
     "AdoptionReport",
+    "CompositeManifest",
+    "CompositeRecord",
+    "DefinitionLocation",
+    "Layer",
+    "UsageLocation",
     "field_replace",
 ]
