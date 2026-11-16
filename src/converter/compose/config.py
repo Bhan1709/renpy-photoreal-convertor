@@ -296,14 +296,6 @@ def load_config(config_path: str | Path) -> GameConfig:
     script_patterns_raw = script_exc.get("patterns") or []
     image_patterns_raw = image_exc.get("patterns") or []
 
-    # Legacy single-format backward compatibility: if neither script nor image
-    # sub-keys exist but a top-level "patterns" list does, treat those as
-    # script exclusions (their original purpose was filtering rpy_files).
-    if not script_patterns_raw and not image_patterns_raw:
-        legacy = exc.get("patterns", []) or []
-        if legacy:
-            script_patterns_raw = legacy
-
     script_exclusion_patterns = [re.compile(p) for p in script_patterns_raw]
 
     if script_exclusion_patterns:
