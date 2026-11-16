@@ -172,20 +172,28 @@ def extract_rpa_file(rpa_file: Path) -> None:
         print(f"  [XX] Failed to extract {rpa_file.name}: {e}")
 
 
-def extract_all_rpa(game_folder: Path) -> int:
+def extract_all_rpa(game_folder: Path) -> list[dict[str, str]]:
     r"""Extract every ``.rpa`` under ``game_folder``.
 
-    Returns the number of archives processed.
+    Returns a list of dicts with keys ``archive`` (relative path of the
+    ``.rpa`` file) and ``extracted_folder`` (relative path to the extracted
+    directory alongside it).
     """
     rpa_files = sorted(game_folder.rglob("*.rpa"))
     if not rpa_files:
         print(f"No .rpa files found in {game_folder}")
-        return 0
+        return []
 
     print(f"Extracting {len(rpa_files)} .rpa file(s) into {game_folder}")
+    extracted: list[dict[str, str]] = []
     for rpa_file in rpa_files:
+        extract_dir = rpa_file.parent / rpa_file.stem
         extract_rpa_file(rpa_file)
-    return len(rpa_files)
+        extracted.append({
+            "archive": rpa_file.relative_to(game_folder).as_posix(),
+            "extracted_folder": extract_dir.relative_to(game_folder).as_posix(),
+        })
+    return extracted
 
 
 def decompile_rpyc_files(game_folder: Path) -> int:
@@ -242,17 +250,39 @@ def scan_source_files(game_folder: Path) -> dict[str, list[str]]:
     return {"rpy": rpy_files, "ren_py": ren_py_files}
 
 
+def scan_extracted_archives(game_folder: Path) -> list[dict[str, str]]:
+    r"""Return info about extracted archive folders under ``game_folder``.
+
+    For every ``.rpa`` file found, records the relative path of the archive
+    and its extracted sibling directory (named after the ``.rpa`` stem).
+
+    Returns a list of dicts with keys ``archive`` and ``extracted_folder``,
+    both relative to ``game_folder`` (forward-slash).
+    """
+    extracted: list[dict[str, str]] = []
+    for rpa_file in sorted(game_folder.rglob("*.rpa")):
+        extract_dir = rpa_file.parent / rpa_file.stem
+        if extract_dir.is_dir():
+            extracted.append({
+                "archive": rpa_file.relative_to(game_folder).as_posix(),
+                "extracted_folder": extract_dir.relative_to(game_folder).as_posix(),
+            })
+    return extracted
+
+
 def write_config(
     game_folder: Path,
     source_game: str,
     source_path: Path,
+    extracted_archives: list[dict[str, str]] | None = None,
     config_path: Path = CONFIG_PATH,
 ) -> Path:
     r"""Write ``config.json`` with matching patterns and an exclusion parameter.
 
     The config records every discovered ``.rpy`` and ``_ren.py`` file as a
-    matching pattern, plus an ``exclusion`` block the user can populate with
-    glob/substring patterns to exclude from downstream processing.
+    matching pattern, the extracted ``.rpa`` archive folders, plus an
+    ``exclusion`` block the user can populate with glob/substring patterns to
+    exclude from downstream processing.
     """
     source_files = scan_source_files(game_folder)
 
@@ -263,6 +293,7 @@ def write_config(
         "source_path": str(source_path),
         "rpy_files": source_files["rpy"],
         "ren_py_files": source_files["ren_py"],
+        "extracted_archives": extracted_archives or [],
         "exclusion": {
             "patterns": [],
             "note": "Glob/substring patterns to exclude from downstream processing",
@@ -320,19 +351,26 @@ def filter_source_files(
     by :func:`write_config` and removes any path that matches an exclusion
     pattern from ``config["exclusion"]["patterns"]``.
 
-    Returns a dict with keys ``"rpy"`` and ``"ren_py"`` holding the filtered
-    relative path lists.  Returns empty lists if the config is missing.
+    Returns a dict with keys ``"rpy"``, ``"ren_py"`` and ``"extracted_archives"``.
+    ``"extracted_archives"`` is the list of ``{"archive", "extracted_folder"}``
+    dicts recorded by :func:`write_config`.  Returns empty lists if the config
+    is missing.
     """
     config = load_config(config_path)
     rpy_files = config.get("rpy_files", [])
     ren_py_files = config.get("ren_py_files", [])
+    extracted_archives = config.get("extracted_archives", []) or []
     exclusion = config.get("exclusion", {}) or {}
     patterns = exclusion.get("patterns", []) or []
 
     included_rpy = [p for p in rpy_files if not matches_exclusion(p, patterns)]
     included_ren_py = [p for p in ren_py_files if not matches_exclusion(p, patterns)]
 
-    return {"rpy": included_rpy, "ren_py": included_ren_py}
+    return {
+        "rpy": included_rpy,
+        "ren_py": included_ren_py,
+        "extracted_archives": extracted_archives,
+    }
 
 
 def process_game(
@@ -359,7 +397,7 @@ def process_game(
         "source_game": None,
         "source_path": None,
         "copied": 0,
-        "extracted_archives": 0,
+        "extracted_archives": [],
         "decompiled": 0,
         "config": None,
         "dry_run": dry_run,
@@ -389,12 +427,14 @@ def process_game(
     if dry_run:
         print("[dry-run] would extract .rpa archives and decompile .rpyc files")
     else:
-        summary["extracted_archives"] = extract_all_rpa(game_folder)
+        extracted = extract_all_rpa(game_folder)
+        summary["extracted_archives"] = extracted
         summary["decompiled"] = decompile_rpyc_files(game_folder)
         config_out = write_config(
             game_folder,
             source_game=game_dir.name,
             source_path=game_dir,
+            extracted_archives=extracted,
             config_path=config_path,
         )
         summary["config"] = str(config_out)
