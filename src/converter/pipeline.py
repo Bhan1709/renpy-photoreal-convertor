@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import sys
 from pathlib import Path
 
@@ -114,11 +115,21 @@ def _prompt_exclusion_patterns(config_path: Path = CONFIG_PATH) -> None:
         print(f"Could not write config {config_path}: {exc}")
 
 
+def _clean_output_dir(config: GameConfig) -> None:
+    """Remove prior generated PNGs and manifest before composing."""
+    paths = config.resolved_paths()
+    output_dir = paths["output_dir"]
+    if output_dir.exists():
+        shutil.rmtree(output_dir)
+        print(f"Cleaned output directory: {output_dir}")
+
+
 def run_pipeline(
     dry_run: bool = False,
     compose_only: bool = False,
     apply_only: bool = False,
     restore_compose: bool = False,
+    clean_output: bool = False,
 ) -> int:
     """Run the decompile -> compose -> apply pipeline, or a restore mode.
 
@@ -136,6 +147,8 @@ def run_pipeline(
         apply_only: Run the apply pass only (requires an existing manifest).
         restore_compose: Undo compose/apply (restore .rpy files from
             archive.rpa).
+        clean_output: Remove prior generated PNGs and manifest before
+            composing (only applies to compose modes).
 
     Returns:
         0 on success, 1 if no matching games were found.
@@ -159,7 +172,9 @@ def run_pipeline(
             _prompt_exclusion_patterns(CONFIG_PATH)
             sync_exclusions(CONFIG_PATH)
             config = load_config(CONFIG_PATH)
-            manifest = Composer(config).compose(dry_run=dry_run)
+            if clean_output:
+                _clean_output_dir(config)
+            manifest = Composer(config).compose(dry_run=dry_run, clean_output=clean_output)
             ManifestWriter(config).write(manifest, dry_run=dry_run)
             print("\n=== Compose complete. Apply step deferred. ===")
             return 0
@@ -192,7 +207,9 @@ def run_pipeline(
 
     # --- Stage 4: compose (manifest + PNGs) only ---
     # Apply is intentionally deferred so the user can verify compose output.
-    manifest = Composer(config).compose(dry_run=dry_run)
+    if clean_output:
+        _clean_output_dir(config)
+    manifest = Composer(config).compose(dry_run=dry_run, clean_output=clean_output)
     ManifestWriter(config).write(manifest, dry_run=dry_run)
     print("\n=== Compose complete. Apply step deferred. ===")
 
@@ -208,6 +225,11 @@ def main(argv: list[str] | None = None) -> int:
         "--dry-run",
         action="store_true",
         help="Compose without writing; skips the apply pass.",
+    )
+    ap.add_argument(
+        "--clean-output",
+        action="store_true",
+        help="Remove prior generated PNGs and manifest before composing.",
     )
     ap.add_argument(
         "--compose-only",
@@ -231,6 +253,7 @@ def main(argv: list[str] | None = None) -> int:
         compose_only=args.compose_only,
         apply_only=args.apply_only,
         restore_compose=args.restore_compose,
+        clean_output=args.clean_output,
     )
 
 

@@ -41,6 +41,10 @@ run = "python src/converter/decompile/sync_exclusions_cli.py"
 description = "Compose composites + write manifest for a game (skip apply). Uses src/converter/config.json (no --game needed)."
 run = 'python -m converter.pipeline --compose-only'
 
+[tasks.compose-clean]
+description = "Removes older composites and composes new ones with manifests. Uses src/converter/config.json (no --game needed)."
+run = 'python -m converter.pipeline --compose-only --clean-output'
+
 [tasks.apply]
 description = "Apply composites into live .rpy scripts for a game. Uses src/converter/config.json (no --game needed)."
 run = 'python -m converter.pipeline --apply-only'
