@@ -4,7 +4,7 @@ Subpackages (decompile, compose, …) can reuse tqdm-based progress reporting
 defined here.
 """
 
-from .utility import tqdm  # noqa: F401  (re-exported for subpackages)
+from .utility import tqdm
 
 __all__ = ["tqdm"]
 

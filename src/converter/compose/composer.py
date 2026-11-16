@@ -15,7 +15,8 @@ import re
 from collections import defaultdict
 from pathlib import Path
 
-from tqdm import tqdm
+from tqdm import tqdm  # type: ignore[import-untyped]
+
 from .character_associator import CharacterAssociator
 from .compositor import Compositor
 from .conditions import eval_cond, select_layers_for_chain, state_at_call
@@ -29,16 +30,14 @@ from .models import (
     UsageLocation,
 )
 from .parser import (
-    FileIndex,
+    ImageDeclaration,
     ScriptBlock,
     ScriptIndex,
-    ScriptUsage,
     find_nearby_dialog,
     index_scripts,
     parse_screen_stack,
 )
 from .resolver import Resolver
-
 
 _SHOW_RE = re.compile(r"^\s*(?:show|scene)\s+(?!screen\b)([\w.]+)(?:\s+([^\n#]+))?")
 _DECLARATION_USE_RE = re.compile(r"^\s*(?:show|scene)\s+([\w.]+)")
@@ -189,7 +188,7 @@ class Composer:
             dynamic_states=previous_dynamic_states,
             image_declarations=declaration_records,
             dynamic_declarations=dynamic_declarations,
-            unresolved=tuple(),
+            unresolved=(),
             summary={
                 "scripts_scanned": len(index.files),
                 "composites": len(records),
@@ -389,11 +388,11 @@ def _enumerate_condition_variants(
 
         for layer in cond_layers:
             outcome = True
-            unresolved: list[str] = []
+            chain_unresolved: list[str] = []
             for condition in layer.conditions:
                 value = eval_cond(condition, values)
                 if value is None:  # UNKNOWN
-                    unresolved.append(condition)
+                    chain_unresolved.append(condition)
                     outcome = None  # type: ignore[assignment]
                     break
                 if value is False:
@@ -402,7 +401,7 @@ def _enumerate_condition_variants(
             if outcome is True:
                 true_layers.append(layer)
             elif outcome is None:
-                unknown_layers.append((layer, tuple(unresolved)))
+                unknown_layers.append((layer, tuple(chain_unresolved)))
             # outcome is False: layer is dropped.
 
         if true_layers:
@@ -571,7 +570,7 @@ def _process_image_declarations_from_index(
         if dynamic or not paths:
             parsed_decls[name] = None
             continue
-        layers = [
+        decl_layers = [
             Layer(
                 source=p, line=decl.line, role="image_declaration_layer",
                 conditions=(), declaration_expression=expression,
@@ -581,7 +580,7 @@ def _process_image_declarations_from_index(
         comp = re.search(r"Composite\s*\(\s*\(\s*(\d+)\s*,\s*(\d+)\s*\)", expression)
         if comp:
             canvas_size = (int(comp.group(1)), int(comp.group(2)))
-            layers = [l.replace(canvas_size=canvas_size) for l in layers]
+            decl_layers = [l.replace(canvas_size=canvas_size) for l in decl_layers]
         position_pairs = list(
             re.finditer(
                 r"\(\s*(-?\d+)\s*,\s*(-?\d+)\s*\)\s*,\s*['\"]("
@@ -590,11 +589,11 @@ def _process_image_declarations_from_index(
             )
         )
         for pair_index, match in enumerate(position_pairs):
-            if pair_index < len(layers):
-                layers[pair_index] = layers[pair_index].replace(
+            if pair_index < len(decl_layers):
+                decl_layers[pair_index] = decl_layers[pair_index].replace(
                     offset=(int(match.group(1)), int(match.group(2)))
                 )
-        parsed_decls[name] = layers
+        parsed_decls[name] = decl_layers
 
     for file_index in index.per_file.values():
         f = file_index.path
@@ -629,8 +628,8 @@ def _process_image_declarations_from_index(
                     "reason": "runtime-dependent image declaration",
                 })
                 continue
-            layers = parsed_decls.get(name)
-            if not layers:
+            layers: list[Layer] | None = parsed_decls.get(name)
+            if layers is None:
                 continue
             emit_wrapper(name, "image_declaration", layers, [loc], _DeclBlock(decl.script, decl.line))
 
@@ -826,7 +825,7 @@ def _emit_record(
 
                 with _PILImage.open(target) as _im:
                     dimensions = _im.size
-            except (OSError, Exception):
+            except (OSError, ValueError):
                 dimensions = None
         else:
             image = compositor.composite(normalized, canvas_size=None)

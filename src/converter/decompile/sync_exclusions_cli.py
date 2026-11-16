@@ -5,7 +5,7 @@ pattern in ``exclusion.patterns``, then writes the updated config back.
 
 Usage::
 
-    python src/converter/decompile/sync_exclusions.py
+    python src/converter/decompile/sync_exclusions_cli.py
 
 Run ``mise run decompile`` first to generate ``config.json``, then set
 ``exclusion.patterns`` manually (e.g. ``["archive/"]``), and run this
@@ -17,9 +17,9 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from src.converter.decompile.decompile import sync_exclusions
+from converter.decompile.decompile import sync_exclusions
 
 CONFIG_PATH = Path("src/converter/config.json")
 

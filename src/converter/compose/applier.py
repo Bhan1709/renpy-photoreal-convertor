@@ -21,11 +21,11 @@ from collections import defaultdict
 from pathlib import Path
 from typing import NotRequired, TypedDict
 
-from tqdm import tqdm
+from tqdm import tqdm  # type: ignore[import-untyped]
 
+from .conditions import get_reset_defaults_map
 from .config import GameConfig
-from .conditions import CallState, get_reset_defaults_map, state_at_call
-from .errors import ApplyError
+from .errors import ApplyError, ManifestError
 from .manifest import KNOWN_FAMILIES
 from .models import AdoptionReport, CompositeManifest, CompositeRecord
 
@@ -126,7 +126,7 @@ class Applier:
             )
             if runtime_switch:
                 runtime_switches[key] = runtime_switch
-                used[runtime_switch["tag"]] = None
+                used[runtime_switch["tag"]] = None  # type: ignore[typeddict-item]
                 continue
             elif len(composite_tags) == 1:
                 # Single variant — direct mapping even without a switch.
@@ -166,7 +166,7 @@ class Applier:
                 if not (0 <= index < len(lines)) or lines[index].split("#", 1)[0].strip() != info["statement"]:
                     unchanged += 1
                     continue
-                rewritten = _rewrite_script_line(lines[index], info["statement"], info["name"])
+                rewritten = _rewrite_script_line(lines[index], info["statement"], info["name"])  # type: ignore[typeddict-item]
                 if not rewritten.endswith(("\n", "\r")):
                     rewritten += newline
                 lines[index] = rewritten
@@ -178,7 +178,7 @@ class Applier:
         # --- Runtime ConditionSwitch wrappers ---
         runtime_by_file: dict[str, list[tuple[int, _CompositeUsageInfo]]] = {}
         for (script, line), info in runtime_switches.items():
-            rel = script[len("game/"):] if script.startswith("game/") else script
+            rel = script.removeprefix("game/")
             runtime_by_file.setdefault(rel, []).append((line, info))
         runtime_applied = 0
         runtime_already_applied = 0
@@ -189,7 +189,7 @@ class Applier:
             for line_no, info in sorted(entries, reverse=True):
                 index = line_no - 1
                 if 0 <= index < len(lines) and re.match(
-                    rf"^(?:show|scene)\s+{re.escape(info['tag'])}(?:\s|:|$)",
+                    rf"^(?:show|scene)\s+{re.escape(info['tag'])}(?:\s|:|$)",  # type: ignore[typeddict-item]
                     lines[index].strip(),
                 ):
                     runtime_already_applied += 1
@@ -200,7 +200,7 @@ class Applier:
                         "statement": info["statement"], "reason": "source_line_changed",
                     })
                     continue
-                lines[index] = _rewrite_script_line(lines[index], info["statement"], info["tag"])
+                lines[index] = _rewrite_script_line(lines[index], info["statement"], info["tag"])  # type: ignore[typeddict-item]
                 runtime_applied += 1
                 changed = True
             if changed:
@@ -218,15 +218,15 @@ class Applier:
         ]
         for name, rel in sorted(image_tags.items()):
             declarations.append(f'image {name} = "../{rel.replace(chr(92), "/")}"')
-        wrapper_declarations = {info["tag"]: info for info in runtime_switches.values()}
-        for info in sorted(wrapper_declarations.values(), key=lambda item: str(item["tag"])):
-            branches = info["branches"]
-            declarations.append(f'image {info["tag"]} = ConditionSwitch(')
+        wrapper_declarations = {info["tag"]: info for info in runtime_switches.values()}  # type: ignore[typeddict-item]
+        for info in sorted(wrapper_declarations.values(), key=lambda item: str(item["tag"])):  # type: ignore[typeddict-item]
+            branches = info["branches"]  # type: ignore[typeddict-item]
+            declarations.append(f'image {info["tag"]} = ConditionSwitch(')  # type: ignore[typeddict-item]
             declarations.extend(
                 f'    {json.dumps(condition)}, {json.dumps(tag)},'
                 for condition, tag in zip(branches[::2], branches[1::2])
             )
-            declarations.append(f'    "True", {json.dumps(info["fallback"])},')
+            declarations.append(f'    "True", {json.dumps(info["fallback"])},')  # type: ignore[typeddict-item]
             declarations.append(")")
         declaration_path = self._declaration_path()
         declaration_path.write_text("\n".join(declarations) + "\n", encoding="utf-8-sig")
@@ -447,7 +447,7 @@ class Applier:
             displayable.append(token)
         fallback = " ".join([statement_tokens[1], *displayable])
         digest = hashlib.sha1(
-            f"{exemplar.name}:{signature}:{fallback}".encode("utf-8")
+            f"{exemplar.name}:{signature}:{fallback}".encode()
         ).hexdigest()[:12]
         return {
             "tag": f"compositeRuntime__{digest}",
@@ -546,7 +546,7 @@ class Applier:
     ) -> dict[str, list[tuple[int, _CompositeUsageInfo]]]:
         by_file: dict[str, list[tuple[int, _CompositeUsageInfo]]] = {}
         for (script, line), info in mapping.items():
-            rel = script[len("game/"):] if script.startswith("game/") else script
+            rel = script.removeprefix("game/")
             by_file.setdefault(rel, []).append((line, info))
         return dict(by_file)
 

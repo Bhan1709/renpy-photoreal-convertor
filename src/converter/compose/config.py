@@ -10,9 +10,10 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Mapping
+from typing import cast
 
 # Canonical component categories shared by every Ren'Py game.
 CANONICAL_CATEGORIES: frozenset[str] = frozenset({"bg", "char", "scene", "gui"})
@@ -151,12 +152,12 @@ class GameConfig:
         pattern = (
             rf"(?:{alternation})/[^\"'\s,)]+\.(?:png|jpe?g|webp|bmp)"
         )
-        return re.compile(pattern, re.I)
+        return re.compile(pattern, re.IGNORECASE)
 
     def _compile_category_folder_regex(self) -> re.Pattern[str]:
         folders = sorted({name.lower() for name in self.categories.values()})
         alternation = "|".join(re.escape(f) for f in folders)
-        return re.compile(rf"(?:{alternation})/", re.I)
+        return re.compile(rf"(?:{alternation})/", re.IGNORECASE)
 
     def path_regex(self) -> re.Pattern[str]:
         """Return the compiled regex matching asset paths under any configured folder.
@@ -386,7 +387,7 @@ def default_config(
         if key not in valid_fields:
             continue
         if key == "non_character_folders" and not isinstance(value, frozenset):
-            value = frozenset(value)  # type: ignore[arg-type]  (validated override value)
+            value = frozenset(cast(Iterable[str], value))  # type: ignore[arg-type]
         kwargs[key] = value
 
     cfg = GameConfig(
@@ -398,7 +399,7 @@ def default_config(
         manifest_path=paths["manifest_path"],
         declaration_path=paths["declaration_path"],
         report_path=paths["report_path"],
-        **kwargs,  # type: ignore[arg-type]  (overrides are validated against GameConfig fields above)
+        **kwargs,  # type: ignore[arg-type]
     )
 
     # Persist the resolved config so the user can review the exact values being
