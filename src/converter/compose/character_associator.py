@@ -97,9 +97,12 @@ class CharacterAssociator:
                 # Use indexed lines when available; fall back to reading the
                 # definition script from disk (Optimization #1).
                 if lines is None:
-                    lines = block.path.read_text(
-                        encoding="utf-8-sig", errors="replace"
-                    ).splitlines()
+                    try:
+                        lines = block.path.read_text(
+                            encoding="utf-8-sig", errors="replace"
+                        ).splitlines()
+                    except OSError:
+                        lines = []
                 before = lines[max(0, block.line - 80): block.line - 1]
                 base_line = max(1, block.line - 79)
                 headings = [
