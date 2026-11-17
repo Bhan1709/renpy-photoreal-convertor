@@ -321,7 +321,7 @@ def _run_with_nvidia_proxy(profile: Profile) -> int:
     finally:
         note(
             f"NVIDIA proxy left running at http://{PROXY_HOST}:{PROXY_PORT} for reuse "
-            f"(stop it with `mise run stop-proxy` or `python -m agent --stop-proxy`)."
+            f"(stop it with `mise run agent stop-proxy` or `python -m agent stop-proxy`)."
         )
 
 
@@ -359,7 +359,10 @@ def _print_profiles() -> int:
 def run(
     profile: str | None = typer.Argument(
         None,
-        help="Profile key from config.json (for example: nvidia-glm or qwen-3-vl-32k).",
+        help=(
+            "Profile key from config.json (e.g. nvidia-glm or qwen-3-vl-32k), "
+            "or an action: stop-proxy / list-profiles."
+        ),
     ),
     list_profiles: bool = typer.Option(
         False, "--list-profiles", help="List the available profiles and exit."
@@ -367,12 +370,18 @@ def run(
     stop_proxy: bool = typer.Option(
         False, "--stop-proxy", help="Stop the running NVIDIA proxy and exit."
     ),
-) -> int:
-    """Run the profile launcher and return a process exit code."""
-    if list_profiles:
-        return _print_profiles()
-    if stop_proxy:
-        return _stop_proxy()
+) -> None:
+    """Launch OpenCode with a model profile, or run a maintenance action.
+
+    Invoked with no profile, an interactive picker is shown. The actions
+    ``stop-proxy`` and ``list-profiles`` may be given either as flags or as the
+    positional argument, so ``mise agent stop-proxy`` and
+    ``python -m agent --stop-proxy`` both work.
+    """
+    if list_profiles or profile == "list-profiles":
+        raise typer.Exit(_print_profiles())
+    if stop_proxy or profile == "stop-proxy":
+        raise typer.Exit(_stop_proxy())
 
     rule("Agent Launcher")
 
@@ -381,15 +390,22 @@ def run(
 
     if not profile:
         # No profile given: interactively pick one from the available list.
+        if not (sys.stdin.isatty() and sys.stdout.isatty()):
+            error(
+                "No profile given and no interactive terminal is available. "
+                "Pass a profile key explicitly, e.g. `python -m agent qwen-3-vl-32k`."
+            )
+            raise typer.Exit(1)
+
         try:
             profiles = load_profiles()
         except ConfigError as exc:
             error(str(exc))
-            return 1
+            raise typer.Exit(1)
 
         if not profiles:
             error("No profiles are defined in config.json.")
-            return 1
+            raise typer.Exit(1)
 
         # Build grouped, metadata-rich choices for the profile picker.
         provider_order = {"ollama": 0, "nvidia": 1}
@@ -405,13 +421,13 @@ def run(
                 current_provider = prof.provider
                 choices.append(Separator(f"--- {current_provider.upper()} ---"))
             # Format context limit (e.g. 131072 -> 128k, 1048576 -> 1M)
-            ctx = prof.context_limit
-            if ctx >= 1_000_000:
-                ctx_str = f"{ctx // 1_000_000}M ctx"
-            elif ctx >= 1_000:
-                ctx_str = f"{ctx // 1_000}k ctx"
+            ctx_limit = prof.context_limit
+            if ctx_limit >= 1_000_000:
+                ctx_str = f"{ctx_limit // 1_000_000}M ctx"
+            elif ctx_limit >= 1_000:
+                ctx_str = f"{ctx_limit // 1_000}k ctx"
             else:
-                ctx_str = f"{ctx} ctx"
+                ctx_str = f"{ctx_limit} ctx"
             vision = "Vision" if "vl" in prof.model_name.lower() else "Text"
             choices.append(
                 Choice(
@@ -428,7 +444,7 @@ def run(
         )
         if selected is None:
             info("No profile selected. Aborted.")
-            return 1
+            raise typer.Exit(1)
         assert selected is not None
         profile = selected
         kv("Profile", profile)
@@ -437,17 +453,17 @@ def run(
         profile_obj = load_profile(profile)
     except ConfigError as exc:
         error(str(exc))
-        return 1
+        raise typer.Exit(1)
 
     if profile_obj.provider == "nvidia" and not os.environ.get("NVIDIA_API_KEY"):
         error("NVIDIA_API_KEY environment variable is not set.")
-        return 1
+        raise typer.Exit(1)
 
     try:
         config_path = _write_project_config(profile_obj)
     except (OSError, ConfigError) as exc:
         error(f"Could not update project config: {exc}")
-        return 1
+        raise typer.Exit(1)
     info(f"Selected model in project config: {config_path}")
 
     step("1", f"Launching OpenCode with profile [{profile_obj.key}]")
@@ -461,19 +477,12 @@ def run(
 
     try:
         if profile_obj.provider == "nvidia":
-            return _run_with_nvidia_proxy(profile_obj)
-        return _run_with_ollama(profile_obj)
+            code = _run_with_nvidia_proxy(profile_obj)
+        else:
+            code = _run_with_ollama(profile_obj)
     except KeyboardInterrupt:
         info("\n[BYE] Session interrupted by user.")
-        return 130
+        raise typer.Exit(130)
     finally:
         monitor.stop()
-
-
-def main(argv: Sequence[str] | None = None) -> int:
-    """Run the profile launcher and return a process exit code."""
-    return app(args=argv, standalone_mode=False)  # type: ignore[no-any-return]
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
+    raise typer.Exit(code)
