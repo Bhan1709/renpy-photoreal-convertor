@@ -75,6 +75,12 @@ Do **not** hardcode Python versions or paths; respect `.python-version` and mise
 - **`opencode.json` is auto-generated.** Edits are allowed for local testing, but expect the CLI to overwrite it on profile launch. Do not commit profile-specific secrets into it.
 - **`src/renpy_game/*` is gitignored** (except `.gitkeep`). Do not add game assets or extracted archives to commits.
 - **Respect the NVIDIA proxy rate limit.** The local proxy (`nvidia_proxy.py`) enforces ~36 RPM to stay under NVIDIA's 40 RPM quota. Do not bypass or raise the rate limit without a reason.
+- **No force-push on shared branches.** Never force-push to `main`, `master`, `develop`, or any branch others may have pulled. If history must be rewritten on your own feature branch, ask first.
+- **No committing secrets or `.env` real values.** Never commit `mise.local.toml`, `.env`, or any file containing real `NVIDIA_API_KEY`, `GH_TOKEN`, or other credentials. Only placeholder templates may be tracked.
+- **Review before merge, even for agent-authored changes.** An agent must not approve or merge its own diffs. Every pull request needs a human approving review before it lands.
+- **Run ruff + mypy before every commit.** `uv run ruff` must pass with zero errors and `uv run mypy src/` with zero issues before any commit is created.
+- **One logical change per commit.** Keep each commit to a single, logically grouped change. Do not bundle unrelated fixes into one commit.
+- **Verify on a copy before apply/restore.** The compose/apply pass rewrites live `.rpy` scripts. Run with `--dry-run` first, or test on a copy, before applying or restoring to the live game folder.
 - **Context backups.** `ConversationMonitor` saves Markdown backups under `logs/conversations/` when the context threshold is approached. Do not delete these backups during an active session.
 - Match `PARAMETER num_ctx` in Ollama Modelfiles to the `context_limit` in the corresponding `config.json` profile entry.
 - Existing tooling caches: `.ruff_cache`, `.mypy_cache` — `ruff` and `mypy` are used where configured; run via `uv run ruff` / `uv run mypy` if available.
