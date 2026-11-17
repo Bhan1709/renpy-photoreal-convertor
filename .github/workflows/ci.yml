@@ -27,7 +27,7 @@ jobs:
         run: uv sync
 
       - name: Lint with ruff
-        run: uv run ruff
+        run: uv run ruff check
 
       - name: Type check with mypy
         run: uv run mypy src/
