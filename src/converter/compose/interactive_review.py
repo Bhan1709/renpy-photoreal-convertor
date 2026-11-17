@@ -212,6 +212,37 @@ def _replace_speaker_in_dialogs(
     return new_comp
 
 
+def _apply_speaker_mapping_to_manifests(
+    all_data: dict[str, dict],
+    composite_paths: list[str],
+    old_speaker: str,
+    new_speaker: str,
+) -> None:
+    """Update manifests when a speaker is mapped to a character.
+
+    For each composite in ``composite_paths``:
+      * Replaces ``old_speaker`` with ``new_speaker`` in dialog_context entries.
+      * Removes ``old_speaker`` from unmapped_speakers (clears the field if empty).
+
+    Writes all category manifests back to disk.
+    """
+    target_set = set(composite_paths)
+    for cat_data in all_data.values():
+        new_list: list[dict] = []
+        for comp in cat_data.get("composites", []):
+            if comp.get("composite_path") not in target_set:
+                new_list.append(comp)
+                continue
+            new_comp = _replace_speaker_in_dialogs(comp, old_speaker, new_speaker)
+            unmapped = new_comp.get("unmapped_speakers")
+            if unmapped:
+                remaining = [s for s in unmapped if s != old_speaker]
+                new_comp["unmapped_speakers"] = remaining if remaining else None
+            new_list.append(new_comp)
+        cat_data["composites"] = new_list
+        cat_data["summary"] = {"composites": len(new_list)}
+
+
 # --------------------------------------------------------------------------- #
 # Speaker rejection
 # --------------------------------------------------------------------------- #
@@ -234,7 +265,13 @@ def _reject_speaker(
             if comp.get("composite_path") not in target_set:
                 new_list.append(comp)
                 continue
-            new_list.append(_remove_speaker_from_dialogs(comp, speaker))
+            new_comp = _remove_speaker_from_dialogs(comp, speaker)
+            # Clear unmapped_speakers since the speaker's dialogs are removed.
+            unmapped = new_comp.get("unmapped_speakers")
+            if unmapped:
+                remaining = [s for s in unmapped if s != speaker]
+                new_comp["unmapped_speakers"] = remaining if remaining else None
+            new_list.append(new_comp)
         cat_data["composites"] = new_list
         cat_data["summary"] = {"composites": len(new_list)}
 
@@ -393,6 +430,12 @@ def _process_unmapped_speakers(
                     aliases_list.append(speaker_key)
                     char_aliases[resolved]["aliases"] = sorted(aliases_list)
                 _save_character_aliases(reports_dir, char_aliases)
+                # Update manifests: replace speaker in dialog_context and
+                # clear unmapped_speakers for affected composites.
+                _apply_speaker_mapping_to_manifests(
+                    all_data, composite_paths, speaker, resolved
+                )
+                _save_all_category_manifests(reports_dir, all_data)
                 print(f"  Mapped '{speaker}' -> '{resolved}' (alias added).")
             else:
                 # Invalid character name -> ask to remove dialogs.
