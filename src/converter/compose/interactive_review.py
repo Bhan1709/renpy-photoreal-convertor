@@ -36,15 +36,17 @@ def _is_tty() -> bool:
     return hasattr(sys.stdout, "isatty") and sys.stdout.isatty()
 
 
-def _clickable(path: Path | str) -> str:
+def _clickable(path: Path | str, base: Path | None = None) -> str:
     """Return a clickable link for ``path``.
 
-    Uses ANSI OSC 8 hyperlinks when stdout is a TTY (supported by Windows
-    Terminal, VS Code, iTerm2, kitty, alacritty, etc.).  Falls back to the
-    plain file:// URI otherwise so the path is still readable/copyable.
+    ``path`` may be relative to ``base`` (defaults to CWD).  Uses ANSI OSC 8
+    hyperlinks when stdout is a TTY (supported by Windows Terminal, VS Code,
+    iTerm2, kitty, alacritty, etc.).  Falls back to the plain file:// URI
+    otherwise so the path is still readable/copyable.
     """
     p = Path(path)
     if not p.is_absolute():
+        p = (base or Path.cwd()) / p
         p = p.resolve()
     uri = p.as_uri()
     label = str(p)
@@ -336,7 +338,7 @@ def _process_unmapped_speakers(
         print(f"Unmapped speaker: {speaker}")
         print(f"Found in {len(composite_paths)} composite(s):")
         for comp_path in composite_paths:
-            print(f"  {_clickable(comp_path)}")
+            print(f"  {_clickable(comp_path, config.game_root.parent)}")
 
         char_name = input(
             f"\nEnter character name for '{speaker}' "
@@ -422,7 +424,7 @@ def _process_scenes_missing_chars(
 
         print(f"\n{'=' * 60}")
         print(f"Scene composite missing characters: {name}")
-        print(f"  Path: {_clickable(composite_path)}")
+        print(f"  Path: {_clickable(composite_path, config.game_root.parent)}")
         print(f"  Defined: {entry['definition']['script']}:{entry['definition']['line']}")
         print("  Usage locations:")
         for loc in entry.get("usage_locations", []):
