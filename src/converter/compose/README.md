@@ -264,7 +264,6 @@ Under ``<output_dir>/reports/``:
 - ``manifest_char.json`` — composites in the ``char`` family
 - ``manifest_scene.json`` — composites in the ``scene`` family
 - ``manifest_gui.json``  — composites in the ``gui`` family
-- ``manifest_xxx.json``  — composites in the ``xxx`` (scene/adult) family
 - ``manifest_other.json`` — composites that don't fit a known family
 - ``manifest_index.json`` — global data (summary, dynamic_states, image_declarations,
   dynamic_declarations, unresolved) plus references to each category file.
@@ -272,7 +271,6 @@ Under ``<output_dir>/reports/``:
 The apply pass loads the index and merges all category manifests in memory.
 
 ---
-
 ## Generalization notes
 
 Compared with the original game-specific scripts, all of the following are now

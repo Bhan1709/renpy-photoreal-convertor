@@ -129,6 +129,7 @@ class UsageLocation:
     line: int
     statement: str
     state_snapshot: dict[str, object] | None = None
+    dialog_context: tuple[dict, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -149,7 +150,7 @@ class CompositeRecord:
     characters: tuple[dict, ...] | None = None
     character_name: str | None = None
     character_association_status: str | None = None
-    dialog_context: tuple[dict, ...] | None = None
+    unmapped_speakers: tuple[str, ...] | None = None
 
     def with_usage(self, location: UsageLocation) -> CompositeRecord:
         """Return a copy with an additional usage location appended."""
@@ -174,6 +175,7 @@ class CompositeRecord:
                     "line": loc.line,
                     "statement": loc.statement,
                     **({"state_snapshot": loc.state_snapshot} if loc.state_snapshot else {}),
+                    **({"dialog_context": list(loc.dialog_context)} if loc.dialog_context else {}),
                 }
                 for loc in self.usage_locations
             ],
@@ -189,8 +191,8 @@ class CompositeRecord:
             d["character_name"] = self.character_name
         if self.character_association_status is not None:
             d["character_association_status"] = self.character_association_status
-        if self.dialog_context is not None:
-            d["dialog_context"] = list(self.dialog_context)
+        if self.unmapped_speakers is not None:
+            d["unmapped_speakers"] = list(self.unmapped_speakers)
         return d
 
     @classmethod
@@ -211,6 +213,7 @@ class CompositeRecord:
                     line=loc["line"],
                     statement=loc["statement"],
                     state_snapshot=loc.get("state_snapshot"),
+                    dialog_context=tuple(loc["dialog_context"]) if loc.get("dialog_context") else None,
                 )
                 for loc in data.get("usage_locations", [])
             ),
@@ -222,7 +225,7 @@ class CompositeRecord:
             characters=tuple(data.get("characters", [])) if data.get("characters") else None,
             character_name=data.get("character_name"),
             character_association_status=data.get("character_association_status"),
-            dialog_context=tuple(data.get("dialog_context", [])) if data.get("dialog_context") else None,
+            unmapped_speakers=tuple(data.get("unmapped_speakers", [])) if data.get("unmapped_speakers") else None,
         )
 
 

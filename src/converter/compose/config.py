@@ -57,6 +57,16 @@ DEFAULT_GAME_DEFAULTS: dict[str, object] = {
     "day": 1,
 }
 
+# Speakers that are always kept in dialog context even when they don't match
+# a character folder under ``chars/`` (e.g. narrator, player).
+DEFAULT_SPECIAL_SPEAKERS: frozenset[str] = frozenset({"narrator", "you", "y"})
+
+# Default folder name for the player character under ``chars/``.  The player
+# is typically referred to as "you" or "y" in dialog, so those aliases map to
+# this folder.
+DEFAULT_PLAYER_FOLDER: str | None = "player"
+DEFAULT_PLAYER_ALIASES: tuple[str, ...] = ("you", "y")
+
 
 @dataclass(frozen=True)
 class GameConfig:
@@ -97,6 +107,9 @@ class GameConfig:
     non_character_folders: frozenset[str] = field(
         default_factory=lambda: frozenset(DEFAULT_NON_CHARACTER_FOLDERS)
     )
+    special_speakers: frozenset[str] = field(default_factory=lambda: frozenset(DEFAULT_SPECIAL_SPEAKERS))
+    player_folder: str | None = DEFAULT_PLAYER_FOLDER
+    player_aliases: tuple[str, ...] = field(default_factory=lambda: tuple(DEFAULT_PLAYER_ALIASES))
     path_aliases: dict[str, str] = field(default_factory=lambda: dict(DEFAULT_PATH_ALIASES))
     game_defaults: dict[str, object] = field(default_factory=lambda: dict(DEFAULT_GAME_DEFAULTS))
     rpy_files: list[str] | None = None
@@ -322,4 +335,7 @@ def load_config(config_path: str | Path) -> GameConfig:
         ren_py_files=ren_py_files,
         script_exclusion_patterns=script_exclusion_patterns,
         image_exclusion_patterns=image_exclusion_patterns,
+        special_speakers=frozenset(data.get("special_speakers") or DEFAULT_SPECIAL_SPEAKERS),
+        player_folder=str(data.get("player_folder") or DEFAULT_PLAYER_FOLDER),
+        player_aliases=tuple(data.get("player_aliases") or DEFAULT_PLAYER_ALIASES),
     )
