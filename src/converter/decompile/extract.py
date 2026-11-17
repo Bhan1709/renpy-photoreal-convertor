@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from cli import error, info, success
+
 
 def extract_rpa_file(rpa_file: Path) -> None:
     r"""Extract a single ``.rpa`` alongside itself.
@@ -20,10 +22,10 @@ def extract_rpa_file(rpa_file: Path) -> None:
         with RenPyArchive(rpa_file, verbose=False) as rpa:
             files = rpa.list()
             if not files:
-                print(f"  ! Archive is empty: {rpa_file.name}")
+                info(f"Archive is empty: {rpa_file.name}")
                 return
 
-            print(f"  Extracting {rpa_file.name} -> {extract_dir}")
+            info(f"Extracting {rpa_file.name} -> {extract_dir}")
             count = 0
             for filename in files:
                 data = rpa.read(filename)
@@ -32,10 +34,11 @@ def extract_rpa_file(rpa_file: Path) -> None:
                 target.write_bytes(data)
                 count += 1
 
-            print(f"  [OK] Extracted {count} file(s) from {rpa_file.name} "
-                  f"into {extract_dir}")
+            success(
+                f"Extracted {count} file(s) from {rpa_file.name} into {extract_dir}"
+            )
     except Exception as e:  # noqa: BLE001
-        print(f"  [XX] Failed to extract {rpa_file.name}: {e}")
+        error(f"Failed to extract {rpa_file.name}: {e}")
 
 
 def extract_all_rpa(game_folder: Path) -> list[dict[str, str]]:
@@ -47,16 +50,18 @@ def extract_all_rpa(game_folder: Path) -> list[dict[str, str]]:
     """
     rpa_files = sorted(game_folder.rglob("*.rpa"))
     if not rpa_files:
-        print(f"No .rpa files found in {game_folder}")
+        info(f"No .rpa files found in {game_folder}")
         return []
 
-    print(f"Extracting {len(rpa_files)} .rpa file(s) into {game_folder}")
+    info(f"Extracting {len(rpa_files)} .rpa file(s) into {game_folder}")
     extracted: list[dict[str, str]] = []
     for rpa_file in rpa_files:
         extract_dir = rpa_file.parent / rpa_file.stem
         extract_rpa_file(rpa_file)
-        extracted.append({
-            "archive": rpa_file.relative_to(game_folder).as_posix(),
-            "extracted_folder": extract_dir.relative_to(game_folder).as_posix(),
-        })
+        extracted.append(
+            {
+                "archive": rpa_file.relative_to(game_folder).as_posix(),
+                "extracted_folder": extract_dir.relative_to(game_folder).as_posix(),
+            }
+        )
     return extracted

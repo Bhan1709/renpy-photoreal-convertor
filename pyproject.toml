@@ -13,9 +13,12 @@ dependencies = [
     "mypy>=2.4.1",
     "numpy>=2.5.4",
     "pillow>=13.0.0",
+    "questionary>=2.1.1",
+    "rich>=15.0.0",
     "rpa-toolkit @ git+https://github.com/regiellis/rpa-toolkit.git@435f202e7cb9aeeaf6c006cf928d9661f8830e6e",
     "tiktoken>=0.14.0",
     "tqdm>=4.70.1",
+    "typer>=0.29.1",
     "uvicorn>=0.54.0",
 ]
 

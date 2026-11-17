@@ -1,8 +1,7 @@
-"""Command-line launcher for OpenCode model profiles."""
+"""Command-line launcher for OpenCode model profiles (typer + rich)."""
 
 from __future__ import annotations
 
-import argparse
 import json
 import logging
 import os
@@ -17,6 +16,21 @@ from pathlib import Path
 from typing import Any, cast
 
 import httpx
+import typer
+
+from cli import (
+    create_app,
+    error,
+    info,
+    kv,
+    note,
+    print_table,
+    rule,
+    select,
+    step,
+    success,
+    warning,
+)
 
 from .config import ConfigError, Profile, load_profile, load_profiles
 from .constants import (
@@ -38,29 +52,14 @@ OPENAI_COMPATIBLE_PACKAGE = "@opencode/ai/providers/openai-compatible"
 MAX_OUTPUT_TOKENS = 32768
 OLLAMA_BASE_URL = "http://127.0.0.1:11434/v1"
 
+app = create_app(
+    "Launch OpenCode with a configured model profile and back up its conversation."
+)
 
-def build_parser() -> argparse.ArgumentParser:
-    """Build the command-line argument parser."""
-    parser = argparse.ArgumentParser(
-        prog="opencode-monitor",
-        description="Launch OpenCode with a configured model profile and back up its conversation.",
-    )
-    parser.add_argument(
-        "profile",
-        nargs="?",
-        help="Profile key from config.json (for example: nvidia-glm or qwen-3-vl-32k).",
-    )
-    parser.add_argument(
-        "--list-profiles",
-        action="store_true",
-        help="List the available profiles and exit.",
-    )
-    parser.add_argument(
-        "--stop-proxy",
-        action="store_true",
-        help="Stop the running NVIDIA proxy and exit.",
-    )
-    return parser
+
+# --------------------------------------------------------------------------- #
+# Proxy health / lifecycle helpers (unchanged logic, rich output)             #
+# --------------------------------------------------------------------------- #
 
 
 def _proxy_health() -> dict[str, Any] | None:
@@ -70,7 +69,7 @@ def _proxy_health() -> dict[str, Any] | None:
         response = httpx.get(url, timeout=1.0, trust_env=False)
         response.raise_for_status()
         payload = response.json()
-    except (httpx.HTTPError, ValueError):
+    except httpx.HTTPError, ValueError:
         return None
 
     if not isinstance(payload, dict):
@@ -143,40 +142,38 @@ def _start_proxy() -> subprocess.Popen[bytes]:
 
 def _stop_proxy() -> int:
     """Stop a running NVIDIA proxy by PID."""
+    rule("Stop Proxy")
     payload = _proxy_health()
     if payload is None:
         if _port_in_use():
-            logger.warning(
-                "⚠️ Port %d is in use, but no NVIDIA proxy answered the health "
-                "check. Close the process using it (an old proxy from an earlier "
-                "version may still be running).",
-                PROXY_PORT,
+            warning(
+                f"Port {PROXY_PORT} is in use, but no NVIDIA proxy answered the "
+                f"health check. Close the process using it (an old proxy from an "
+                f"earlier version may still be running)."
             )
             return 1
-        logger.info("No NVIDIA proxy is running.")
+        info("No NVIDIA proxy is running.")
         return 0
 
     pid = payload.get("pid")
     if not isinstance(pid, int) or pid <= 0:
-        logger.error("❌ Error: The running NVIDIA proxy did not report a valid PID.")
+        error("The running NVIDIA proxy did not report a valid PID.")
         return 1
 
     try:
         os.kill(pid, signal.SIGTERM)
     except OSError as exc:
-        logger.error("❌ Error: Could not stop the NVIDIA proxy (pid %d): %s", pid, exc)
+        error(f"Could not stop the NVIDIA proxy (pid {pid}): {exc}")
         return 1
 
     deadline = time.monotonic() + PROXY_START_TIMEOUT_SECONDS
     while time.monotonic() < deadline:
         if _proxy_health() is None:
-            logger.info("🛑 Stopped the NVIDIA proxy (pid %d).", pid)
+            success(f"Stopped the NVIDIA proxy (pid {pid}).")
             return 0
         time.sleep(PROXY_POLL_INTERVAL_SECONDS)
 
-    logger.warning(
-        "⚠️ Sent a stop signal to pid %d, but the proxy is still responding.", pid
-    )
+    warning(f"Sent a stop signal to pid {pid}, but the proxy is still responding.")
     return 1
 
 
@@ -185,17 +182,12 @@ def _run_command(command: Sequence[str]) -> int:
     try:
         return subprocess.run(list(command), check=False).returncode
     except OSError as exc:
-        logger.error("❌ Error: Could not run %r: %s", command[0], exc)
+        error(f"Could not run {command[0]!r}: {exc}")
         return 1
 
 
 def _model_selector(profile: Profile) -> str:
-    """Return the ``provider/model`` selector OpenCode expects.
-
-    ``Profile.model_name`` is the upstream model ID (for example
-    ``nvidia/nemotron-3.5-lightning-30b-a3b``), so the provider prefix is
-    always added. Upstream IDs can themselves start with ``nvidia/``.
-    """
+    """Return the ``provider/model`` selector OpenCode expects."""
     return f"{profile.provider}/{profile.model_name}"
 
 
@@ -286,39 +278,31 @@ def _run_with_nvidia_proxy(profile: Profile) -> int:
     proxy_process: subprocess.Popen[bytes] | None = None
 
     if _proxy_is_healthy():
-        logger.info(
-            "♻️ Reusing existing NVIDIA proxy on http://%s:%d...",
-            PROXY_HOST,
-            PROXY_PORT,
-        )
+        info(f"Reusing existing NVIDIA proxy on http://{PROXY_HOST}:{PROXY_PORT}...")
     else:
         if _port_in_use():
-            logger.error(
-                "❌ Error: Port %d is already in use, but it is not a healthy "
-                "NVIDIA proxy. Close the process using it, then retry.",
-                PROXY_PORT,
+            error(
+                f"Port {PROXY_PORT} is already in use, but it is not a healthy "
+                f"NVIDIA proxy. Close the process using it, then retry."
             )
             return 1
 
-        logger.info(
-            "🛡️ Starting local NVIDIA rate-limit proxy on http://%s:%d...",
-            PROXY_HOST,
-            PROXY_PORT,
+        info(
+            f"Starting local NVIDIA rate-limit proxy on http://{PROXY_HOST}:{PROXY_PORT}..."
         )
         try:
             proxy_process = _start_proxy()
         except OSError as exc:
-            logger.error("❌ Error: Could not start the NVIDIA proxy: %s", exc)
+            error(f"Could not start the NVIDIA proxy: {exc}")
             return 1
 
         if not _wait_for_proxy() and not _proxy_is_healthy():
             if proxy_process.poll() is None:
                 proxy_process.terminate()
-            logger.error(
-                "❌ Error: Local NVIDIA proxy failed to become healthy within "
-                "%.0f seconds. See %s for details.",
-                PROXY_START_TIMEOUT_SECONDS,
-                _proxy_log_path(),
+            error(
+                f"Local NVIDIA proxy failed to become healthy within "
+                f"{PROXY_START_TIMEOUT_SECONDS:.0f} seconds. See "
+                f"{_proxy_log_path()} for details."
             )
             return 1
         # Another launcher won the race to bind the port; reuse its proxy.
@@ -330,26 +314,19 @@ def _run_with_nvidia_proxy(profile: Profile) -> int:
             proxy_process.returncode = 0
 
     try:
-        logger.info(
-            "🚀 Launching OpenCode [%s] -> %s...", profile.key, _model_selector(profile)
-        )
+        info(f"Launching OpenCode [{profile.key}] -> {_model_selector(profile)}...")
         return _run_command(["opencode"])
     finally:
-        logger.info(
-            "ℹ️ NVIDIA proxy left running at http://%s:%d for reuse "
-            "(stop it with `mise run stop-proxy` or "
-            "`python -m agent --stop-proxy`).",
-            PROXY_HOST,
-            PROXY_PORT,
+        note(
+            f"NVIDIA proxy left running at http://{PROXY_HOST}:{PROXY_PORT} for reuse "
+            f"(stop it with `mise run stop-proxy` or `python -m agent --stop-proxy`)."
         )
 
 
 def _run_with_ollama(profile: Profile) -> int:
     """Launch OpenCode with the Ollama-backed profile."""
-    logger.info(
-        "🚀 Launching OpenCode via Ollama [%s] -> %s...",
-        profile.key,
-        _model_selector(profile),
+    info(
+        f"Launching OpenCode via Ollama [{profile.key}] -> {_model_selector(profile)}..."
     )
     return _run_command(["opencode"])
 
@@ -358,67 +335,111 @@ def _print_profiles() -> int:
     try:
         profiles = load_profiles()
     except ConfigError as exc:
-        logger.error("❌ Error: %s", exc)
+        error(str(exc))
         return 1
 
+    rows: list[list[str]] = []
     for key in sorted(profiles):
         profile = profiles[key]
-        print(
-            f"{key}\t{profile.provider}\t{profile.model_name}\t{profile.context_limit}"
+        rows.append(
+            [key, profile.provider, profile.model_name, str(profile.context_limit)]
         )
+    print_table("Available profiles", ["Key", "Provider", "Model", "Context"], rows)
     return 0
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+# --------------------------------------------------------------------------- #
+# Typer command                                                               #
+# --------------------------------------------------------------------------- #
+
+
+@app.command()
+def run(
+    profile: str | None = typer.Argument(
+        None,
+        help="Profile key from config.json (for example: nvidia-glm or qwen-3-vl-32k).",
+    ),
+    list_profiles: bool = typer.Option(
+        False, "--list-profiles", help="List the available profiles and exit."
+    ),
+    stop_proxy: bool = typer.Option(
+        False, "--stop-proxy", help="Stop the running NVIDIA proxy and exit."
+    ),
+) -> int:
     """Run the profile launcher and return a process exit code."""
-    parser = build_parser()
-    args = parser.parse_args(argv)
+    if list_profiles:
+        return _print_profiles()
+    if stop_proxy:
+        return _stop_proxy()
+
+    rule("Agent Launcher")
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     logging.getLogger("httpx").setLevel(logging.WARNING)
 
-    if args.list_profiles:
-        return _print_profiles()
-    if args.stop_proxy:
-        return _stop_proxy()
-    if args.profile is None:
-        parser.error(
-            "a profile key is required unless --list-profiles or --stop-proxy is used"
+    if not profile:
+        # No profile given: interactively pick one from the available list.
+        try:
+            profiles = load_profiles()
+        except ConfigError as exc:
+            error(str(exc))
+            return 1
+
+        if not profiles:
+            error("No profiles are defined in config.json.")
+            return 1
+
+        selected = select(
+            "Select a profile",
+            choices=sorted(profiles),
+            default=min(profiles),
         )
+        if selected is None:
+            info("No profile selected. Aborted.")
+            return 1
+        profile = selected
+        kv("Profile", profile)
 
     try:
-        profile = load_profile(args.profile)
+        profile_obj = load_profile(profile)
     except ConfigError as exc:
-        logger.error("❌ Error: %s", exc)
+        error(str(exc))
         return 1
 
-    if profile.provider == "nvidia" and not os.environ.get("NVIDIA_API_KEY"):
-        logger.error("❌ Error: NVIDIA_API_KEY environment variable is not set.")
+    if profile_obj.provider == "nvidia" and not os.environ.get("NVIDIA_API_KEY"):
+        error("NVIDIA_API_KEY environment variable is not set.")
         return 1
 
     try:
-        config_path = _write_project_config(profile)
+        config_path = _write_project_config(profile_obj)
     except (OSError, ConfigError) as exc:
-        logger.error("❌ Error: Could not update project config: %s", exc)
+        error(f"Could not update project config: {exc}")
         return 1
-    logger.info("🗒️ Selected model in project config: %s", config_path)
+    info(f"Selected model in project config: {config_path}")
+
+    step("1", f"Launching OpenCode with profile [{profile_obj.key}]")
 
     monitor = ConversationMonitor(
-        profile_key=profile.key,
-        model_name=profile.model_name,
-        context_limit=profile.context_limit,
+        profile_key=profile_obj.key,
+        model_name=profile_obj.model_name,
+        context_limit=profile_obj.context_limit,
     )
     monitor.start()
 
     try:
-        if profile.provider == "nvidia":
-            return _run_with_nvidia_proxy(profile)
-        return _run_with_ollama(profile)
+        if profile_obj.provider == "nvidia":
+            return _run_with_nvidia_proxy(profile_obj)
+        return _run_with_ollama(profile_obj)
     except KeyboardInterrupt:
-        logger.info("\n👋 Session interrupted by user.")
+        info("\n[BYE] Session interrupted by user.")
         return 130
     finally:
         monitor.stop()
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """Run the profile launcher and return a process exit code."""
+    return app(args=argv, standalone_mode=False)  # type: ignore[no-any-return]
 
 
 if __name__ == "__main__":

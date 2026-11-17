@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from cli import error
+
 from .constants import GAME_FOLDER, RENPY_GAMES, ROOT
 
 # Cache for the located game folder relative path (kept for backward
@@ -33,7 +35,7 @@ def find_game_folder(renpy_games: Path = RENPY_GAMES) -> Path | None:
     excluded so re-runs do not treat their own output as a source game.
     """
     if not renpy_games.exists():
-        print(f"No {renpy_games} directory found")
+        error(f"No {renpy_games} directory found")
         return None
 
     try:
