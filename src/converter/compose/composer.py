@@ -24,6 +24,8 @@ from .character_associator import CharacterAssociator
 from .compositor import Compositor
 from .conditions import (
     UNKNOWN,
+    CallState,
+    compute_interprocedural_label_states,
     condition_variables,
     eval_cond,
     parse_literal,
@@ -81,11 +83,18 @@ class Composer:
         screens = index.screens
         image_declarations = index.image_decls
 
+        # Pre-compute interprocedural label entry states.  This tracks variable
+        # assignments across label boundaries (e.g. ``call undressHazel`` sets
+        # ``hazelScarf = 0``) so that each ``show ha:`` usage gets the precise
+        # variable state rather than falling back to game defaults.
+        file_lines = {fi.path: fi.lines for fi in index.per_file.values()}
+        label_entry_states = compute_interprocedural_label_states(defaults, file_lines)
+
         # Rebuild the associator with the indexed per-file lines so it never
         # re-reads scripts from disk (Optimization #1).
         self.associator = CharacterAssociator(
             self.config,
-            script_lines={fi.path: fi.lines for fi in index.per_file.values()},
+            script_lines=file_lines,
         )
 
         # The total is constant for the whole compose run: it is the number of
@@ -107,7 +116,7 @@ class Composer:
 
         # --- Pass 1: layeredimage show/scene statements ---
         _process_layeredimage_uses_from_index(
-            index, definitions, defaults, emitter, self.config
+            index, definitions, defaults, emitter, self.config, label_entry_states
         )
 
         # --- Pass 2: ordinary image declarations ---
@@ -118,7 +127,7 @@ class Composer:
 
         # --- Pass 3: screen stacks ---
         _process_screen_stacks_from_index(
-            index, screens, definitions, defaults, emitter, self.config
+            index, screens, definitions, defaults, emitter, self.config, label_entry_states
         )
 
         bar.close()
@@ -168,6 +177,7 @@ def _process_layeredimage_uses_from_index(
     defaults: dict[str, object],
     emit_wrapper,
     config: GameConfig,
+    label_entry_states: dict[str, dict[str, object]],
 ) -> None:
     """Pass 1: emit layeredimage composites for show/scene uses of defined tags.
 
@@ -195,6 +205,7 @@ def _process_layeredimage_uses_from_index(
                 defaults,
                 emit_wrapper,
                 config,
+                label_entry_states,
                 lines=file_index.lines,
             )
 
@@ -354,7 +365,7 @@ def _satisfying_assignment(conditions: tuple[str, ...]) -> dict[str, object] | N
 def _enumerate_condition_variants(
     unchained: list[Layer],
     chained: dict[str, list[Layer]],
-    values: dict[str, object],
+    call_state: CallState,
 ) -> list[list[Layer]]:
     """Enumerate feasible layer sets for one usage, one per runtime state.
 
@@ -364,19 +375,19 @@ def _enumerate_condition_variants(
     own chain.  Instead, variants are now derived from *consistent variable
     assignments*:
 
-    * Start from the statically reconstructed call state.
-    * Pick a reference value for every unresolved variable.
-    * Vary one variable at a time (plus one scenario per coupled multi-variable
-      condition) away from that reference.
+    * Start from the interprocedurally-reconstructed call state (defaults
+      overlaid with assignments propagated from caller labels plus explicit
+      assignments in the current label scope).  This is the reference
+      composite — what the apply pass uses for a direct mapping.
+    * For truly unknown variables (no default, no assignment anywhere in the
+      game), vary one at a time over their condition candidates.
+    * One scenario per coupled multi-variable condition.
     * Resolve the full layer set for each assignment, then deduplicate.
 
     This covers every branch without taking a cartesian product over chains,
-    so no variant can contain two mutually exclusive overlays.
-
-    Values already known at the call site (``$`` assignments and game
-    ``default`` statements) are treated as fixed: forcing every defaulted
-    variable to vary instead yields thousands of near-identical composites per
-    usage.  Variables with no static value at all are the ones enumerated.
+    so no variant can contain two mutually exclusive overlays.  Each usage
+    gets one composite for its statically-determined state — no variants are
+    generated that the scripts will never actually use.
     """
     conditions: list[str] = []
     for layer in unchained:
@@ -390,11 +401,10 @@ def _enumerate_condition_variants(
     for condition in conditions:
         referenced.update(_condition_vars(condition))
 
-    # Variables whose value is not fixed by the reconstructed call state.
-    varying = referenced - set(values)
-
-    # Reference assignment: known state plus a canonical value for unknowns.
-    reference: dict[str, object] = dict(values)
+    # Reference: statically determined state for this usage.
+    reference: dict[str, object] = dict(call_state.values)
+    pinned: set[str] = set(call_state.values)
+    varying: set[str] = referenced - pinned
     for name in sorted(varying):
         options = candidates.get(name)
         if options:
@@ -410,11 +420,10 @@ def _enumerate_condition_variants(
         seen_envs.add(key)
         assignments.append(env)
 
-    # One scenario per alternative value of each varying variable.
+    # One scenario per alternative candidate value for truly unknown variables
+    # (no default, no scoped assignment anywhere in the game).
     for name in sorted(varying):
         for value in candidates.get(name, ()):
-            if name in reference and reference[name] == value:
-                continue
             add_assignment({**reference, name: value})
 
     # One scenario per coupled, multi-variable condition (e.g.
@@ -456,6 +465,7 @@ def _emit_layeredimage_uses(
     tag: str, tail: str, block: ScriptBlock, candidates: list[Layer],
     f: Path, no: int, statement: str, defaults: dict[str, object],
     emit_wrapper, config: GameConfig,
+    label_entry_states: dict[str, dict[str, object]],
     lines: tuple[str, ...] | list[str] | None = None,
 ) -> None:
     attr_tokens = set(re.findall(r"\b[a-zA-Z][\w]*\b", tail))
@@ -474,7 +484,10 @@ def _emit_layeredimage_uses(
     if not selected:
         return
 
-    call_state = state_at_call(f, no, defaults, config, lines=lines)
+    call_state = state_at_call(
+        f, no, defaults, config, lines=lines,
+        label_entry_states=label_entry_states,
+    )
 
     chained: dict[str, list[Layer]] = defaultdict(list)
     unchained: list[Layer] = []
@@ -486,8 +499,9 @@ def _emit_layeredimage_uses(
             unchained.append(layer)
 
     # Resolve one composite per feasible runtime state.  The reconstructed
-    # call state is used as the reference; only variables with no static value
-    # are enumerated, so each variant is internally consistent.
+    # call state (from interprocedural analysis) is used as the reference;
+    # only truly unknown variables (no default, no assignment anywhere) are
+    # enumerated.  Each variant is internally consistent.
     locations = [
         {
             "script": f.relative_to(config.game_root.parent).as_posix(),
@@ -496,7 +510,7 @@ def _emit_layeredimage_uses(
         }
     ]
     for variant_layers in _enumerate_condition_variants(
-        unchained, chained, call_state.values
+        unchained, chained, call_state
     ):
         ordered = _restore_layer_order(variant_layers, selected)
         if ordered:
@@ -617,6 +631,7 @@ def _process_screen_stacks_from_index(
     defaults: dict[str, object],
     emit_wrapper,
     config: GameConfig,
+    label_entry_states: dict[str, dict[str, object]],
 ) -> None:
     """Pass 3: emit composites for show screen uses of defined screens.
 
@@ -642,7 +657,8 @@ def _process_screen_stacks_from_index(
             stack = list(screen_stack_cache[name])  # shallow copy
             if stack:
                 call_state = state_at_call(
-                    f, usage.line, defaults, config, lines=file_index.lines
+                    f, usage.line, defaults, config, lines=file_index.lines,
+                    label_entry_states=label_entry_states,
                 )
 
                 chained: dict[str, list[Layer]] = defaultdict(list)
@@ -654,9 +670,8 @@ def _process_screen_stacks_from_index(
                     else:
                         unchained.append(layer)
 
-                # Variables that are statically known only through ``default``
-                # are treated as fixed at their default value; only genuinely
-                # unresolved variables produce alternative composites.
+                # Variables assigned in the current label scope are pinned;
+                # truly unresolved variables vary over candidates.
                 relevant_names: set[str] = set()
                 for layer in stack:
                     for condition in layer.conditions:
@@ -675,7 +690,7 @@ def _process_screen_stacks_from_index(
                     }
                 ]
                 for variant_layers in _enumerate_condition_variants(
-                    unchained, chained, call_state.values
+                    unchained, chained, call_state
                 ):
                     ordered = _restore_layer_order(variant_layers, stack)
                     if ordered:
