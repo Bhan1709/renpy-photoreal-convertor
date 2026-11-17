@@ -1,0 +1,41 @@
+---
+name: Bug Report
+description: Report a bug or unexpected behavior in the converter.
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: What went wrong, and what did you expect instead?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction steps
+      description: Steps to reproduce the issue, including the command and profile used.
+    validations:
+      required: true
+  - type: input
+    id: python-version
+    attributes:
+      label: Python version
+      placeholder: e.g. 3.14
+    validations:
+      required: true
+  - type: input
+    id: profile
+    attributes:
+      label: Agent profile
+      placeholder: e.g. qwen-3-vl-32k or nvidia-glm
+    validations:
+      required: false
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant log output
+      description: Paste any tracebacks or logs. Please do not include NVIDIA_API_KEY or other secrets.
+    validations:
+      required: false
