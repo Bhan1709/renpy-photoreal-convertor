@@ -310,15 +310,22 @@ def _reject_scene(
 def _assign_character_to_scene_composite(
     all_data: dict[str, dict], composite_path: str, character_folder: str,
 ) -> None:
-    """Update the manifest entry for ``composite_path`` with the given character."""
+    """Update the manifest entry for ``composite_path`` with the given character.
+
+    Appends to any existing character associations rather than replacing them,
+    so multiple characters can be associated with one scene.
+    """
     found = _find_composite_index(all_data, composite_path)
     if found is None:
         print(f"  Warning: composite '{composite_path}' not found in manifests.")
         return
     cat_name, index = found
     comp = dict(all_data[cat_name]["composites"][index])
+    existing = [c["character"] for c in comp.get("characters", [])]
+    if character_folder not in existing:
+        existing.append(character_folder)
     comp["characters"] = [
-        {"character": character_folder, "evidence": ["manual_review"]}
+        {"character": c, "evidence": ["manual_review"]} for c in existing
     ]
     comp["character_association_status"] = "associated"
     comp["unmapped_speakers"] = None
@@ -469,35 +476,46 @@ def _process_scenes_missing_chars(
                     config, composite_path, name, reports_dir, rejected_dir, all_data,
                 )
         else:
-            # Validate entered character name.
-            resolved = _resolve_speaker(char_name, known_chars, {})
-            if resolved:
-                # Valid character: update manifest entry.
-                _assign_character_to_scene_composite(
-                    all_data, composite_path, resolved
-                )
-                _save_all_category_manifests(reports_dir, all_data)
-                print(f"  Assigned '{resolved}' to scene '{name}'.")
-            else:
-                # Invalid character name -> ask to keep without characters.
-                print(f"  '{char_name}' is not a known character folder.")
+            # Validate comma-separated character names.
+            names = [n.strip() for n in char_name.split(",") if n.strip()]
+            valid_resolved: list[str] = []
+            invalid_names: list[str] = []
+            for n in names:
+                resolved = _resolve_speaker(n, known_chars, {})
+                if resolved:
+                    valid_resolved.append(resolved)
+                else:
+                    invalid_names.append(n)
+
+            if invalid_names:
+                print(f"  Not recognized: {', '.join(invalid_names)}")
                 answer = input(
-                    f"Keep scene '{name}' in manifest without character associations? (y/N): "
+                    f"Keep scene '{name}' without these character associations? (y/N): "
                 ).strip().lower()
                 if answer in ("y", "yes"):
-                    # Update manifest entry with the name user entered (do nothing if blank).
-                    if char_name:
+                    # Assign valid ones; for invalid ones, use the entered name as-is.
+                    for r in valid_resolved:
                         _assign_character_to_scene_composite(
-                            all_data, composite_path, char_name
+                            all_data, composite_path, r
                         )
-                        _save_all_category_manifests(reports_dir, all_data)
-                        print(f"  Assigned '{char_name}' to scene '{name}' (unverified).")
-                    else:
-                        print(f"  Kept '{name}' without characters (no changes).")
+                    for n in invalid_names:
+                        _assign_character_to_scene_composite(
+                            all_data, composite_path, n
+                        )
+                    _save_all_category_manifests(reports_dir, all_data)
+                    print(f"  Assigned {', '.join(names)} to scene '{name}'.")
                 else:
                     _reject_scene(
                         config, composite_path, name, reports_dir, rejected_dir, all_data,
                     )
+            else:
+                # All names are valid characters.
+                for r in valid_resolved:
+                    _assign_character_to_scene_composite(
+                        all_data, composite_path, r
+                    )
+                _save_all_category_manifests(reports_dir, all_data)
+                print(f"  Assigned {', '.join(valid_resolved)} to scene '{name}'.")
 
         # Remove this scene from the pending review so it is not re-reviewed.
         pending["scenes"] = [
