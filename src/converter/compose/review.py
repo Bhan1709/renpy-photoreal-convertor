@@ -66,7 +66,7 @@ def compose_review(config_path: str = "src/converter/config.json") -> int:
     print("  1. Resolve unmapped speakers by adding Character() declarations.")
     print("  2. Re-run:  mise run compose-clean")
     print("  3. Then:    mise run apply")
-    return 1
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
