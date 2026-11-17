@@ -12,7 +12,7 @@ The `agents` subpackage (`src/renpy_photoreal_vn_converter/agent/`) provides Ope
 The subpackage can be run directly:
 
 ```bash
-python -m renpy_photoreal_vn_converter.agent <profile>
+python -m agent <profile>
 ```
 
 Profiles are defined in `config.json` next to this module. See the **"Profiles"** section below for the complete list.
@@ -51,23 +51,32 @@ Each profile has:
 ### Launching with a profile
 
 ```bash
+# Interactive picker (no profile given)
+mise run agent
+
 # Using the bundled profile
-python -m renpy_photoreal_vn_converter.agent qwen-3-vl-32k
+mise run agent qwen-3-vl-32k
 
 # Using the NVIDIA proxy profile
-python -m renpy_photoreal_vn_converter.agent nvidia-nemotron-3.5-lightning
+mise run agent nvidia-nemotron-3.5-lightning
+```
+
+The same commands work without mise:
+
+```bash
+python -m agent qwen-3-vl-32k
 ```
 
 ### Listing available profiles
 
 ```bash
-python -m renpy_photoreal_vn_converter.agent --list-profiles
+mise run agent list-profiles      # or: mise run agent --list-profiles
 ```
 
 ### Stopping the NVIDIA proxy
 
 ```bash
-python -m renpy_photoreal_vn_converter.agent --stop-proxy
+mise run agent stop-proxy         # or: mise run agent --stop-proxy
 ```
 
 The CLI does the following on startup:
@@ -167,15 +176,15 @@ You can manually edit `opencode.json` if needed, but it's typically best to let 
 If you want to start/stop the proxy yourself (instead of letting the CLI do it), you can run:
 
 ```bash
-python -m renpy_photoreal_vn_converter.agent --stop-proxy   # stops any running proxy
+python -m agent --stop-proxy   # stops any running proxy
 # then
-python -m renpy_photoreal_vn_converter.agent nvidia-glm       # starts proxy + launches OpenCode
+python -m agent nvidia-glm     # starts proxy + launches OpenCode
 ```
 
 Or directly:
 
 ```bash
-python -m renpy_photoreal_vn_converter.agent.nvidia_proxy.run
+python -m agent.nvidia_proxy.run
 ```
 
 The proxy listens on `127.0.0.1:8000` and exposes a health endpoint at `/_nvidia_proxy/health`.
@@ -237,7 +246,7 @@ The CLI automatically syncs the selected profile into your local `opencode.json`
 | `providers.<id>.models.<name>.limit` | Per‑model context/output token limits, derived from the profile's `context_limit`. |
 | `providers.<id>.models.<name>.capabilities` | Usually `{ "tools": true }`. |
 
-After running `python -m renpy_photoreal_vn_converter.agent <profile>`, you can invoke OpenCode normally:
+After running `python -m agent <profile>`, you can invoke OpenCode normally:
 
 ```bash
 opencode
@@ -262,7 +271,7 @@ If you ever need to manually adjust `opencode.json`, the structure follows the [
 2. **Start OpenCode with the profile**:
 
    ```bash
-   python -m renpy_photoreal_vn_converter.agent qwen-3-vl-32k
+   python -m agent qwen-3-vl-32k
    ```
 
 3. **What happens**:
@@ -283,7 +292,7 @@ If you ever need to manually adjust `opencode.json`, the structure follows the [
 2. **Start OpenCode with the profile** (the CLI will start the rate‑limit proxy automatically):
 
    ```bash
-   python -m renpy_photoreal_vn_converter.agent nvidia-nemotron-3.5-lightning
+   python -m agent nvidia-nemotron-3.5-lightning
    ```
 
 3. **What happens**:
@@ -300,7 +309,7 @@ If you ever need to manually adjust `opencode.json`, the structure follows the [
 | Symptom | Likely Cause | Fix |
 |---|---|---|
 | `NVIDIA_API_KEY is not set` | Missing key for NVIDIA profile | Set `export NVIDIA_API_KEY=...` or use an Ollama profile. |
-| Proxy fails health check | Proxy not started or crashed | Run `python -m renpy_photoreal_vn_converter.agent --stop-proxy` then re‑launch your profile. |
+| Proxy fails health check | Proxy not started or crashed | Run `python -m agent stop-proxy` then re‑launch your profile. |
 | Ollama model not found | Model not pulled/built | Run `ollama pull <name>` or `ollama create <tag> -f Modelfiles/<name>`. |
 | Backup not saved | Context never reaches threshold | The monitor saves at `context_limit - 4096` tokens by default. Chat longer or adjust `backup_threshold` in the monitor code. |
 | `opencode.json` not updated | CLI error earlier in startup | Check the error output; the profile may be unknown or missing required fields. |

@@ -83,7 +83,7 @@ This project is intended to be a toolkit to convert Ren'Py based games and visua
 
    ```bash
    mise run agent qwen-3-vl-32k
-   mise run nvidia
+   mise run agent nvidia-glm
    ```
 
    This will:

@@ -9,26 +9,8 @@ python.uv_venv_auto = "create|source"
 ############## AGENT TASKS ##############
 
 [tasks.agent]
-description = "Launch OpenCode with a model profile (omit profile for interactive picker)"
-usage = 'arg "[profile]" help="Profile key from config.json"'
-run = "python -m agent {{ usage.profile }}"
-
-[tasks.nvidia]
-description = "Shortcut: Launch OpenCode with NVIDIA Nemotron-3.5-Super-VL"
-run = "python -m agent nvidia-nemotron-3.5-super-vl"
-
-[tasks.stop-proxy]
-description = "Stop the shared NVIDIA rate-limit proxy"
-run = "python -m agent --stop-proxy"
-
-[tasks.qwen]
-description = "Shortcut: Launch OpenCode with Qwen-3-VL (default 32k)"
-usage = '''
-arg "<ctx>" default="32k" help="Context size" {
-  choices "16k" "32k" "64k" "128k"
-}
-'''
-run = "python -m agent qwen-3-vl-{{ usage.ctx }}"
+description = "Launch OpenCode with a model profile (omit profile for interactive picker; or pass stop-proxy / list-profiles)"
+run = "python -m agent"
 
 ############## CONVERTER TASKS ##############
  

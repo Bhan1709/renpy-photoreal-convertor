@@ -16,7 +16,7 @@ import sys
 
 import typer
 
-from cli import error, info, kv, rule, select, success, warning
+from cli import Choice, error, info, kv, rule, select, success, warning
 
 from .constants import GAME_FOLDER, RENPY_GAMES
 from .discovery import find_game_folder
@@ -132,25 +132,26 @@ def _interactive(dry_run: bool = False) -> int:
     choice = select(
         "What would you like to do?",
         choices=[
-            "Clean previous decompile",
-            "Decompile now",
-            "Clean then decompile",
-            "Quit",
+            Choice(title="Clean previous decompile", value="clean"),
+            Choice(title="Decompile now", value="decompile"),
+            Choice(title="Clean then decompile", value="clean_decompile"),
+            Choice(title="Quit", value="quit"),
         ],
-        default="Decompile now",
+        default="decompile",
+        use_shortcuts=True,
     )
 
     if choice is None:
         info("Aborted.")
         return 0
 
-    if choice == "Clean previous decompile":
+    if choice == "clean":
         return _clean_decompile(dry_run=dry_run)
 
-    if choice == "Decompile now":
+    if choice == "decompile":
         return _run_pipeline(dry_run=dry_run)
 
-    if choice == "Clean then decompile":
+    if choice == "clean_decompile":
         clean_code = _clean_decompile(dry_run=dry_run)
         if clean_code != 0 and not dry_run:
             return clean_code

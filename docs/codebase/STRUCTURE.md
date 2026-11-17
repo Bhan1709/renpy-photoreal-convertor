@@ -28,7 +28,7 @@ List only meaningful top-level directories and files.
 
 ### 2) Entry Points
 
-- Main runtime entry: `src/agent/__main__.py` → `cli.main`, invoked as `python -m agent <profile>` (e.g. `qwen-3-vl-32k`, `nvidia-nemotron-3.5-super-vl`).
+- Main runtime entry: `src/agent/__main__.py` → `cli.app`, invoked as `python -m agent <profile>` or `mise run agent <profile>` (e.g. `qwen-3-vl-32k`, `nvidia-nemotron-3.5-super-vl`); omit the profile for an interactive picker, or pass `stop-proxy` / `list-profiles` for maintenance actions.
 - Secondary entry points: `src/converter/pipeline.py` → `main` (`python -m converter.pipeline`); `src/converter/decompile/decompile.py` → `process_game` (`python src/converter/decompile/decompile.py`).
 - How entry is selected: `mise.toml` `[tasks.*]` map task names to these commands; `pyproject.toml` `[project.scripts]` defines `renpy-photoreal-vn-converter = "converter:main"`.
 
