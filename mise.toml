@@ -64,3 +64,11 @@ run = "python -m converter.pipeline"
 [tasks.restore-compose]
 description = "Undo compose/apply: restore .rpy files from archive.rpa for a game. Uses src/converter/config.json (no --game needed)."
 run = 'python -m converter.pipeline --restore-compose'
+
+[tasks.chars-list]
+description = "List all character folder names (source of truth for character mapping)."
+run = "python -m converter.compose.review chars-list"
+
+[tasks.compose-review]
+description = "Review scenes needing character association and unmapped speakers (blocks apply until resolved)."
+run = "python -m converter.compose.review compose-review"

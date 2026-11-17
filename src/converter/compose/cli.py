@@ -95,6 +95,23 @@ def main(argv=None) -> int:
         if args.compose_only or args.dry_run:
             return 0
 
+    # Block apply if there are pending scene reviews (scene composites without
+    # character association).  The user must resolve them first, then re-run
+    # compose to regenerate manifests and clear the pending list.
+    pending = ManifestWriter.load_pending_review(config)
+    scenes = pending.get("scenes", [])
+    if scenes:
+        reports_dir = config.resolved_paths()["manifest_path"].parent
+        pending_path = reports_dir / "scene_review_pending.json"
+        print(
+            f"\nBLOCKED: {len(scenes)} scene composite(s) lack character association.\n"
+            "Review and resolve them in:\n"
+            f"  {pending_path}\n"
+            "Re-run compose after resolving. Skipping apply pass.",
+            file=sys.stderr,
+        )
+        return 1
+
     applier = Applier(config)
     applier.apply()
     return 0

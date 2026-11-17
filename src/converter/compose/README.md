@@ -164,6 +164,33 @@ compose/
 └── README.md        # This file
 ```
 
+Restore lives in the sibling package:
+
+```
+restore/
+├── __init__.py      # Package exports (public API)
+├── errors.py        # RestoreError
+└── restore.py       # restore_rpy_files, restore_from_manifest, restore_decompile, find_archive
+```
+
+---
+
+## Manifest layout
+
+The compose pass does **not** write a single monolithic ``manifest.json``.
+Under ``<output_dir>/reports/``:
+
+- ``manifest_bg.json``   — composites in the ``bg`` family
+- ``manifest_char.json`` — composites in the ``char`` family
+- ``manifest_scene.json`` — composites in the ``scene`` family
+- ``manifest_gui.json``  — composites in the ``gui`` family
+- ``manifest_other.json`` — composites that don't fit a known family
+- ``manifest_index.json`` — global data (summary, dynamic_states, image_declarations,
+  dynamic_declarations, unresolved) plus references to each category file.
+
+The apply pass loads the index and merges all category manifests in memory.
+
+---
 ## Generalization notes
 
 Compared with the original game-specific scripts, all of the following are now

@@ -14,7 +14,7 @@ from pathlib import Path
 
 from PIL import Image
 
-from .character_associator import CharacterAssociator
+from .character_associator import CharacterAssociator, _sub_non_alnum
 from .compositor import Compositor
 from .config import GameConfig
 from .models import (
@@ -109,10 +109,10 @@ def _record_key(kind: str, name: str, normalized: list[Layer]) -> tuple[str, str
 
 def _determine_family_and_path(
     normalized: list[Layer], kind: str, name: str, config: GameConfig, digest: str,
-) -> tuple[Path, str, Path, str, bool, str]:
+) -> tuple[Path, str, Path, str, str]:
     """Determine output family, sub-path, status, and target PNG path for a composite.
 
-    Returns ``(target, family, sub, status, is_xxx, family2)``.
+    Returns ``(target, family, sub, status, family2)``.
     """
     dynamic = any(x.unresolved_conditions for x in normalized)
 
@@ -136,13 +136,7 @@ def _determine_family_and_path(
             family2 = f2
             break
 
-    scene_folder = config.folder_for("scene").lower()
-    is_xxx = any(
-        x.source.split("/", 1)[0].lower() == scene_folder
-        for x in normalized if "/" in x.source
-    )
-
-    return target, family, sub, status, is_xxx, family2
+    return target, family, sub, status, family2
 
 
 def _render_or_reuse_png(
@@ -218,32 +212,6 @@ def _build_base_record(
     )
 
 
-def _enrich_xxx_record(
-    record: CompositeRecord,
-    normalized: list[Layer],
-    usage_locations: tuple[UsageLocation, ...],
-    block: ScriptBlock,
-    index: ScriptIndex,
-    associator: CharacterAssociator,
-    config: GameConfig,
-) -> CompositeRecord:
-    """Enrich a record in the ``xxx`` family with character associations."""
-    char_locs = [
-        {"script": l.script, "line": l.line, "statement": l.statement}
-        for l in usage_locations
-    ]
-    file_index = index.per_file.get(block.path)
-    chars = associator.associate(
-        list(normalized), record.name, block, char_locs,
-        lines=file_index.lines if file_index is not None else None,
-    )
-    return record.replace(
-        characters=tuple(chars),
-        character_association_status="associated" if chars else "missing",
-        family="xxx",
-    )
-
-
 def _enrich_char_record(
     record: CompositeRecord, normalized: list[Layer], associator: CharacterAssociator,
 ) -> CompositeRecord:
@@ -261,23 +229,124 @@ def _enrich_char_record(
 
 
 def _enrich_scene_record(
-    record: CompositeRecord, block: ScriptBlock, index: ScriptIndex, config: GameConfig,
+    record: CompositeRecord,
+    normalized: list[Layer],
+    usage_locations: tuple[UsageLocation, ...],
+    block: ScriptBlock,
+    index: ScriptIndex,
+    associator: CharacterAssociator,
+    config: GameConfig,
 ) -> CompositeRecord:
-    """Enrich a ``scene`` record with nearby dialog context."""
+    """Enrich a ``scene`` record with character associations and per-location dialog context."""
     record = record.replace(family="scene")
-    file_index = index.per_file.get(block.path)
-    dialog = find_nearby_dialog(
-        block.path,
-        block.line,
-        lines=list(file_index.lines) if file_index is not None else None,
+
+    # Build a lookup from relative script string -> source lines for per-location dialog.
+    script_to_lines: dict[str, tuple[str, ...]] = {}
+    for file_index in index.per_file.values():
+        rel = file_index.path.relative_to(config.game_root.parent).as_posix()
+        script_to_lines[rel] = file_index.lines
+
+    # Character association — scene composites can include characters too.
+    char_locs = [
+        {"script": l.script, "line": l.line, "statement": l.statement}
+        for l in usage_locations
+    ]
+    block_file_index = index.per_file.get(block.path)
+    block_lines = list(block_file_index.lines) if block_file_index is not None else None
+    chars = associator.associate(
+        list(normalized), record.name, block, char_locs, lines=block_lines,
     )
-    if dialog:
-        record = record.replace(
-            dialog_context=tuple(
+
+    # Nearby dialog/narration surrounding each call site — recorded per usage location.
+    # Forward dialogs (spoken while the scene is showing) are weighted more than
+    # backward dialogs (spoken before the scene appears).
+    enriched_locations: list[UsageLocation] = []
+    for loc in usage_locations:
+        lines = script_to_lines.get(loc.script)
+        dialog = find_nearby_dialog(
+            Path(loc.script), loc.line,
+            max_dialogs_back=1, max_dialogs_forward=5,
+            lines=list(lines) if lines is not None else None,
+        )
+        dialog_tuple = (
+            tuple(
                 {"speaker": d.speaker, "text": d.text, "line": d.line}
                 for d in dialog
             )
+            if dialog
+            else None
         )
+        enriched_locations.append(
+            UsageLocation(
+                script=loc.script,
+                line=loc.line,
+                statement=loc.statement,
+                state_snapshot=loc.state_snapshot,
+                dialog_context=dialog_tuple,
+            )
+        )
+    record = record.replace(usage_locations=tuple(enriched_locations))
+
+    # Dialog-based character inference for scenes.
+    # Scene assets come from the xxx/ folder, so asset-path matching won't find
+    # characters. Instead, infer from the speakers in nearby dialog, then verify
+    # each speaker exists as a character folder under chars/ (or is a special
+    # speaker like narrator/you/y, or maps to the player folder).
+    special_speakers = config.special_speakers
+    player_folder = config.player_folder
+    player_aliases = set(config.player_aliases)
+
+    dialog_chars: dict[str, list[str]] = {}
+    unmapped_speakers: dict[str, list[str]] = {}
+    for loc in enriched_locations:
+        if not loc.dialog_context:
+            continue
+        for d in loc.dialog_context:
+            speaker = d["speaker"]
+            normalized_speaker = _sub_non_alnum(speaker)
+            if not normalized_speaker:
+                continue
+            evidence = f"dialog:{loc.script}:{loc.line}"
+
+            # 1. Special speaker (narrator, you, y) — always kept.
+            if speaker.lower() in {s.lower() for s in special_speakers}:
+                dialog_chars.setdefault(speaker, []).append(evidence)
+                continue
+
+            # 2. Player alias (you, y) maps to player_folder if configured.
+            if speaker.lower() in {a.lower() for a in player_aliases} and player_folder:
+                dialog_chars.setdefault(player_folder, []).append(evidence)
+                continue
+
+            # 3. Resolve speaker via alias map (Character() declarations).
+            #    E.g. speaker "h" -> char folder "hazel" via
+            #    ``define h = Character("Hazel", ...)``.
+            matched_folders = associator.resolve_speaker(speaker)
+            if matched_folders:
+                for matched_folder in sorted(matched_folders):
+                    dialog_chars.setdefault(matched_folder, []).append(evidence)
+            else:
+                # Speaker could not be mapped to any character folder — record for review.
+                unmapped_speakers.setdefault(speaker, []).append(evidence)
+
+    # Merge dialog-inferred characters with any already found.
+    existing_chars = {c["character"] for c in chars}
+    merged_chars = list(chars)
+    for char_folder, evidence in sorted(dialog_chars.items()):
+        if char_folder not in existing_chars:
+            merged_chars.append({
+                "character": char_folder,
+                "evidence": sorted(set(evidence)),
+            })
+            existing_chars.add(char_folder)
+
+    if merged_chars or unmapped_speakers:
+        record = record.replace(
+            characters=tuple(merged_chars) if merged_chars else None,
+            character_association_status="associated" if merged_chars else None,
+            unmapped_speakers=tuple(sorted(unmapped_speakers)) if unmapped_speakers else None,
+        )
+
     return record
 
 
@@ -297,7 +366,7 @@ def _emit_record(
     """
     digest = digest or _record_key(kind, name, normalized)[2]
 
-    target, family, _sub, status, is_xxx, family2 = _determine_family_and_path(
+    target, family, _sub, status, family2 = _determine_family_and_path(
         normalized, kind, name, config, digest
     )
 
@@ -311,13 +380,11 @@ def _emit_record(
     )
     usage_locations = record.usage_locations
 
-    if is_xxx:
-        record = _enrich_xxx_record(
-            record, normalized, usage_locations, block, index, associator, config,
-        )
-    elif family2 == "char":
+    if family2 == "char":
         record = _enrich_char_record(record, normalized, associator)
     elif family2 == "scene":
-        record = _enrich_scene_record(record, block, index, config)
+        record = _enrich_scene_record(
+            record, normalized, usage_locations, block, index, associator, config,
+        )
 
     return record

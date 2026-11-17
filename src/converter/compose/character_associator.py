@@ -149,6 +149,25 @@ class CharacterAssociator:
             for tag, sources in sorted(evidence.items())
         ]
 
+    def known_char_folders(self) -> frozenset[str]:
+        """Return the set of known character folder names under ``chars/``."""
+        self._aliases()  # ensure caches are populated
+        return frozenset(self._xxx_tags_cache or set())
+
+    def resolve_speaker(self, speaker: str) -> set[str]:
+        """Resolve a speaker name to canonical char folder(s) via the alias map.
+
+        The alias map is built from Ren'Py ``Character()`` declarations: e.g.
+        ``define h = Character("Hazel", ...)`` maps speaker ``"h"`` to char
+        folder ``"hazel"``.  Returns the set of matching canonical folder
+        names (empty if the speaker cannot be resolved).
+        """
+        self._aliases()  # ensure caches are populated
+        key = _sub_non_alnum(speaker)
+        if not key:
+            return set()
+        return set(self._aliases_cache.get(key, set()))
+
     def display_name(self, char_folder: str) -> str:
         """Return the human-readable display name for a character asset folder."""
         if self._display_names is None:
