@@ -116,9 +116,11 @@ def _proxy_popen_kwargs() -> dict[str, Any]:
         # The venv's python.exe is a GUI-subsystem redirector, so launching it
         # with DETACHED_PROCESS makes the real interpreter allocate a visible
         # console window. CREATE_NO_WINDOW keeps it headless instead.
+        # getattr keeps this type-checkable on non-Windows platforms where
+        # these flags do not exist; the branch only runs on Windows.
         return {
-            "creationflags": subprocess.CREATE_NO_WINDOW
-            | subprocess.CREATE_NEW_PROCESS_GROUP,
+            "creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
         }
     return {"start_new_session": True}
 
