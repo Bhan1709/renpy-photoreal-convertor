@@ -39,6 +39,37 @@ def _loc_to_usage(loc: dict) -> UsageLocation:
     )
 
 
+def _resolve_speaker_name(
+    speaker: str, config: GameConfig, associator: CharacterAssociator,
+) -> str:
+    """Resolve a speaker to its canonical character folder name for display.
+
+    Special speakers (e.g. ``narrator``) are kept as-is.  Player aliases
+    (``you``, ``y``) map to ``player_folder`` when configured.  Other speakers
+    are resolved via the ``Character()`` alias map (e.g. ``"h"`` -> ``"hazel"``).
+    Speakers that cannot be resolved are returned unchanged.
+    """
+    special_speakers = config.special_speakers
+    player_folder = config.player_folder
+    player_aliases = set(config.player_aliases)
+
+    # 1. Special speaker — keep as-is.
+    if speaker.lower() in {s.lower() for s in special_speakers}:
+        return speaker
+
+    # 2. Player alias maps to player_folder.
+    if speaker.lower() in {a.lower() for a in player_aliases} and player_folder:
+        return player_folder
+
+    # 3. Resolve via Character() alias map.
+    matched = associator.resolve_speaker(speaker)
+    if matched:
+        return min(matched)
+
+    # 4. Cannot resolve — keep the original speaker name.
+    return speaker
+
+
 def _normalize_layers(layers: list[Layer], config: GameConfig) -> list[Layer]:
     """Keep only layers whose source lives under a configured asset folder.
 
@@ -270,7 +301,11 @@ def _enrich_scene_record(
         )
         dialog_tuple = (
             tuple(
-                {"speaker": d.speaker, "text": d.text, "line": d.line}
+                {
+                    "speaker": _resolve_speaker_name(d.speaker, config, associator),
+                    "text": d.text,
+                    "line": d.line,
+                }
                 for d in dialog
             )
             if dialog
