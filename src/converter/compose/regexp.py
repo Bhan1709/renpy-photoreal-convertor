@@ -9,15 +9,15 @@ from __future__ import annotations
 import re
 
 # Matches:  <indent><layeredimage|screen> <name>(...):  at block start
-BLOCK_RE = re.compile(
-    r"^(\s*)(layeredimage|screen)\s+([\w.]+)(?:\([^\n]*\))?\s*:\s*$"
-)
+BLOCK_RE = re.compile(r"^(\s*)(layeredimage|screen)\s+([\w.]+)(?:\([^\n]*\))?\s*:\s*$")
 
 # Matches:  <indent>image <name> = <expression>
 IMAGE_RE = re.compile(r"^(\s*)image\s+([\w.]+)\s*=\s*(.*)$")
 
 # Matches:  show|scene <tag> [<transform args>]
-SHOW_SCENE_RE = re.compile(r"^\s*(?:show|scene)\s+(?!screen\b)([\w.]+)(?:\s+([^\n#]+))?")
+SHOW_SCENE_RE = re.compile(
+    r"^\s*(?:show|scene)\s+(?!screen\b)([\w.]+)(?:\s+([^\n#]+))?"
+)
 
 # Matches:  show screen <name>
 SHOW_SCREEN_RE = re.compile(r"^\s*show\s+screen\s+([\w.]+)")
@@ -42,12 +42,44 @@ IMAGE_TAG_RE = re.compile(r"""image\s*=\s*(['"])(.*?)\1""")
 DECLARATION_USE_RE = re.compile(r"^\s*(?:show|scene)\s+([\w.]+)")
 
 # Keywords that are not dialogue speakers even when followed by a quoted string.
-NOT_SPEAKER: frozenset[str] = frozenset({
-    "add", "show", "scene", "hide", "pause", "jump", "call", "return", "with",
-    "as", "to", "parent", "zorder", "if", "elif", "else", "while", "for",
-    "in", "not", "and", "or", "True", "False", "None", "screen", "layeredimage",
-    "image", "define", "default", "init", "label", "menu", "python",
-})
+NOT_SPEAKER: frozenset[str] = frozenset(
+    {
+        "add",
+        "show",
+        "scene",
+        "hide",
+        "pause",
+        "jump",
+        "call",
+        "return",
+        "with",
+        "as",
+        "to",
+        "parent",
+        "zorder",
+        "if",
+        "elif",
+        "else",
+        "while",
+        "for",
+        "in",
+        "not",
+        "and",
+        "or",
+        "True",
+        "False",
+        "None",
+        "screen",
+        "layeredimage",
+        "image",
+        "define",
+        "default",
+        "init",
+        "label",
+        "menu",
+        "python",
+    }
+)
 
 # Matches:  <speaker> "<dialogue>"
 SAY_RE = re.compile(r'^(\s*)([A-Za-z_]\w*)\s+(".*")(\s*#.*)?$')

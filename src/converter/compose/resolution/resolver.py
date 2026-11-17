@@ -10,8 +10,8 @@ from __future__ import annotations
 from collections import defaultdict
 from pathlib import Path
 
-from .config import GameConfig
-from .errors import ComposeError
+from ..config import GameConfig
+from ..errors import ComposeError
 
 
 class Resolver:
@@ -59,7 +59,7 @@ class Resolver:
                 # Two files cannot share one relative path; first occurrence wins.
                 self._archive_index.setdefault(relative, path)
                 self._name_index[path.name.lower()].append(path)
-        except (OSError, ValueError):
+        except OSError, ValueError:
             # An unreadable archive directory falls back to direct-join only.
             pass
 
@@ -98,7 +98,11 @@ class Resolver:
         suffix_matches: list[Path] = []
         for candidate in self._name_index.get(Path(s).name.lower(), []):
             try:
-                relative = str(candidate.relative_to(self.config.archive_dir)).replace("/", "\\").lower()
+                relative = (
+                    str(candidate.relative_to(self.config.archive_dir))
+                    .replace("/", "\\")
+                    .lower()
+                )
             except ValueError:
                 continue
             if relative == wanted:

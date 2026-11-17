@@ -22,8 +22,8 @@ import sys
 
 from converter.restore import restore_from_manifest
 
-from .applier import Applier
-from .composer import Composer
+from .apply_pass import Applier
+from .compose_pass import Composer
 from .config import GameConfig, load_config
 from .errors import ComposeError
 from .manifest import ManifestWriter
@@ -54,16 +54,30 @@ def main(argv=None) -> int:
         help="Directory for generated composite PNGs",
     )
     ap.add_argument("--manifest", help="Path for the manifest JSON report")
-    ap.add_argument("--dry-run", action="store_true", help="Do not write PNGs or manifest")
-    ap.add_argument("--clean-output", action="store_true",
-                    help="Remove prior generated PNGs and manifest before rendering")
-    ap.add_argument("--compose-only", action="store_true",
-                    help="Run the compose pass only; skip script adoption")
-    ap.add_argument("--apply-only", action="store_true",
-                    help="Run the apply pass only (requires an existing manifest)")
+    ap.add_argument(
+        "--dry-run", action="store_true", help="Do not write PNGs or manifest"
+    )
+    ap.add_argument(
+        "--clean-output",
+        action="store_true",
+        help="Remove prior generated PNGs and manifest before rendering",
+    )
+    ap.add_argument(
+        "--compose-only",
+        action="store_true",
+        help="Run the compose pass only; skip script adoption",
+    )
+    ap.add_argument(
+        "--apply-only",
+        action="store_true",
+        help="Run the apply pass only (requires an existing manifest)",
+    )
     # Restore operations
-    ap.add_argument("--restore-compose", action="store_true",
-                    help="Restore .rpy files touched by the apply pass (per manifest)")
+    ap.add_argument(
+        "--restore-compose",
+        action="store_true",
+        help="Restore .rpy files touched by the apply pass (per manifest)",
+    )
 
     args = ap.parse_args(argv)
 
@@ -90,7 +104,9 @@ def main(argv=None) -> int:
                 shutil.rmtree(output_dir)
                 print(f"Cleaned output directory: {output_dir}")
         composer = Composer(config)
-        manifest = composer.compose(dry_run=args.dry_run, clean_output=args.clean_output)
+        manifest = composer.compose(
+            dry_run=args.dry_run, clean_output=args.clean_output
+        )
         ManifestWriter(config).write(manifest, dry_run=args.dry_run)
         if args.compose_only or args.dry_run:
             return 0
@@ -121,7 +137,7 @@ def main(argv=None) -> int:
             f"{len(speakers)} unmapped speaker(s):\n"
             "  mise run compose-review\n"
             "or\n"
-            f"  python -m converter.compose.review compose-review {args.config}"
+            f"  python -m converter.compose.review.cli compose-review {args.config}"
         )
 
     applier = Applier(config)

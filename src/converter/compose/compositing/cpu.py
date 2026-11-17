@@ -1,4 +1,4 @@
-"""Image compositing for the compose pass.
+"""CPU image compositing for the compose pass.
 
 Responsibility: composite a list of :class:`~converter.compose.models.Layer`
 objects into a single RGBA image using PIL on the CPU.
@@ -9,24 +9,13 @@ No script parsing or file discovery happens here — only pixel composition.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Protocol
 
 from PIL import Image
 
-from .config import GameConfig
-from .models import Layer
-from .resolver import Resolver
-
-
-class CompositorStrategy(Protocol):
-    """Strategy interface for compositing layers into an image."""
-
-    def composite(self, layers: list[Layer], canvas_size: tuple[int, int] | None = None) -> Image.Image | None:
-        """Composite layers into an RGBA image.
-
-        Returns ``None`` if no layers could be loaded.
-        """
-        ...
+from ..config import GameConfig
+from ..models import Layer
+from ..resolution import Resolver
+from .strategy import CompositorStrategy
 
 
 class CPUCompositor:
@@ -50,7 +39,7 @@ class CPUCompositor:
             return im
         try:
             im = Image.open(path).convert("RGBA")
-        except (OSError, ValueError):
+        except OSError, ValueError:
             return None
         if len(self._image_cache) >= self._MAX_IMAGE_CACHE:
             # Evict the oldest entry to bound memory usage.
@@ -59,7 +48,9 @@ class CPUCompositor:
         return im
 
     def composite(
-        self, layers: list[Layer], canvas_size: tuple[int, int] | None = None,
+        self,
+        layers: list[Layer],
+        canvas_size: tuple[int, int] | None = None,
     ) -> Image.Image | None:
         opened: list[tuple[Image.Image, Layer]] = []
         size = canvas_size
@@ -108,7 +99,12 @@ class CPUCompositor:
             return "unique_folder_suffix_correlation"
         return None
 
-    def _resolve_offset(self, layer: Layer, size: tuple[int, int], image_size: tuple[int, int] | None = None) -> tuple[int, int]:
+    def _resolve_offset(
+        self,
+        layer: Layer,
+        size: tuple[int, int],
+        image_size: tuple[int, int] | None = None,
+    ) -> tuple[int, int]:
         offset = layer.offset
         if offset is None:
             rel = layer.offset_rel
@@ -137,10 +133,12 @@ class Compositor:
         self.strategy: CompositorStrategy = CPUCompositor(config, self.resolver)
 
     def composite(
-        self, layers: list[Layer], canvas_size: tuple[int, int] | None = None,
+        self,
+        layers: list[Layer],
+        canvas_size: tuple[int, int] | None = None,
     ) -> Image.Image | None:
         """Composite layers into an RGBA image using PIL on the CPU.
 
-        Returns ``None`` if no layers could be loaded.
+        Returns ``None`` if no layers could be produced.
         """
         return self.strategy.composite(layers, canvas_size=canvas_size)

@@ -103,15 +103,25 @@ class GameConfig:
     name: str
     game_root: Path
     archive_dir: Path
-    categories: dict[str, str] = field(default_factory=lambda: dict(DEFAULT_CATEGORY_FOLDERS))
+    categories: dict[str, str] = field(
+        default_factory=lambda: dict(DEFAULT_CATEGORY_FOLDERS)
+    )
     non_character_folders: frozenset[str] = field(
         default_factory=lambda: frozenset(DEFAULT_NON_CHARACTER_FOLDERS)
     )
-    special_speakers: frozenset[str] = field(default_factory=lambda: frozenset(DEFAULT_SPECIAL_SPEAKERS))
+    special_speakers: frozenset[str] = field(
+        default_factory=lambda: frozenset(DEFAULT_SPECIAL_SPEAKERS)
+    )
     player_folder: str | None = DEFAULT_PLAYER_FOLDER
-    player_aliases: tuple[str, ...] = field(default_factory=lambda: tuple(DEFAULT_PLAYER_ALIASES))
-    path_aliases: dict[str, str] = field(default_factory=lambda: dict(DEFAULT_PATH_ALIASES))
-    game_defaults: dict[str, object] = field(default_factory=lambda: dict(DEFAULT_GAME_DEFAULTS))
+    player_aliases: tuple[str, ...] = field(
+        default_factory=lambda: tuple(DEFAULT_PLAYER_ALIASES)
+    )
+    path_aliases: dict[str, str] = field(
+        default_factory=lambda: dict(DEFAULT_PATH_ALIASES)
+    )
+    game_defaults: dict[str, object] = field(
+        default_factory=lambda: dict(DEFAULT_GAME_DEFAULTS)
+    )
     rpy_files: list[str] | None = None
     ren_py_files: list[str] | None = None
     script_exclusion_patterns: list[re.Pattern[str]] = field(
@@ -128,12 +138,16 @@ class GameConfig:
     # Cached compiled regexes.  Populated once in __post_init__ because
     # GameConfig is frozen and categories never change after construction.
     _path_regex: re.Pattern[str] = field(init=False, compare=False, repr=False)
-    _category_folder_regex: re.Pattern[str] = field(init=False, compare=False, repr=False)
+    _category_folder_regex: re.Pattern[str] = field(
+        init=False, compare=False, repr=False
+    )
 
     def __post_init__(self) -> None:
         """Compile path regexes exactly once per config instance."""
         object.__setattr__(self, "_path_regex", self._compile_path_regex())
-        object.__setattr__(self, "_category_folder_regex", self._compile_category_folder_regex())
+        object.__setattr__(
+            self, "_category_folder_regex", self._compile_category_folder_regex()
+        )
 
     # ------------------------------------------------------------------ #
     # Derived helpers
@@ -141,7 +155,9 @@ class GameConfig:
     def folder_for(self, category: str) -> str:
         """Return the asset folder name for a canonical category."""
         if category not in CANONICAL_CATEGORIES:
-            raise ValueError(f"unknown category {category!r}; expected one of {sorted(CANONICAL_CATEGORIES)}")
+            raise ValueError(
+                f"unknown category {category!r}; expected one of {sorted(CANONICAL_CATEGORIES)}"
+            )
         try:
             return self.categories[category]
         except KeyError as exc:
@@ -187,9 +203,7 @@ class GameConfig:
     def _compile_path_regex(self) -> re.Pattern[str]:
         folders = sorted({name.lower() for name in self.categories.values()})
         alternation = "|".join(re.escape(f) for f in folders)
-        pattern = (
-            rf"(?:{alternation})/[^\"'\s,)]+\.(?:png|jpe?g|webp|bmp)"
-        )
+        pattern = rf"(?:{alternation})/[^\"'\s,)]+\.(?:png|jpe?g|webp|bmp)"
         return re.compile(pattern, re.IGNORECASE)
 
     def _compile_category_folder_regex(self) -> re.Pattern[str]:
@@ -215,8 +229,10 @@ class GameConfig:
         return {
             "output_dir": out,
             "manifest_path": self.manifest_path or (out / "reports" / "manifest.json"),
-            "declaration_path": self.declaration_path or (self.game_root / "composite_images.rpy"),
-            "report_path": self.report_path or (out / "reports" / "adoption_report.json"),
+            "declaration_path": self.declaration_path
+            or (self.game_root / "composite_images.rpy"),
+            "report_path": self.report_path
+            or (out / "reports" / "adoption_report.json"),
         }
 
     def to_dict(self) -> dict[str, object]:
@@ -290,7 +306,7 @@ def load_config(config_path: str | Path) -> GameConfig:
             # Strip leading "archive/" prefix (decompile records paths relative
             # to the game folder, but categories are relative to archive_dir).
             if folder.lower().startswith("archive/"):
-                folder = folder[len("archive/"):]
+                folder = folder[len("archive/") :]
             categories[category] = folder
 
     if not categories:
@@ -313,10 +329,14 @@ def load_config(config_path: str | Path) -> GameConfig:
 
     if script_exclusion_patterns:
         rpy_files = [
-            p for p in rpy_files if not any(x.search(p) for x in script_exclusion_patterns)
+            p
+            for p in rpy_files
+            if not any(x.search(p) for x in script_exclusion_patterns)
         ]
         ren_py_files = [
-            p for p in ren_py_files if not any(x.search(p) for x in script_exclusion_patterns)
+            p
+            for p in ren_py_files
+            if not any(x.search(p) for x in script_exclusion_patterns)
         ]
 
     # --- Image exclusions --------------------------------------------------- #
@@ -335,7 +355,9 @@ def load_config(config_path: str | Path) -> GameConfig:
         ren_py_files=ren_py_files,
         script_exclusion_patterns=script_exclusion_patterns,
         image_exclusion_patterns=image_exclusion_patterns,
-        special_speakers=frozenset(data.get("special_speakers") or DEFAULT_SPECIAL_SPEAKERS),
+        special_speakers=frozenset(
+            data.get("special_speakers") or DEFAULT_SPECIAL_SPEAKERS
+        ),
         player_folder=str(data.get("player_folder") or DEFAULT_PLAYER_FOLDER),
         player_aliases=tuple(data.get("player_aliases") or DEFAULT_PLAYER_ALIASES),
     )

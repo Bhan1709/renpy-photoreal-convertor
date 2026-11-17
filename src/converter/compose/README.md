@@ -43,17 +43,17 @@ decompile subpackage).  No ``--game`` lookup is needed.
 | ``config.py`` | :class:`GameConfig` dataclass + :func:`load_config` JSON loader |
 | ``models.py`` | Typed domain models (Layer, CompositeRecord, CompositeManifest, AdoptionReport, …) |
 | ``errors.py`` | Custom exception hierarchy |
-| ``parser.py`` | Ren'Py script parsing (blocks, layeredimage, screen, image declarations) |
-| ``resolver.py`` | Asset path resolution (aliases, archive lookup) |
-| ``conditions.py`` | Static condition evaluation, call-state reconstruction, interprocedural label states |
-| ``compositor.py`` | Image compositing (CPU via PIL) |
-| ``character_associator.py`` | Character inference for XXX (scene/adult) composites |
-| ``composer.py`` | Compose pass orchestration |
-| ``applier.py`` | Apply pass orchestration (script rewriting, declarations, report) |
-| ``manifest.py`` | Manifest read/write (per-category + index) |
-| ``emitter.py`` | Composite emission and deduplication |
-| ``record.py`` | Composite record construction helpers |
 | ``regexp.py`` | Compiled regular expressions shared across the subpackage |
+| ``parsing/`` | Ren'Py script parsing (blocks, layeredimage, screen, image declarations, single-pass indexer) |
+| ``resolution/`` | Asset path resolution (aliases, archive lookup) |
+| ``conditions/`` | Static condition evaluation, call-state reconstruction, interprocedural label states |
+| ``compositing/`` | Image compositing (CPU via PIL, strategy pattern) |
+| ``association/`` | Character inference for XXX (scene/adult) composites |
+| ``compose_pass/`` | Compose pass orchestration (3 passes: layeredimage, image declarations, screen stacks) |
+| ``records/`` | Composite record construction, enrichment, and deduplication |
+| ``apply_pass/`` | Apply pass orchestration (script rewriting, declarations, report) |
+| ``manifest/`` | Manifest read/write (per-category + index) |
+| ``review/`` | Interactive review of scene character associations + unmapped speakers |
 | ``cli.py`` | Command-line entry point |
 | ``__main__.py`` | ``python -m converter.compose`` support |
 
@@ -186,9 +186,9 @@ mise run restore-compose  # undo compose/apply (.rpy from archive)
 
 ```python
 from converter.compose.config import GameConfig, load_config
-from converter.compose.composer import Composer
+from converter.compose.compose_pass import Composer
 from converter.compose.manifest import ManifestWriter
-from converter.compose.applier import Applier
+from converter.compose.apply_pass import Applier
 
 # 1. Load the decompile-generated config
 config = load_config("src/converter/config.json")
@@ -224,23 +224,54 @@ results = restore_from_manifest(
 
 ```
 compose/
-├── __init__.py      # Package exports (public API)
+├── __init__.py      # Package exports (public API facade)
 ├── __main__.py      # python -m converter.compose support
 ├── cli.py           # Command-line entry point
 ├── config.py        # GameConfig dataclass + load_config JSON loader
 ├── models.py        # Typed domain models
 ├── errors.py        # Custom exception hierarchy
-├── parser.py        # Ren'Py script parsing
-├── resolver.py      # Asset path resolution
-├── conditions.py    # Static condition evaluation + call-state
-├── compositor.py    # Image compositing (CPU via PIL)
-├── character_associator.py  # Character inference for XXX composites
-├── composer.py      # Compose pass orchestration
-├── applier.py       # Apply pass orchestration
-├── manifest.py      # Manifest read/write (per-category + index)
-├── emitter.py       # Composite emission and deduplication
-├── record.py        # Composite record construction helpers
 ├── regexp.py        # Compiled regular expressions
+├── parsing/         # Ren'Py script parsing (blocks, layeredimage, screen, image declarations, indexer)
+│   ├── __init__.py
+│   ├── blocks.py    # ScriptBlock, parse_layered, parse_screen_stack
+│   ├── declarations.py  # parse_image_declarations, ImageDeclaration
+│   ├── dialog.py    # find_nearby_dialog, DialogueLine
+│   ├── files.py     # files() script discovery
+│   └── indexer.py   # ScriptIndex, index_scripts (single-pass)
+├── resolution/      # Asset path resolution
+│   ├── __init__.py
+│   └── resolver.py  # Resolver
+├── conditions/      # Static condition evaluation + call-state
+│   ├── __init__.py
+│   ├── eval.py      # eval_cond, condition_variables, layer condition selection
+│   └── callstate.py # CallState, state_at_call, interprocedural label states
+├── compositing/     # Image compositing (CPU via PIL)
+│   ├── __init__.py
+│   ├── strategy.py  # CompositorStrategy protocol
+│   └── cpu.py       # CPUCompositor, Compositor
+├── association/     # Character inference for XXX composites
+│   ├── __init__.py
+│   └── associator.py  # CharacterAssociator
+├── records/         # Composite record construction + deduplication
+│   ├── __init__.py
+│   ├── record.py    # _emit_record, enrichment, normalization
+│   └── emitter.py   # _CompositeEmitter
+├── compose_pass/    # Compose pass orchestration
+│   ├── __init__.py
+│   ├── orchestrate.py   # Composer class
+│   ├── counting.py      # composite counting for progress bar
+│   ├── variants.py      # condition variant enumeration
+│   └── passes.py        # Pass 1/2/3 processors
+├── apply_pass/      # Apply pass orchestration
+│   ├── __init__.py
+│   └── applier.py   # Applier class
+├── manifest/        # Manifest read/write (per-category + index)
+│   ├── __init__.py
+│   └── writer.py    # ManifestWriter
+├── review/          # Interactive review
+│   ├── __init__.py
+│   ├── cli.py       # chars-list, compose-review commands
+│   └── interactive.py  # interactive review flow
 └── README.md        # This file
 ```
 

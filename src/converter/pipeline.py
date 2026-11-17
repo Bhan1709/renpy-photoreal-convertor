@@ -34,8 +34,8 @@ import shutil
 import sys
 from pathlib import Path
 
-from .compose.applier import Applier
-from .compose.composer import Composer
+from .compose.apply_pass import Applier
+from .compose.compose_pass import Composer
 from .compose.config import GameConfig, load_config
 from .compose.manifest import ManifestWriter
 from .decompile.decompile import (
@@ -65,7 +65,9 @@ def _restore_compose_game(config: GameConfig, dry_run: bool) -> None:
         if manifest_path.is_file():
             results = restore_from_manifest(game_root, manifest_path, dry_run=dry_run)
         else:
-            print(f"  (no manifest at {manifest_path}; restoring all .rpy from archive.rpa)")
+            print(
+                f"  (no manifest at {manifest_path}; restoring all .rpy from archive.rpa)"
+            )
             results = restore_rpy_files(game_root, dry_run=dry_run)
     except Exception as exc:  # noqa: BLE001
         print(f"  [ERR] restore-compose failed for {config.name}: {exc}")
@@ -111,9 +113,7 @@ def _prompt_exclusion_patterns(config_path: Path = CONFIG_PATH) -> None:
         "Enter additional script exclusion patterns (comma-separated) "
         "or press Enter to keep current: "
     ).strip()
-    script_patterns = (
-        [p.strip() for p in raw.split(",") if p.strip()] if raw else []
-    )
+    script_patterns = [p.strip() for p in raw.split(",") if p.strip()] if raw else []
     if script_patterns:
         script_current = sorted(set(script_current) | set(script_patterns))
 
@@ -122,9 +122,7 @@ def _prompt_exclusion_patterns(config_path: Path = CONFIG_PATH) -> None:
         "Enter additional image exclusion patterns (comma-separated) "
         "or press Enter to keep current: "
     ).strip()
-    image_patterns = (
-        [p.strip() for p in raw.split(",") if p.strip()] if raw else []
-    )
+    image_patterns = [p.strip() for p in raw.split(",") if p.strip()] if raw else []
     if image_patterns:
         image_current = sorted(set(image_current) | set(image_patterns))
 
@@ -174,7 +172,7 @@ def _print_manual_review_instructions(config: GameConfig) -> None:
 
     try:
         pending = json.loads(pending_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except OSError, json.JSONDecodeError:
         return
 
     scenes = pending.get("scenes", [])
@@ -190,7 +188,7 @@ def _print_manual_review_instructions(config: GameConfig) -> None:
     print("Recommended next step: review interactively with compose-review:")
     print("  mise run compose-review")
     print("or")
-    print(f"  python -m converter.compose.review compose-review {CONFIG_PATH}")
+    print(f"  python -m converter.compose.review.cli compose-review {CONFIG_PATH}")
     print()
 
     print("Alternative: resolve manually by editing the report files:")
@@ -199,7 +197,9 @@ def _print_manual_review_instructions(config: GameConfig) -> None:
         print(f"   - Open {reports_dir / 'manifest_scene.json'}")
         print("   - Find the scene composite under ``composites`` and add:")
         print('        "characters": [')
-        print('            {"character": "<folder>", "evidence": ["script_identifier:<script>:<line>"]}')
+        print(
+            '            {"character": "<folder>", "evidence": ["script_identifier:<script>:<line>"]}'
+        )
         print("        ],")
         print('        "character_association_status": "associated",')
         print("   - Then cut-and-paste that record into manifest_scene.json and")
@@ -208,7 +208,7 @@ def _print_manual_review_instructions(config: GameConfig) -> None:
     if speakers:
         print("2) Resolve an unmapped speaker:")
         print(f"   - Open {reports_dir / 'character_aliases.json'}")
-        print('   - Add the speaker under its character folder, e.g.:')
+        print("   - Add the speaker under its character folder, e.g.:")
         print('        "clothes": {')
         print('            "folder": "archive/chars/clothes",')
         print('            "aliases": ["clothes"]')
@@ -220,7 +220,7 @@ def _print_manual_review_instructions(config: GameConfig) -> None:
     print("After resolving (either way), verify nothing remains:")
     print("  mise run compose-review")
     print("or")
-    print(f"  python -m converter.compose.review compose-review {CONFIG_PATH}")
+    print(f"  python -m converter.compose.review.cli compose-review {CONFIG_PATH}")
     print("  then apply:  mise run apply")
 
 
@@ -274,7 +274,9 @@ def run_pipeline(
             config = load_config(CONFIG_PATH)
             if clean_output:
                 _clean_output_dir(config)
-            manifest = Composer(config).compose(dry_run=dry_run, clean_output=clean_output)
+            manifest = Composer(config).compose(
+                dry_run=dry_run, clean_output=clean_output
+            )
             ManifestWriter(config).write(manifest, dry_run=dry_run)
             print("\n=== Compose complete. Apply step deferred. ===")
             _print_manual_review_instructions(config)

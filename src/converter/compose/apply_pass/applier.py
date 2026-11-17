@@ -23,12 +23,12 @@ from typing import NotRequired, TypedDict
 
 from tqdm import tqdm  # type: ignore[import-untyped]
 
-from .conditions import condition_variables, get_label_assignments_map
-from .config import GameConfig
-from .errors import ApplyError, ManifestError
-from .manifest import KNOWN_FAMILIES
-from .models import AdoptionReport, CompositeManifest, CompositeRecord
-from .regexp import SHOW_RE
+from ..conditions import condition_variables, get_label_assignments_map
+from ..config import GameConfig
+from ..errors import ApplyError, ManifestError
+from ..manifest import KNOWN_FAMILIES
+from ..models import AdoptionReport, CompositeManifest, CompositeRecord
+from ..regexp import SHOW_RE
 
 KEYWORDS = {"at", "with", "zorder", "as", "parent", "to"}
 
@@ -108,8 +108,12 @@ class Applier:
             path = self.config.game_root.parent / key[0]
             if not path.exists():
                 continue
-            composite_tags = {Path(record.composite_path).stem for record, _ in candidates}
-            variables = set().union(*(_condition_variables(record) for record, _ in candidates))
+            composite_tags = {
+                Path(record.composite_path).stem for record, _ in candidates
+            }
+            variables = set().union(
+                *(_condition_variables(record) for record, _ in candidates)
+            )
             written = self._written_before(path, key[1], reset_map)
             if len(composite_tags) == 1 and variables.issubset(written):
                 name = next(iter(composite_tags))
@@ -135,11 +139,14 @@ class Applier:
                 mapping[key] = {"name": name, "statement": statement}
                 used[name] = next(iter(candidates))[0].composite_path
                 continue
-            skipped.append({
-                "script": key[0], "line": key[1],
-                "statement": statement,
-                "global_defaults": sorted(variables - written),
-            })
+            skipped.append(
+                {
+                    "script": key[0],
+                    "line": key[1],
+                    "statement": statement,
+                    "global_defaults": sorted(variables - written),
+                }
+            )
 
         # Build the merged manifest from the per-category composites streamed
         # above, so the apply pass can resolve generated images / missing files.
@@ -164,10 +171,15 @@ class Applier:
             changed = 0
             for line_no, info in sorted(entries, reverse=True):
                 index = line_no - 1
-                if not (0 <= index < len(lines)) or lines[index].split("#", 1)[0].strip() != info["statement"]:
+                if (
+                    not (0 <= index < len(lines))
+                    or lines[index].split("#", 1)[0].strip() != info["statement"]
+                ):
                     unchanged += 1
                     continue
-                rewritten = _rewrite_script_line(lines[index], info["statement"], info["name"])  # type: ignore[typeddict-item]
+                rewritten = _rewrite_script_line(
+                    lines[index], info["statement"], info["name"]
+                )  # type: ignore[typeddict-item]
                 if not rewritten.endswith(("\n", "\r")):
                     rewritten += newline
                 lines[index] = rewritten
@@ -195,13 +207,22 @@ class Applier:
                 ):
                     runtime_already_applied += 1
                     continue
-                if not (0 <= index < len(lines)) or lines[index].split("#", 1)[0].strip() != info["statement"]:
-                    skipped.append({
-                        "script": f"game/{script}", "line": line_no,
-                        "statement": info["statement"], "reason": "source_line_changed",
-                    })
+                if (
+                    not (0 <= index < len(lines))
+                    or lines[index].split("#", 1)[0].strip() != info["statement"]
+                ):
+                    skipped.append(
+                        {
+                            "script": f"game/{script}",
+                            "line": line_no,
+                            "statement": info["statement"],
+                            "reason": "source_line_changed",
+                        }
+                    )
                     continue
-                lines[index] = _rewrite_script_line(lines[index], info["statement"], info["tag"])  # type: ignore[typeddict-item]
+                lines[index] = _rewrite_script_line(
+                    lines[index], info["statement"], info["tag"]
+                )  # type: ignore[typeddict-item]
                 runtime_applied += 1
                 changed = True
             if changed:
@@ -220,17 +241,21 @@ class Applier:
         for name, rel in sorted(image_tags.items()):
             declarations.append(f'image {name} = "../{rel.replace(chr(92), "/")}"')
         wrapper_declarations = {info["tag"]: info for info in runtime_switches.values()}  # type: ignore[typeddict-item]
-        for info in sorted(wrapper_declarations.values(), key=lambda item: str(item["tag"])):  # type: ignore[typeddict-item]
+        for info in sorted(
+            wrapper_declarations.values(), key=lambda item: str(item["tag"])
+        ):  # type: ignore[typeddict-item]
             branches = info["branches"]  # type: ignore[typeddict-item]
-            declarations.append(f'image {info["tag"]} = ConditionSwitch(')  # type: ignore[typeddict-item]
+            declarations.append(f"image {info['tag']} = ConditionSwitch(")  # type: ignore[typeddict-item]
             declarations.extend(
-                f'    {json.dumps(condition)}, {json.dumps(tag)},'
+                f"    {json.dumps(condition)}, {json.dumps(tag)},"
                 for condition, tag in zip(branches[::2], branches[1::2])
             )
             declarations.append(f'    "True", {json.dumps(info["fallback"])},')  # type: ignore[typeddict-item]
             declarations.append(")")
         declaration_path = self._declaration_path()
-        declaration_path.write_text("\n".join(declarations) + "\n", encoding="utf-8-sig")
+        declaration_path.write_text(
+            "\n".join(declarations) + "\n", encoding="utf-8-sig"
+        )
 
         applied += runtime_applied + runtime_already_applied + already_direct
         report = AdoptionReport(
@@ -266,9 +291,15 @@ class Applier:
         }
         # Write updated index manifest (per-category manifests are unchanged;
         # only the index carries the adoption summary).
-        index_path = self.config.resolved_paths()["manifest_path"].parent / "manifest_index.json"
+        index_path = (
+            self.config.resolved_paths()["manifest_path"].parent / "manifest_index.json"
+        )
         index_path.parent.mkdir(parents=True, exist_ok=True)
-        index_data = json.loads(index_path.read_text(encoding="utf-8")) if index_path.is_file() else {}
+        index_data = (
+            json.loads(index_path.read_text(encoding="utf-8"))
+            if index_path.is_file()
+            else {}
+        )
         index_data["summary"] = full_manifest.summary
         index_path.write_text(json.dumps(index_data, indent=2), encoding="utf-8")
         print(
@@ -298,7 +329,9 @@ class Applier:
         if key in self._source_text_cache:
             return self._source_text_cache[key]
         try:
-            lines = tuple(path.read_text(encoding="utf-8-sig", errors="replace").splitlines())
+            lines = tuple(
+                path.read_text(encoding="utf-8-sig", errors="replace").splitlines()
+            )
         except OSError:
             return None
         self._source_text_cache[key] = lines
@@ -308,7 +341,9 @@ class Applier:
     # Composite discovery
     # ------------------------------------------------------------------ #
 
-    def _generated_composites(self, manifest: CompositeManifest) -> tuple[dict[str, str], list[str]]:
+    def _generated_composites(
+        self, manifest: CompositeManifest
+    ) -> tuple[dict[str, str], list[str]]:
         """Return every extant generated image path keyed by its unique image tag."""
         paths: dict[str, str] = {}
         missing: list[str] = []
@@ -325,7 +360,9 @@ class Applier:
                 tag = Path(rel).stem
                 prev = paths.get(tag)
                 if prev and prev != rel:
-                    raise ApplyError(f"Generated composite image tag collision: {tag}: {prev}, {rel}")
+                    raise ApplyError(
+                        f"Generated composite image tag collision: {tag}: {prev}, {rel}"
+                    )
                 paths[tag] = rel
         for record in entries:
             rel = record.composite_path
@@ -338,7 +375,9 @@ class Applier:
             tag = Path(rel).stem
             prev = paths.get(tag)
             if prev and prev != rel:
-                raise ApplyError(f"Generated composite image tag collision: {tag}: {prev}, {rel}")
+                raise ApplyError(
+                    f"Generated composite image tag collision: {tag}: {prev}, {rel}"
+                )
             paths[tag] = rel
         return paths, missing
 
@@ -346,7 +385,9 @@ class Applier:
     # Script analysis helpers
     # ------------------------------------------------------------------ #
 
-    def _written_before(self, path: Path, line: int, reset_map: dict[str, list[tuple[str, str]]]) -> set[str]:
+    def _written_before(
+        self, path: Path, line: int, reset_map: dict[str, list[tuple[str, str]]]
+    ) -> set[str]:
         """Return variable names written before ``line`` in ``path``."""
         key = str(path)
         if key in self._written_cache:
@@ -366,8 +407,12 @@ class Applier:
                     writes.append((number, m.group(1)))
                 m_call = re.match(r"call\s+([A-Za-z_]\w*)\b", text)
                 if m_call and m_call.group(1) in reset_map:
-                    writes.extend((number, name) for name, _value in reset_map[m_call.group(1)])
-                for name in re.findall(r"SetVariable\(\s*['\"]([A-Za-z_]\w*)['\"]", text):
+                    writes.extend(
+                        (number, name) for name, _value in reset_map[m_call.group(1)]
+                    )
+                for name in re.findall(
+                    r"SetVariable\(\s*['\"]([A-Za-z_]\w*)['\"]", text
+                ):
                     writes.append((number, name))
             self._written_cache[key] = (labels, writes)
         start = labels[max(0, bisect.bisect_right(labels, line - 1) - 1)]
@@ -379,13 +424,19 @@ class Applier:
             return False
         if not 1 <= line <= len(lines):
             return False
-        return bool(re.match(
-            rf"^(?:show|scene)\s+{re.escape(tag)}(?:\s|:|$)",
-            lines[line - 1].strip(),
-        ))
+        return bool(
+            re.match(
+                rf"^(?:show|scene)\s+{re.escape(tag)}(?:\s|:|$)",
+                lines[line - 1].strip(),
+            )
+        )
 
     def _runtime_switch_for_usage(
-        self, candidates: list[tuple], key: tuple[str, int], statement: str, all_records,
+        self,
+        candidates: list[tuple],
+        key: tuple[str, int],
+        statement: str,
+        all_records,
     ) -> tuple[_CompositeUsageInfo | None, list[str]]:
         """Build a runtime selector for generated snapshots, with the live image as fallback."""
         if not candidates or candidates[0][0].kind not in ("layeredimage", "screen"):
@@ -393,11 +444,14 @@ class Applier:
         exemplar = candidates[0][0]
         signatures = {_attribute_signature(record) for record, _ in candidates}
         if len(signatures) != 1:
-            return None, sorted(set().union(*(_condition_variables(r) for r, _ in candidates)))
+            return None, sorted(
+                set().union(*(_condition_variables(r) for r, _ in candidates))
+            )
         signature = next(iter(signatures))
         definition_key = (exemplar.definition.script, exemplar.definition.line)
         variants = [
-            record for record in all_records
+            record
+            for record in all_records
             if record.kind in ("layeredimage", "screen")
             and record.name == exemplar.name
             and (record.definition.script, record.definition.line) == definition_key
@@ -406,11 +460,15 @@ class Applier:
             and _attribute_signature(record) == signature
         ]
         if not variants:
-            return None, sorted(set().union(*(_condition_variables(r) for r in variants)))
+            return None, sorted(
+                set().union(*(_condition_variables(r) for r in variants))
+            )
 
         universe = self._source_condition_universe(exemplar)
         if universe is None or not universe:
-            return None, sorted(set().union(*(_condition_variables(r) for r in variants)))
+            return None, sorted(
+                set().union(*(_condition_variables(r) for r in variants))
+            )
         universe_conditions = {
             condition for conditions in universe.values() for condition in conditions
         }
@@ -440,12 +498,16 @@ class Applier:
                 continue
             positive = set(state_key)
             tests = [f"({cond})" for cond in sorted(positive)]
-            tests.extend(f"not ({cond})" for cond in sorted(universe_conditions - positive))
+            tests.extend(
+                f"not ({cond})" for cond in sorted(universe_conditions - positive)
+            )
             condition = " and ".join(tests)
             if condition:
                 branches.extend((condition, tag))
         if not branches:
-            return None, sorted(set().union(*(_condition_variables(r) for r in variants)))
+            return None, sorted(
+                set().union(*(_condition_variables(r) for r in variants))
+            )
 
         statement_tokens = statement.rstrip().removesuffix(":").split()
         displayable = []
@@ -502,7 +564,9 @@ class Applier:
             if not text:
                 continue
             indent = len(raw) - len(raw.lstrip())
-            branch_stack = [(level, cond) for level, cond in branch_stack if level < indent]
+            branch_stack = [
+                (level, cond) for level, cond in branch_stack if level < indent
+            ]
             branch = re.match(r"(if|elif|else)\s*(.*?)\s*:\s*$", text)
             if branch:
                 kind, condition = branch.groups()
@@ -518,7 +582,9 @@ class Applier:
                 else:
                     previous = sibling_conditions.get(indent, [])
                     effective = " and ".join(f"not ({item})" for item in previous)
-                branch_stack = [(level, value) for level, value in branch_stack if level < indent]
+                branch_stack = [
+                    (level, value) for level, value in branch_stack if level < indent
+                ]
                 branch_stack.append((indent, effective))
                 continue
             if asset_re.search(text):
@@ -581,6 +647,7 @@ class Applier:
 # Module-level helpers (pure functions, no config needed)
 # ---------------------------------------------------------------------- #
 
+
 def _condition_variables(record) -> set[str]:
     names: set[str] = set()
     for layer in record.ordered_layers:
@@ -590,11 +657,9 @@ def _condition_variables(record) -> set[str]:
 
 
 def _attribute_signature(record) -> tuple:
-    return tuple(sorted({
-        layer.attribute
-        for layer in record.ordered_layers
-        if layer.attribute
-    }))
+    return tuple(
+        sorted({layer.attribute for layer in record.ordered_layers if layer.attribute})
+    )
 
 
 def _rewrite_script_line(raw_line: str, statement: str, composite_name: str) -> str:
@@ -611,7 +676,9 @@ def _rewrite_script_line(raw_line: str, statement: str, composite_name: str) -> 
     replacement = " ".join(result) + (":" if has_colon else "")
 
     code, marker, comment = raw_line.rstrip("\r\n").partition("#")
-    newline = "\r\n" if raw_line.endswith("\r\n") else "\n" if raw_line.endswith("\n") else ""
+    newline = (
+        "\r\n" if raw_line.endswith("\r\n") else "\n" if raw_line.endswith("\n") else ""
+    )
     indent = code[: len(code) - len(code.lstrip())]
     replacement = indent + replacement
     if marker:
