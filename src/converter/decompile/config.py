@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from cli import success, warning
+
 from .constants import CONFIG_PATH
 from .scan import scan_source_files
 
@@ -49,7 +51,7 @@ def write_config(
 
     config_path.parent.mkdir(parents=True, exist_ok=True)
     config_path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
-    print(f"  [OK] Wrote config: {config_path}")
+    success(f"Wrote config: {config_path}")
     return config_path
 
 
@@ -66,5 +68,5 @@ def load_config(config_path: Path = CONFIG_PATH) -> dict:
     try:
         return json.loads(config_path.read_text(encoding="utf-8"))
     except (FileNotFoundError, json.JSONDecodeError, OSError) as exc:
-        print(f"  [WARN] Could not load config {config_path}: {exc}")
+        warning(f"Could not load config {config_path}: {exc}")
         return {}

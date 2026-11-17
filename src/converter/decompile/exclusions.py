@@ -6,6 +6,8 @@ import fnmatch
 import json
 from pathlib import Path
 
+from cli import error
+
 from .config import load_config
 
 
@@ -75,7 +77,7 @@ def sync_exclusions(config_path: Path = Path("src/converter/config.json")) -> di
     """
     config = load_config(config_path)
     if not config:
-        print(f"Config not found or invalid: {config_path}")
+        error(f"Config not found or invalid: {config_path}")
         return {}
 
     exclusion = config.get("exclusion", {}) or {}
@@ -85,9 +87,7 @@ def sync_exclusions(config_path: Path = Path("src/converter/config.json")) -> di
     before_rpy = config.get("rpy_files", [])
     before_ren_py = config.get("ren_py_files", [])
 
-    config["rpy_files"] = [
-        p for p in before_rpy if not matches_exclusion(p, patterns)
-    ]
+    config["rpy_files"] = [p for p in before_rpy if not matches_exclusion(p, patterns)]
     config["ren_py_files"] = [
         p for p in before_ren_py if not matches_exclusion(p, patterns)
     ]

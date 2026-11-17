@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from cli import error, info, success
+
 
 def decompile_rpyc_files(game_folder: Path) -> int:
     r"""Decompile every ``.rpyc`` under ``game_folder`` to a sibling ``.rpy``.
@@ -15,10 +17,10 @@ def decompile_rpyc_files(game_folder: Path) -> int:
 
     rpyc_files = sorted(game_folder.rglob("*.rpyc"))
     if not rpyc_files:
-        print(f"No .rpyc files found in {game_folder}")
+        info(f"No .rpyc files found in {game_folder}")
         return 0
 
-    print(f"Decompiling {len(rpyc_files)} .rpyc file(s) in {game_folder}")
+    info(f"Decompiling {len(rpyc_files)} .rpyc file(s) in {game_folder}")
     ok = err = fail = 0
     for rpyc_file in rpyc_files:
         try:
@@ -27,14 +29,14 @@ def decompile_rpyc_files(game_folder: Path) -> int:
                 rpyc_file, output_path=output_path, overwrite=True
             )
             if result.success:
-                print(f"  [OK] Decompiled: {rpyc_file.name} -> {output_path.name}")
+                success(f"Decompiled: {rpyc_file.name} -> {output_path.name}")
                 ok += 1
             else:
-                print(f"  [ERR] Error decompiling {rpyc_file.name}: {result.error}")
+                error(f"Error decompiling {rpyc_file.name}: {result.error}")
                 err += 1
         except Exception as e:  # noqa: BLE001
-            print(f"  [XX] Failed to decompile {rpyc_file.name}: {e}")
+            error(f"Failed to decompile {rpyc_file.name}: {e}")
             fail += 1
 
-    print(f"  Decompile done: {ok} ok, {err} error(s), {fail} failed")
+    success(f"Decompile done: {ok} ok, {err} error(s), {fail} failed")
     return ok

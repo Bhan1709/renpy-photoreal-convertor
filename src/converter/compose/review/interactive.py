@@ -1,4 +1,4 @@
-"""Interactive review CLI for scene character associations and speaker resolution.
+"""Interactive review CLI for scene character associations and speaker resolution (questionary + rich).
 
 Reviews unmapped speakers and scenes missing character associations one at a
 time, with clickable composite file links and interactive prompts.
@@ -17,6 +17,21 @@ import shutil
 import sys
 from pathlib import Path
 
+import typer
+
+from cli import (
+    confirm,
+    console,
+    create_app,
+    info,
+    kv,
+    prompt_text,
+    rule,
+    step,
+    success,
+    warning,
+)
+
 from ..config import GameConfig, load_config
 from ..manifest import (
     CHARACTER_ALIASES_FILE,
@@ -26,12 +41,16 @@ from ..manifest import (
     _save_character_aliases,
 )
 
+app = create_app(
+    "Interactively review unmapped speakers and scenes missing character association."
+)
+
 REJECTED_SUBFOLDER = "rejected"
 REJECTED_PNGS_SUBFOLDER = "pngs"
 
 
 # --------------------------------------------------------------------------- #
-# Clickable path helpers
+# Clickable path helpers                                                      #
 # --------------------------------------------------------------------------- #
 
 
@@ -61,7 +80,7 @@ def _clickable(path: Path | str, base: Path | None = None) -> str:
 
 
 # --------------------------------------------------------------------------- #
-# Config / data loading
+# Config / data loading                                                       #
 # --------------------------------------------------------------------------- #
 
 
@@ -106,8 +125,8 @@ def _resolve_speaker(
         return player_folder
 
     # 3. Alias match against character_aliases.json.
-    for char_name, info in char_aliases.items():
-        aliases = {a.lower() for a in info.get("aliases", [])}
+    for char_name, info_ in char_aliases.items():
+        aliases = {a.lower() for a in info_.get("aliases", [])}
         if speaker_lower in aliases:
             return char_name
 
@@ -115,7 +134,7 @@ def _resolve_speaker(
 
 
 # --------------------------------------------------------------------------- #
-# Manifest load / save helpers
+# Manifest load / save helpers                                                #
 # --------------------------------------------------------------------------- #
 
 
@@ -176,7 +195,7 @@ def _find_composite_index(
 
 
 # --------------------------------------------------------------------------- #
-# Speaker dialog manipulation
+# Speaker dialog manipulation                                                 #
 # --------------------------------------------------------------------------- #
 
 
@@ -250,7 +269,7 @@ def _apply_speaker_mapping_to_manifests(
 
 
 # --------------------------------------------------------------------------- #
-# Speaker rejection
+# Speaker rejection                                                           #
 # --------------------------------------------------------------------------- #
 
 
@@ -293,14 +312,13 @@ def _reject_speaker(
     }
     rejected_path = rejected_dir / f"speaker_{speaker}.json"
     rejected_path.write_text(json.dumps(rejected_record, indent=2), encoding="utf-8")
-    print(
-        f"  -> Rejected speaker '{speaker}': dialogs removed, "
-        f"record written to {rejected_path}"
+    info(
+        f"Rejected speaker '{speaker}': dialogs removed, record written to {rejected_path}"
     )
 
 
 # --------------------------------------------------------------------------- #
-# Scene rejection
+# Scene rejection                                                             #
 # --------------------------------------------------------------------------- #
 
 
@@ -324,9 +342,9 @@ def _reject_scene(
 
     if source_png.is_file():
         shutil.move(str(source_png), str(rejected_png))
-        print(f"  -> Moved PNG to {rejected_png}")
+        info(f"Moved PNG to {rejected_png}")
     else:
-        print(f"  -> PNG not found at {source_png} (may already be moved)")
+        warning(f"PNG not found at {source_png} (may already be moved)")
 
     # Remove the composite from all category manifests in memory.
     target_path = composite_path
@@ -351,11 +369,11 @@ def _reject_scene(
     }
     rejected_path = rejected_dir / f"scene_{composite_name}.json"
     rejected_path.write_text(json.dumps(rejected_record, indent=2), encoding="utf-8")
-    print(f"  -> Rejected scene '{composite_name}': record written to {rejected_path}")
+    info(f"Rejected scene '{composite_name}': record written to {rejected_path}")
 
 
 # --------------------------------------------------------------------------- #
-# Character assignment to a scene composite
+# Character assignment to a scene composite                                   #
 # --------------------------------------------------------------------------- #
 
 
@@ -371,7 +389,7 @@ def _assign_character_to_scene_composite(
     """
     found = _find_composite_index(all_data, composite_path)
     if found is None:
-        print(f"  Warning: composite '{composite_path}' not found in manifests.")
+        warning(f"Composite '{composite_path}' not found in manifests.")
         return
     cat_name, index = found
     comp = dict(all_data[cat_name]["composites"][index])
@@ -387,7 +405,7 @@ def _assign_character_to_scene_composite(
 
 
 # --------------------------------------------------------------------------- #
-# Phase 1: unmapped speakers
+# Phase 1: unmapped speakers                                                  #
 # --------------------------------------------------------------------------- #
 
 
@@ -402,37 +420,44 @@ def _process_unmapped_speakers(
     """Interactively review each unmapped speaker one at a time."""
     unmapped = pending.get("unmapped_speakers", [])
     if not unmapped:
-        print("No unmapped speakers to review.")
+        info("No unmapped speakers to review.")
         return char_aliases
 
     known_chars = set(char_aliases.keys())
     char_list = ", ".join(sorted(known_chars))
 
+    rule("Unmapped speakers")
     for entry in list(unmapped):
         speaker = entry["speaker"]
         composite_paths = entry["composites"]
 
-        print(f"\n{'=' * 60}")
-        print(f"Unmapped speaker: {speaker}")
-        print(f"Found in {len(composite_paths)} composite(s):")
+        console.print(f"\n{'=' * 60}")
+        console.print(f"Unmapped speaker: [bold]{speaker}[/bold]")
+        console.print(f"Found in {len(composite_paths)} composite(s):")
         for comp_path in composite_paths:
-            print(f"  {_clickable(comp_path, config.game_root.parent)}")
+            console.print(f"  {_clickable(comp_path, config.game_root.parent)}")
 
-        char_name = input(
-            f"\nEnter character name for '{speaker}' "
-            f"(valid: {char_list}, or blank to skip): "
-        ).strip()
+        char_name = prompt_text(
+            f"Enter character name for '{speaker}' "
+            f"(valid: {char_list}, or blank to skip)",
+            default="",
+        )
+        if char_name is None:
+            info("Review cancelled by user.")
+            return char_aliases
+
+        char_name = char_name.strip()
 
         if not char_name:
             # Blank input -> ask to remove dialogs
-            answer = (
-                input(
-                    f"Remove dialog associations for '{speaker}' from these composites? (y/N): "
-                )
-                .strip()
-                .lower()
+            answer = confirm(
+                f"Remove dialog associations for '{speaker}' from these composites?",
+                default=False,
             )
-            if answer in ("y", "yes"):
+            if answer is None:
+                info("Review cancelled by user.")
+                return char_aliases
+            if answer:
                 _reject_speaker(
                     config,
                     speaker,
@@ -442,14 +467,14 @@ def _process_unmapped_speakers(
                     all_data,
                 )
             else:
-                print(f"  Kept '{speaker}' as unmapped (no changes).")
+                info(f"Kept '{speaker}' as unmapped (no changes).")
         else:
             # Validate entered character name.
             resolved = _resolve_speaker(char_name, char_aliases, config)
             if resolved:
                 # Valid character: add speaker as alias (append, do not overwrite).
                 aliases_list = char_aliases[resolved].setdefault("aliases", [])
-                speaker_key = speaker.strip().lower()
+                speaker_key = char_name.strip().lower()
                 if speaker_key not in {a.lower() for a in aliases_list}:
                     aliases_list.append(speaker_key)
                     char_aliases[resolved]["aliases"] = sorted(aliases_list)
@@ -460,16 +485,17 @@ def _process_unmapped_speakers(
                     all_data, composite_paths, speaker, resolved
                 )
                 _save_all_category_manifests(reports_dir, all_data)
-                print(f"  Mapped '{speaker}' -> '{resolved}' (alias added).")
+                success(f"Mapped '{speaker}' -> '{resolved}' (alias added).")
             else:
                 # Invalid character name -> ask to remove dialogs.
-                print(f"  '{char_name}' is not a known character folder.")
-                answer = (
-                    input(f"Remove dialog associations for '{speaker}'? (y/N): ")
-                    .strip()
-                    .lower()
+                warning(f"'{char_name}' is not a known character folder.")
+                answer = confirm(
+                    f"Remove dialog associations for '{speaker}'?", default=False
                 )
-                if answer in ("y", "yes"):
+                if answer is None:
+                    info("Review cancelled by user.")
+                    return char_aliases
+                if answer:
                     _reject_speaker(
                         config,
                         speaker,
@@ -493,8 +519,8 @@ def _process_unmapped_speakers(
                         cat_data["composites"] = new_list
                         cat_data["summary"] = {"composites": len(new_list)}
                     _save_all_category_manifests(reports_dir, all_data)
-                    print(
-                        f"  Kept '{speaker}' -> '{char_name}' (unverified alias, dialogs updated)."
+                    info(
+                        f"Kept '{speaker}' -> '{char_name}' (unverified alias, dialogs updated)."
                     )
 
         # Remove this speaker from the pending review so it is not re-reviewed.
@@ -509,7 +535,7 @@ def _process_unmapped_speakers(
 
 
 # --------------------------------------------------------------------------- #
-# Phase 2: scenes missing character association
+# Phase 2: scenes missing character association                               #
 # --------------------------------------------------------------------------- #
 
 
@@ -523,43 +549,50 @@ def _process_scenes_missing_chars(
     """Interactively review each scene missing character association."""
     scenes = pending.get("scenes", [])
     if not scenes:
-        print("No scenes missing character association.")
+        info("No scenes missing character association.")
         return
 
     char_aliases = _load_character_aliases(reports_dir)
     known_chars = set(char_aliases.keys())
+
+    rule("Scenes missing character association")
     char_list = ", ".join(sorted(known_chars))
 
     for entry in list(scenes):
         composite_path = entry["composite_path"]
         name = entry["name"]
 
-        print(f"\n{'=' * 60}")
-        print(f"Scene composite missing characters: {name}")
-        print(f"  Path: {_clickable(composite_path, config.game_root.parent)}")
-        print(
+        console.print(f"\n{'=' * 60}")
+        console.print(f"Scene composite missing characters: [bold]{name}[/bold]")
+        console.print(f"  Path: {_clickable(composite_path, config.game_root.parent)}")
+        console.print(
             f"  Defined: {entry['definition']['script']}:{entry['definition']['line']}"
         )
-        print("  Usage locations:")
+        console.print("  Usage locations:")
         for loc in entry.get("usage_locations", []):
-            print(f"    - {loc['script']}:{loc['line']}  {loc['statement']}")
+            console.print(f"    - {loc['script']}:{loc['line']}  {loc['statement']}")
 
-        char_name = input(
-            f"\nEnter character name for '{name}' "
-            f"(valid: {char_list}, or blank to skip): "
-        ).strip()
+        char_name = prompt_text(
+            f"Enter character name for '{name}' (valid: {char_list}, or blank to skip)",
+            default="",
+        )
+        if char_name is None:
+            info("Review cancelled by user.")
+            return
+
+        char_name = char_name.strip()
 
         if not char_name:
             # Blank input -> ask to keep without characters.
-            answer = (
-                input(
-                    f"Keep scene '{name}' in manifest without character associations? (y/N): "
-                )
-                .strip()
-                .lower()
+            answer = confirm(
+                f"Keep scene '{name}' in manifest without character associations?",
+                default=False,
             )
-            if answer in ("y", "yes"):
-                print(f"  Kept '{name}' without characters (no changes).")
+            if answer is None:
+                info("Review cancelled by user.")
+                return
+            if answer:
+                info(f"Kept '{name}' without characters (no changes).")
             else:
                 _reject_scene(
                     config,
@@ -582,15 +615,15 @@ def _process_scenes_missing_chars(
                     invalid_names.append(n)
 
             if invalid_names:
-                print(f"  Not recognized: {', '.join(invalid_names)}")
-                answer = (
-                    input(
-                        f"Keep scene '{name}' without these character associations? (y/N): "
-                    )
-                    .strip()
-                    .lower()
+                warning(f"Not recognized: {', '.join(invalid_names)}")
+                answer = confirm(
+                    f"Keep scene '{name}' without these character associations?",
+                    default=False,
                 )
-                if answer in ("y", "yes"):
+                if answer is None:
+                    info("Review cancelled by user.")
+                    return
+                if answer:
                     # Assign valid ones; for invalid ones, use the entered name as-is.
                     for r in valid_resolved:
                         _assign_character_to_scene_composite(
@@ -601,7 +634,7 @@ def _process_scenes_missing_chars(
                             all_data, composite_path, n
                         )
                     _save_all_category_manifests(reports_dir, all_data)
-                    print(f"  Assigned {', '.join(names)} to scene '{name}'.")
+                    info(f"Assigned {', '.join(names)} to scene '{name}'.")
                 else:
                     _reject_scene(
                         config,
@@ -616,7 +649,7 @@ def _process_scenes_missing_chars(
                 for r in valid_resolved:
                     _assign_character_to_scene_composite(all_data, composite_path, r)
                 _save_all_category_manifests(reports_dir, all_data)
-                print(f"  Assigned {', '.join(valid_resolved)} to scene '{name}'.")
+                info(f"Assigned {', '.join(valid_resolved)} to scene '{name}'.")
 
         # Remove this scene from the pending review so it is not re-reviewed.
         pending["scenes"] = [
@@ -628,7 +661,7 @@ def _process_scenes_missing_chars(
 
 
 # --------------------------------------------------------------------------- #
-# Entry point
+# Entry point                                                                 #
 # --------------------------------------------------------------------------- #
 
 
@@ -642,7 +675,7 @@ def review(config_path: str = "src/converter/config.json") -> int:
     pending = ManifestWriter.load_pending_review(config)
 
     if not pending:
-        print("No pending scene review data found. Run compose first.")
+        info("No pending scene review data found. Run compose first.")
         return 0
 
     reports_dir = config.resolved_paths()["manifest_path"].parent
@@ -651,12 +684,13 @@ def review(config_path: str = "src/converter/config.json") -> int:
     char_aliases = _load_character_aliases(reports_dir)
     all_data = _load_all_category_manifests(reports_dir)
 
-    print("=== Interactive Scene Review ===")
-    print(f"Config: {config_path}")
-    print(f"Rejected folder: {rejected_dir}")
-    print()
+    rule("Interactive Scene Review")
+    kv("Config", config_path)
+    kv("Rejected folder", str(rejected_dir))
+    console.print()
 
     # Phase 1: Review unmapped speakers.
+    step("Phase 1", "Review unmapped speakers")
     char_aliases = _process_unmapped_speakers(
         config,
         pending,
@@ -667,24 +701,29 @@ def review(config_path: str = "src/converter/config.json") -> int:
     )
 
     # Phase 2: Review scenes missing character association.
+    step("Phase 2", "Review scenes missing character association")
     _process_scenes_missing_chars(config, pending, rejected_dir, all_data, reports_dir)
 
-    print("\n=== Review Complete ===")
-    print(f"Rejected records written to: {rejected_dir}")
-    print(f"Character aliases saved to: {reports_dir / CHARACTER_ALIASES_FILE}")
-    print()
-    print("Next steps:")
-    print("  Run:    mise run apply")
+    console.print()
+    rule("Review Complete")
+    kv("Rejected records", str(rejected_dir))
+    kv("Character aliases", str(reports_dir / CHARACTER_ALIASES_FILE))
+    console.print()
+    info("Next steps:")
+    info("  Run:    mise run apply")
     return 0
 
 
-def main(argv: list[str] | None = None) -> int:
-    if argv is None:
-        argv = sys.argv[1:]
-
-    config_path = argv[0] if argv else "src/converter/config.json"
+@app.command()
+def main(
+    config_path: str = typer.Argument(
+        "src/converter/config.json",
+        help="Path to the GameConfig JSON (default: src/converter/config.json)",
+    ),
+) -> int:
+    """Typer wrapper around :func:`review` for CLI use."""
     return review(config_path)
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(app())

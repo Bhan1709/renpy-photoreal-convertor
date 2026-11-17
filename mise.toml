@@ -9,8 +9,8 @@ python.uv_venv_auto = "create|source"
 ############## AGENT TASKS ##############
 
 [tasks.agent]
-description = "Run OpenCode monitor with a specified config profile"
-usage = 'arg "<profile>" default="nvidia-glm" help="Profile key from config.json"'
+description = "Launch OpenCode with a model profile (omit profile for interactive picker)"
+usage = 'arg "[profile]" help="Profile key from config.json"'
 run = "python -m agent {{ usage.profile }}"
 
 [tasks.nvidia]
@@ -31,6 +31,10 @@ arg "<ctx>" default="32k" help="Context size" {
 run = "python -m agent qwen-3-vl-{{ usage.ctx }}"
 
 ############## CONVERTER TASKS ##############
+ 
+[tasks.converter]
+description = "Show converter welcome message and list available entry points"
+run = "python -m converter.__init__"
 
 [tasks.pipeline]
 description = "Default flow: decompile + prompt for exclusion patterns + compose (skip apply). Verify compose output before applying."
@@ -39,20 +43,12 @@ run = "python -m converter.pipeline"
 ############## COMPILE TASKS ##############
 
 [tasks.decompile]
-description = 'Generalized decompile: finds the first \game folder under src/renpy_game, copies relevant files into src/renpy_game/game, extracts .rpa archives, decompiles .rpyc files, and writes src/converter/config.json'
-run = "python src/converter/decompile/decompile.py"
-
-[tasks.decompile-clean]
-description = "Clean decompile artifacts then regenerate them (clean + decompile)"
-run = "mise run clean-decompile && mise run decompile"
+description = "Decompile a Ren'Py game (interactive: clean, decompile, clean+decompile, or quit)"
+run = "python -m converter.decompile"
 
 [tasks.exclusions-sync]
 description = "Remove exclusion-pattern-matched entries from rpy_files/ren_py_files in src/converter/config.json"
 run = "python src/converter/decompile/sync_exclusions_cli.py"
-
-[tasks.clean-decompile]
-description = "Remove decompile artifacts: src/renpy_game/game folder and src/converter/config.json"
-run = "python -c \"from converter.restore import restore_decompile; restore_decompile()\""
 
 ############## COMPOSE TASKS ##############
 
@@ -64,9 +60,17 @@ run = 'python -m converter.pipeline --compose-only'
 description = "Removes older composites and composes new ones with manifests. Uses src/converter/config.json (no --game needed)."
 run = 'python -m converter.pipeline --compose-only --clean-output'
 
+[tasks.config-compose]
+description = "Compose composites directly via converter.compose CLI (requires --config)"
+run = "python -m converter.compose"
+
 [tasks.compose-review]
 description = "Interactively review unmapped speakers and scenes missing character association, one at a time."
-run = "python -m converter.compose.review.interactive"
+run = "python -m converter.compose.review"
+
+[tasks.chars]
+description = "Fetch all character names (source of truth) from config.json"
+run = "python -m converter.compose.review chars-list"
 
 [tasks.apply]
 description = "Apply composites into live .rpy scripts for a game. Uses src/converter/config.json (no --game needed)."
