@@ -63,10 +63,21 @@ Do **not** hardcode Python versions or paths; respect `.python-version` and mise
 
 ## 5. Coding conventions & rules
 
-- **Do not commit or push unless explicitly asked.** Agents must not create git commits, push branches, or alter the commit history unless the user specifically requests it. Limit yourself to reading files, making code edits, and running commands/tests — leave version-control actions to the user.
-- **Session-scoped authorization only.** If you grant the agent permission to commit or push for one specific command, that permission applies only to that command. It does not carry over to subsequent requests, and each new commit, push, or merge requires its own explicit request. A prior approval is never standing authorization for later commands.
+## 5. Coding conventions & rules
+
+### Authorization (read first)
+
+- **Every git operation requires separate explicit approval.** Commit, push, branch creation, merge, pull request opening, and file deletion each need their own explicit request. No git operation is assumed approved from a prior conversation or command.
+- **Session-scoped authorization only.** Permission to commit or push for one specific command applies only to that command. It does not carry over to subsequent requests, and each new commit, push, or merge requires its own explicit request. A prior approval is never standing authorization for later commands.
 - **Commit-on-merge is not automatic.** Allowing a commit in one context does not authorize merging that branch, nor does it authorize commits on later requests. Each commit, push, or merge is a separate decision requiring its own explicit approval.
-- **Never commit directly to `main`.** All changes must be made on a dedicated feature branch (e.g. `feature/your-change-name`), never on `main` or the default branch. Create a branch before committing, then open a pull request for review. See `CONTRIBUTING.md` for branch naming (Conventional Branch) and commit message (Conventional Commits) requirements.
+- **Standing authorizations do not exist.** Saying "yes" once never means "yes forever." Each session, each command, each pull request needs its own explicit request.
+- **Present-before-acting.** For any version control operation, the agent states exactly what it will do and waits for a yes/no before running any git command.
+
+### What agents must NOT do
+
+- Do not commit, push, create branches, delete files, open pull requests, or merge without being explicitly asked for that specific operation.
+- Do not perform cleanup (removing, renaming, or deleting files) without explicit user approval, even if it seems obvious or redundant.
+- Do not commit directly to `main`. All changes must be made on a dedicated feature branch (e.g. `feature/your-change-name`), never on `main` or the default branch. Create a branch before committing, then open a pull request for review. See `CONTRIBUTING.md` for branch naming (Conventional Branch) and commit message (Conventional Commits) requirements.
 - **Pre-commit hook.** A hook at `.githooks/pre-commit` blocks commits on `main`, `master`, or `develop`. It is active via `git config core.hooksPath .githooks` (already set). If it ever fires, create a feature branch and try again.
 - **GitHub branch protection.** `main` is protected on GitHub: direct pushes are blocked; all changes must come through a pull request with at least one approving review.
 - **Clean up temporary files.** Remove any temporary files, scratch scripts, test outputs, or artifacts created during testing before you finish. Do not leave test files, debug output, or temporary data in the repository.
