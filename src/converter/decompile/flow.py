@@ -12,7 +12,7 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from cli import console, error, info, kv, rule, select, success
+from cli import Choice, console, error, info, kv, rule, select, success
 
 from .config import write_config
 from .constants import CONFIG_PATH, GAME_FOLDER, RENPY_GAMES, ROOT
@@ -152,18 +152,22 @@ def process_game(
     choice = select(
         "What would you like to do next?",
         choices=[
-            "Run compose-clean now (build photoreal composites)",
-            "Run compose now (default options)",
-            "Quit",
+            Choice(
+                title="Run compose-clean now (build photoreal composites)",
+                value="compose_clean",
+            ),
+            Choice(title="Run compose now (default options)", value="compose"),
+            Choice(title="Quit", value="quit"),
         ],
-        default="Run compose-clean now (build photoreal composites)",
+        default="compose_clean",
+        use_shortcuts=True,
     )
 
     if choice is None:
         info("Aborted.")
         return summary
 
-    if choice.startswith("Run compose-clean now"):
+    if choice == "compose_clean":
         cmd = [
             sys.executable,
             "-m",
@@ -174,7 +178,7 @@ def process_game(
         info(f"Running: {' '.join(cmd)}")
         return subprocess.run(cmd, check=False).returncode
 
-    if choice.startswith("Run compose now"):
+    if choice == "compose":
         cmd = [sys.executable, "-m", "converter.pipeline", "--compose-only"]
         info(f"Running: {' '.join(cmd)}")
         return subprocess.run(cmd, check=False).returncode

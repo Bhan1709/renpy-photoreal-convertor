@@ -19,6 +19,8 @@ import httpx
 import typer
 
 from cli import (
+    Choice,
+    Separator,
     create_app,
     error,
     info,
@@ -389,14 +391,45 @@ def run(
             error("No profiles are defined in config.json.")
             return 1
 
+        # Build grouped, metadata-rich choices for the profile picker.
+        provider_order = {"ollama": 0, "nvidia": 1}
+        sorted_keys = sorted(
+            profiles,
+            key=lambda k: (provider_order.get(profiles[k].provider, 99), k),
+        )
+        choices: list[str | Choice] = []
+        current_provider = None
+        for key in sorted_keys:
+            prof = profiles[key]
+            if prof.provider != current_provider:
+                current_provider = prof.provider
+                choices.append(Separator(f"--- {current_provider.upper()} ---"))
+            # Format context limit (e.g. 131072 -> 128k, 1048576 -> 1M)
+            ctx = prof.context_limit
+            if ctx >= 1_000_000:
+                ctx_str = f"{ctx // 1_000_000}M ctx"
+            elif ctx >= 1_000:
+                ctx_str = f"{ctx // 1_000}k ctx"
+            else:
+                ctx_str = f"{ctx} ctx"
+            vision = "Vision" if "vl" in prof.model_name.lower() else "Text"
+            choices.append(
+                Choice(
+                    title=f"{key}  [{vision} | {ctx_str}]",
+                    value=key,
+                )
+            )
+
         selected = select(
             "Select a profile",
-            choices=sorted(profiles),
+            choices=choices,
             default=min(profiles),
+            use_shortcuts=True,
         )
         if selected is None:
             info("No profile selected. Aborted.")
             return 1
+        assert selected is not None
         profile = selected
         kv("Profile", profile)
 

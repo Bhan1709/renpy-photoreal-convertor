@@ -8,12 +8,17 @@ Modern CLI design inspired by uv, ruff, and Cargo:
 - ``print_panel()`` reserved strictly for final summaries or errors
 - Color palette: Cool Cyan (#38bdf8) headers, Emerald Green (#34d399) success,
   Slate Gray (dim) for paths and tree lines
+- Interactive prompts use a custom questionary style matching the Rich
+  palette, type-to-filter (autocomplete) with keyboard shortcuts, and
+  :class:`questionary.Choice` / :class:`questionary.Separator` for grouped,
+  metadata-rich menus.
 """
 
 from __future__ import annotations
 
 import questionary
 import typer
+from questionary import Choice, Separator  # noqa: F401  # re-exported for consumers
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
@@ -28,7 +33,24 @@ console = Console()
 
 CYAN = "#38bdf8"  # headers / numbers
 GREEN = "#34d399"  # success
-SLATE = "dim"  # paths / tree lines / muted text
+SLATE = "#888888"  # slate gray for questionary style (Rich uses "dim")
+
+
+# --------------------------------------------------------------------------- #
+# Custom questionary style matching the Rich color palette                    #
+# --------------------------------------------------------------------------- #
+
+CUSTOM_STYLE = questionary.Style(
+    [
+        ("qmark", f"fg:{CYAN} bold"),  # cyan question mark
+        ("pointer", f"fg:{CYAN} bold"),  # cyan » pointer
+        ("highlighted", f"fg:{CYAN} bold"),  # cyan highlighted choice
+        ("selected", f"fg:{GREEN} bold"),  # emerald selected answer
+        ("answer", f"fg:{GREEN} bold"),  # emerald answer text
+        ("separator", f"fg:{SLATE}"),  # slate separator lines
+        ("instruction", f"fg:{SLATE} italic"),  # slate instruction text
+    ]
+)
 
 
 # --------------------------------------------------------------------------- #
@@ -136,7 +158,7 @@ def confirm(message: str, default: bool = False) -> bool | None:
     Returns ``None`` if the user cancels (Ctrl+C / EOF).
     """
     try:
-        return questionary.confirm(message, default=default).ask()
+        return questionary.confirm(message, default=default, style=CUSTOM_STYLE).ask()
     except KeyboardInterrupt, EOFError:
         console.print()
         return None
@@ -148,19 +170,67 @@ def prompt_text(message: str, default: str = "") -> str | None:
     Returns ``None`` if the user cancels (Ctrl+C / EOF).
     """
     try:
-        return questionary.text(message, default=default).ask()
+        return questionary.text(message, default=default, style=CUSTOM_STYLE).ask()
     except KeyboardInterrupt, EOFError:
         console.print()
         return None
 
 
-def select(message: str, choices: list[str], default: str | None = None) -> str | None:
+def select(
+    message: str,
+    choices: list[str | Choice],
+    default: str | None = None,
+    use_shortcuts: bool = False,
+) -> str | None:
     """Ask the user to pick one option from a list.
+
+    Uses ``questionary.autocomplete`` for type-to-filter (fuzzy search) by
+    default. Set ``use_shortcuts=True`` for short lists where single-key
+    selection is preferred (uses ``questionary.select`` under the hood).
+
+    Accepts plain strings, :class:`questionary.Choice` (with metadata title
+    and clean value), and :class:`questionary.Separator` for grouping.
+
+    When ``default`` is set, the matching choice is annotated with `` (current)``
+    so the active choice is visually obvious.
 
     Returns ``None`` if the user cancels (Ctrl+C / EOF).
     """
+    # Normalize choices: wrap plain strings in Choice, annotate default with (current).
+    normalized: list[str | Choice] = []
+    for choice in choices:
+        if isinstance(
+            choice, list
+        ):  # questionary.Separator() returns a list of choice dicts
+            normalized.append(choice)  # type: ignore[arg-type]
+            continue
+        if isinstance(choice, Choice):
+            title = choice.title
+            if default is not None and choice.value == default:
+                title = f"{title}  (current)"
+            normalized.append(Choice(title=title, value=choice.value))
+        else:
+            # choice is str
+            title = choice  # type: ignore[assignment]
+            if default is not None and choice == default:
+                title = f"{title}  (current)"
+            normalized.append(title)
+
     try:
-        return questionary.select(message, choices=choices, default=default).ask()
+        if use_shortcuts:
+            return questionary.select(
+                message,
+                choices=normalized,
+                default=default,
+                use_shortcuts=True,
+                style=CUSTOM_STYLE,
+            ).ask()
+        return questionary.autocomplete(  # type: ignore[arg-type]
+            message,
+            choices=normalized,  # type: ignore[arg-type]
+            default=default,  # type: ignore[arg-type]
+            style=CUSTOM_STYLE,
+        ).ask()
     except KeyboardInterrupt, EOFError:
         console.print()
         return None
