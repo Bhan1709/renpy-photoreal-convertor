@@ -18,129 +18,207 @@ The mapping from canonical category to on-disk folder is **game-specific** and i
 captured in a :class:`GameConfig`.  Nothing about a particular game is hard-coded
 in the compose or apply logic.
 
-## Pipeline
+The flow is:
 
-1. **Compose** (`composer.py`): statically scans the game's
-   ``.rpy`` scripts for ``layeredimage`` blocks, ``screen`` blocks, and ``image``
+1. **Compose** (`composer.py`): statically scans the game's indexed ``.rpy``
+   scripts for ``layeredimage`` blocks, ``screen`` blocks, and ``image``
    declarations that reference asset folders.  Resolves literal paths and
    conditions, composites the referenced PNGs into a single image per unique
-   stack, and writes ``composites/reports/manifest.json``.
+   stack, and writes per-category manifests under ``<output_dir>/reports/``.
+2. **Apply** (`applier.py`): reads the manifest, rewrites ``show``/``scene``
+   statements in live scripts to point at generated composite tags (or emits
+   runtime ``ConditionSwitch`` wrappers when state is dynamic), declares every
+   generated composite in ``game/composite_images.rpy``, and writes an adoption
+   report.
 
-2. **Apply** (`applier.py`): reads the manifest, rewrites
-   ``show``/``scene`` statements in live scripts to point at generated composite
-   tags (or emits runtime ``ConditionSwitch`` wrappers when state is dynamic),
-   and declares every generated composite in ``game/composite_images.rpy``.
+All modes are config-driven via ``src/converter/config.json`` (produced by the
+decompile subpackage).  No ``--game`` lookup is needed.
+
+---
 
 ## Module responsibility division
 
 | Module | Responsibility |
 |--------|---------------|
-| ``config.py`` | :class:`GameConfig` dataclass + JSON loader |
-| ``models.py`` | Typed domain models (Layer, CompositeRecord, CompositeManifest, …) |
+| ``config.py`` | :class:`GameConfig` dataclass + :func:`load_config` JSON loader |
+| ``models.py`` | Typed domain models (Layer, CompositeRecord, CompositeManifest, AdoptionReport, …) |
 | ``errors.py`` | Custom exception hierarchy |
 | ``parser.py`` | Ren'Py script parsing (blocks, layeredimage, screen, image declarations) |
 | ``resolver.py`` | Asset path resolution (aliases, archive lookup) |
-| ``conditions.py`` | Static condition evaluation, call-state reconstruction |
+| ``conditions.py`` | Static condition evaluation, call-state reconstruction, interprocedural label states |
 | ``compositor.py`` | Image compositing (CPU via PIL) |
 | ``character_associator.py`` | Character inference for XXX (scene/adult) composites |
 | ``composer.py`` | Compose pass orchestration |
-| ``applier.py`` | Apply pass orchestration (script rewriting, declarations) |
-| ``manifest.py`` | Manifest read/write (full + per-category + index) |
+| ``applier.py`` | Apply pass orchestration (script rewriting, declarations, report) |
+| ``manifest.py`` | Manifest read/write (per-category + index) |
+| ``emitter.py`` | Composite emission and deduplication |
+| ``record.py`` | Composite record construction helpers |
+| ``regexp.py`` | Compiled regular expressions shared across the subpackage |
 | ``cli.py`` | Command-line entry point |
 | ``__main__.py`` | ``python -m converter.compose`` support |
 
+The ``restore`` capability (revert modified ``.rpy`` files from ``archive.rpa``)
+lives in the sibling ``converter/restore`` subpackage, not inside compose.
+
+---
+
 ## Configuration
 
-A :class:`GameConfig` describes one game.  It can be supplied as JSON:
+A :class:`GameConfig` describes one game.  It is normally **not** written by hand:
+it is loaded from the decompile-generated ``src/converter/config.json`` via
+:func:`converter.compose.config.load_config`:
 
 ```json
 {
-  "name": "CampMourningWood",
-  "game_root": "src/renpy_game/CampMourningWood-0.25.0.1/CampMourningWood-0.25.0.1-pc/game",
-  "archive_dir": "src/renpy_game/CampMourningWood-0.25.0.1/CampMourningWood-0.25.0.1-pc/game/archive",
-  "categories": {
-    "bg": "bgs",
-    "char": "chars",
-    "scene": "xxx",
-    "gui": "gui"
+  "schema": 1,
+  "game_folder": "src\\renpy_game\\CampMourningWood-0.25.0.1-pc\\game",
+  "source_game": "CampMourningWood-0.25.0.1-pc",
+  "source_path": "src\\renpy_game\\CampMourningWood-0.25.0.1-pc",
+  "rpy_files": ["cabins.rpy", "camp.rpy", "script.rpy", "xxx.rpy", "..."],
+  "ren_py_files": [],
+  "extracted_archives": [
+    { "archive": "archive.rpa", "extracted_folder": "archive" }
+  ],
+  "image_categories": {
+    "classification_method": "folder_based",
+    "image_categories": {
+      "bg": "archive/bgs",
+      "char": "archive/chars",
+      "gui": "archive/gui",
+      "scene": "archive/xxx"
+    }
   },
-  "non_character_folders": ["fx", "props", "halloween", "war", "dnd", "photos"],
-  "path_aliases": {
-    "chars/hazel/boobs/boobs1.png": "chars/hazel/boobs/boobs2.png"
-  },
-  "game_defaults": { "month": 6, "day": 1 },
-  "output_dir": "composites",
-  "manifest_path": "composites/reports/manifest.json",
-  "declaration_path": "game/composite_images.rpy",
-  "report_path": "composites/reports/adoption_report.json"
+  "exclusion": {
+    "script": {
+      "patterns": ["archive/"],
+      "note": "Patterns matched against rpy_files/ren_py_files entries"
+    },
+    "image": {
+      "patterns": [],
+      "note": "Patterns matched against image source paths"
+    }
+  }
 }
 ```
 
-Paths are relative to the config file's parent directory unless absolute.
+Paths in ``config.json`` are relative to the project root (the directory
+containing ``src/``).  ``game_folder`` is resolved against the project root, and
+``archive_dir`` is always ``game_folder / archive``.  Output locations are not
+stored in the JSON; they default to ``<game_root>/composites/...`` via
+:meth:`GameConfig.resolved_paths`.
 
-### Fields
+### :class:`GameConfig` fields
 
-- ``name`` — human-readable game identifier.
+- ``name`` — human-readable game identifier (from ``source_game`` in config.json).
 - ``game_root`` — the Ren'Py ``\game`` folder (contains the ``.rpy`` scripts).
-- ``archive_dir`` — extracted asset archive (defaults to ``game_root / archive``).
-- ``categories`` — canonical category -> asset folder name.  Must cover
-  ``bg``, ``char``, ``scene``, ``gui``.
+- ``archive_dir`` — extracted asset archive (always ``game_root / archive``).
+- ``categories`` — canonical category -> asset folder name (``bg``, ``char``,
+  ``scene``, ``gui``).  Defaults: ``{"bg": "bgs", "char": "chars",
+  "scene": "xxx", "gui": "gui"}``.
 - ``non_character_folders`` — subfolders under the char dir that aren't characters.
 - ``path_aliases`` — asset-path redirects applied when resolving sources.
-- ``game_defaults`` — default Ren'Py variable values for static condition eval.
+- ``game_defaults`` — default Ren'Py variable values for static condition eval
+  (e.g. ``{"month": 6, "day": 1}``).
+- ``rpy_files`` / ``ren_py_files`` — scripts to scan during compose (from config.json).
+- ``script_exclusion_patterns`` / ``image_exclusion_patterns`` — compiled regex
+  filters from the ``exclusion`` block of config.json.
 - ``output_dir`` — where composite PNGs are written (default:
-  ``<game_root_parent>/composites``).
-- ``manifest_path`` / ``declaration_path`` / ``report_path`` — output locations.
+  ``<game_root>/composites``).
+- ``manifest_path`` / ``declaration_path`` / ``report_path`` — output locations
+  (default to ``<output_dir>/reports/`` and ``<game_root>/composite_images.rpy``).
+
+Use :meth:`GameConfig.resolved_paths` to get all resolved absolute output paths.
+
+---
 
 ## Usage
 
-### Via CLI (one command, compose + apply)
+### Via CLI
 
 ```bash
-# Defaults to the sample game under src/renpy_game
-python -m converter.compose --game CampMourningWood-0.25.0.1
+# Defaults to src/converter/config.json (produced by decompile)
+python -m converter.compose --config src/converter/config.json
 
-# Explicit game root
-python -m converter.compose \
-  --game-root "src/renpy_game/MyGame/MyGame-pc/game" \
-  --output-dir "composites"
+# Explicit output directory
+python -m converter.compose --config src/converter/config.json --output-dir "composites"
 
-# From a JSON config file
-python -m converter.compose --config mygame/config.json
+# Custom manifest path
+python -m converter.compose --config src/converter/config.json --manifest "composites/reports/manifest.json"
 
 # Dry run (no PNGs or manifest written, apply skipped)
-python -m converter.compose --game CampMourningWood-0.25.0.1 --dry-run
+python -m converter.compose --config src/converter/config.json --dry-run
+
+# Remove prior generated PNGs and manifest before rendering
+python -m converter.compose --config src/converter/config.json --clean-output
 
 # Compose pass only (skip script adoption)
-python -m converter.compose --game CampMourningWood-0.25.0.1 --compose-only
+python -m converter.compose --config src/converter/config.json --compose-only
 
 # Apply pass only (requires an existing manifest)
-python -m converter.compose --game CampMourningWood-0.25.0.1 --apply-only
+python -m converter.compose --config src/converter/config.json --apply-only
+
+# Restore .rpy files touched by the apply pass (per manifest)
+python -m converter.compose --config src/converter/config.json --restore-compose
+```
+
+All CLI modes are also available through :mod:`converter.pipeline` (which adds
+the decompile stage and exclusion prompts):
+
+```bash
+uv run python -m converter.pipeline                 # decompile -> exclusions -> compose (apply deferred)
+uv run python -m converter.pipeline --compose-only   # compose only (skip decompile)
+uv run python -m converter.pipeline --apply-only     # apply only (needs manifest)
+uv run python -m converter.pipeline --dry-run        # compose without writing
+uv run python -m converter.pipeline --restore-compose # undo compose/apply (.rpy from archive)
+```
+
+Or via mise tasks:
+
+```bash
+mise run pipeline         # default flow: decompile + exclusions + compose
+mise run compose          # compose only (uses src/converter/config.json)
+mise run compose-clean    # compose only with --clean-output
+mise run apply            # apply only (requires manifest)
+mise run restore-compose  # undo compose/apply (.rpy from archive)
 ```
 
 ### Via Python import
 
 ```python
-from pathlib import Path
-from converter.compose.config import default_config
+from converter.compose.config import GameConfig, load_config
 from converter.compose.composer import Composer
 from converter.compose.manifest import ManifestWriter
 from converter.compose.applier import Applier
 
-config = default_config(
-    "MyGame",
-    Path("src/renpy_game/MyGame/MyGame-pc/game"),
-)
+# 1. Load the decompile-generated config
+config = load_config("src/converter/config.json")
 
-# 1. Compose → manifest + PNGs
+# 2. Compose → manifest + PNGs
 composer = Composer(config)
-manifest = composer.compose(dry_run=False)
-ManifestWriter(config).write(manifest)
+manifest = composer.compose(dry_run=False, clean_output=False)
+ManifestWriter(config).write(manifest, dry_run=False)
 
-# 2. Apply → adopt composites into live scripts
+# 3. Apply → adopt composites into live scripts
 applier = Applier(config)
 manifest, report = applier.apply()
 ```
+
+### Via Python import (restore)
+
+```python
+from converter.restore import restore_rpy_files, restore_from_manifest
+
+# Restore every .rpy stored in archive.rpa back into game_root
+results = restore_rpy_files(config.game_root)
+
+# Restore only the scripts the apply pass touched (per manifest)
+results = restore_from_manifest(
+    config.game_root,
+    config.resolved_paths()["manifest_path"].parent / "manifest_index.json",
+)
+```
+
+---
 
 ## Files
 
@@ -149,7 +227,7 @@ compose/
 ├── __init__.py      # Package exports (public API)
 ├── __main__.py      # python -m converter.compose support
 ├── cli.py           # Command-line entry point
-├── config.py        # GameConfig dataclass + JSON loader
+├── config.py        # GameConfig dataclass + load_config JSON loader
 ├── models.py        # Typed domain models
 ├── errors.py        # Custom exception hierarchy
 ├── parser.py        # Ren'Py script parsing
@@ -159,8 +237,10 @@ compose/
 ├── character_associator.py  # Character inference for XXX composites
 ├── composer.py      # Compose pass orchestration
 ├── applier.py       # Apply pass orchestration
-├── manifest.py      # Manifest read/write
-├── restore.py       # Restore .rpy files from archive.rpa
+├── manifest.py      # Manifest read/write (per-category + index)
+├── emitter.py       # Composite emission and deduplication
+├── record.py        # Composite record construction helpers
+├── regexp.py        # Compiled regular expressions
 └── README.md        # This file
 ```
 
@@ -197,16 +277,19 @@ Compared with the original game-specific scripts, all of the following are now
 driven by :class:`GameConfig` instead of hard-coded constants:
 
 - Asset folder names per category (``chars``/``xxx``/``bgs``/``gui``).
-- The ``PATH_RE`` regex that recognizes asset paths.
+- The path regex that recognizes asset paths.
 - The character asset directory and non-character subfolders.
 - Per-game path aliases (renamed sprite sheets).
 - The ``characters.rpy`` location for ``*ResetDefault`` state tracking.
 - Output, manifest, declaration, and report paths.
 - Game-specific defaults (e.g. ``month``, ``day``).
+- Script and image exclusion patterns (persisted in ``config.json``).
 
 Supporting multiple folders per category (rather than one-to-one) is a natural
 extension: ``categories`` can map a category to a list of folders, and
 ``path_regex()`` / ``category_for_folder()`` would be updated accordingly.
+
+---
 
 ## Design principles
 
@@ -224,44 +307,17 @@ extension: ``categories`` can map a category to a list of folders, and
 - **Idempotent apply**: the apply pass refuses to touch a line whose text no
   longer matches the recorded statement, so a second run is a no-op.
 
-## Restore (revert modified .rpy files)
+---
 
-If the apply pass makes unwanted changes to live scripts, you can restore
-``.rpy`` files from the game's ``archive.rpa`` using the restore module:
+## 🔧 Troubleshooting
 
-### Via CLI
+| Issue | Solution |
+|-------|----------|
+| `config.json not found` | Run decompile first: `mise run decompile` or `python src/converter/decompile/decompile.py` |
+| `No archive.rpa found` | Ensure the game's `.rpa` archives have been extracted by decompile |
+| `No game folders found` | Place games under `src\renpy_game\<game>\<game>-pc\game\` |
+| `ModuleNotFoundError: rpatool` | Run `uv add git+https://github.com/regiellis/rpa-toolkit.git@435f202e7cb9aeeaf6c006cf928d9661f8830e6e` |
 
-```bash
-# Dry run: report what would be restored without writing
-python -m converter.compose --game MyGame --restore-dry-run
+---
 
-# Restore all .rpy files from archive.rpa
-python -m converter.compose --game MyGame --restore
-
-# Restore only files touched by the apply pass (per manifest)
-python -m converter.compose --game MyGame --restore-from-manifest
-
-# Restore from a specific archive path
-python -m converter.compose --game MyGame --restore --archive-path /abs/path/archive.rpa
-```
-
-### Via Python import
-
-```python
-from converter.compose.restore import restore_rpy_files, restore_from_manifest
-
-# Restore all .rpy files from archive.rpa
-results = restore_rpy_files(config)
-for rel, status in results.items():
-    print(f"{rel}: {status}")
-
-# Restore only files touched by the apply pass
-results = restore_from_manifest(config)
-
-# Dry run (report without writing)
-results = restore_rpy_files(config, dry_run=True)
-```
-
-The restore reads every ``.rpy`` file stored in ``archive.rpa`` and writes it
-back to ``game_root``, overwriting any modifications.  This uses the same
-``rpatool`` library that the decompile subpackage uses for extraction.
+*Generated for the renpy-photoreal-vn-converter project.*

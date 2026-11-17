@@ -7,6 +7,9 @@ This project is intended to be a toolkit to convert Ren'Py based games and visua
 - **Decompile** Ren'Py `.rpyc`/`.rpymc` scripts to readable `.rpy` source
 - **Extract** Ren'Py `.rpa`/`.rpi` archive files into directory structures
 - **Cache** game folder relative paths for use by other converter subpackages
+- **Compose** photorealistic composites from game assets and adopt them into live scripts
+- **Apply** composite tags into Ren'Py scripts (with runtime `ConditionSwitch` fallbacks)
+- **Restore** modified `.rpy` files from archives
 - **Integrated** with `mise + uv` project management
 - **Extracted files** preserved alongside `.rpa` files for easier path mapping
 
@@ -47,7 +50,7 @@ This project is intended to be a toolkit to convert Ren'Py based games and visua
      ```bash
      ollama pull qwen3-vl-32k
      # or build from a Modelfile:
-     ollama create qwen3-vl-32k -f src/renpy_photoreal_vn_converter/agent/Modelfiles/qwen3vl32
+     ollama create qwen3-vl-32k -f src/agent/Modelfiles/qwen3vl32
      ```
 
    - Verify the model is available:
@@ -65,13 +68,20 @@ This project is intended to be a toolkit to convert Ren'Py based games and visua
 5. **Run the agent** with a profile of your choice:
 
    ```bash
-   python -m renpy_photoreal_vn_converter.agent <profile>
+   python -m agent <profile>
    ```
 
    Example:
 
    ```bash
-   python -m renpy_photoreal_vn_converter.agent qwen-3-vl-32k
+   python -m agent qwen-3-vl-32k
+   ```
+
+   Or via mise:
+
+   ```bash
+   mise run agent qwen-3-vl-32k
+   mise run nvidia
    ```
 
    This will:
@@ -82,15 +92,41 @@ This project is intended to be a toolkit to convert Ren'Py based games and visua
 6. **Decompile and extract Ren'Py games**:
 
    ```bash
-   python src\converter\decompile\decompile.py
+   python src/converter/decompile/decompile.py
    ```
 
    Or via mise:
 
-   ```toml
-   # .mise.toml
-   [scripts]
-   decompile-games = "python src\\converter\\decompile\\decompile.py"
+   ```bash
+   mise run decompile
+   ```
+
+   This produces `src/converter/config.json` (the GameConfig used by compose/apply).
+
+7. **Compose photoreal composites** (after decompile):
+
+   ```bash
+   # Full pipeline: decompile → prompt for exclusions → compose (apply deferred)
+   python -m converter.pipeline
+
+   # Compose only (skip decompile; uses src/converter/config.json)
+   python -m converter.pipeline --compose-only
+
+   # Apply only (requires an existing manifest)
+   python -m converter.pipeline --apply-only
+
+   # Undo compose/apply (restore .rpy files from archive.rpa)
+   python -m converter.pipeline --restore-compose
+   ```
+
+   Or via mise:
+
+   ```bash
+   mise run pipeline
+   mise run compose
+   mise run compose-clean
+   mise run apply
+   mise run restore-compose
    ```
 
 ## 📁 Project Structure
@@ -103,49 +139,96 @@ This project is intended to be a toolkit to convert Ren'Py based games and visua
 ├── uv.lock                  # lock file for uv
 ├── .gitignore
 ├── .python-version
-├── mise.toml                # tool version management
+├── mise.toml                # tool version management + task definitions
 ├── .agents/
 │   └── skills/              # git‑commit, context‑map, gh‑attach skill definitions
 ├── src/
-│   └── renpy_photoreal_vn_converter/
-│       ├── agent/
-│       │   ├── __init__.py
-│       │   ├── __main__.py
-│       │   ├── cli.py          # profile launcher, proxy, Ollama/NVIDIA integration
-│       │   ├── config.json     # bundled model profiles
-│       │   ├── config.py       # profile loading/validation
-│       │   ├── constants.py    # proxy constants (host, port, etc.)
-│       │   ├── monitor.py      # context‑window monitor & backup
-│       │   ├── Modelfiles/     # Ollama Modelfiles (qwen3vl128, qwen3vl64, …)
-│       │   ├── nvidia_proxy.py # rate‑limit reverse proxy for NVIDIA APIs
-│       │   └── ...
-│       └── py.typed
-│       └── converter/
-│           ├── __init__.py          # Entry point (main())
-│           └── decompile/           # Ren'Py decompile/extract subpackage
-│               ├── __init__.py      # Package init
-│               ├── decompile.py     # Core logic (decompile .rpyc, extract .rpa)
-│               └── README.md        # This subpackage documentation
-│   └── renpy_game/              # User places Ren'Py games here
-│       ├── CampMourningWood-0.25.0.1/     # Example game 1
+│   ├── agent/               # OpenCode orchestration (top-level `agent` module)
+│   │   ├── __init__.py
+│   │   ├── __main__.py      # python -m agent <profile>
+│   │   ├── cli.py           # profile launcher, proxy, Ollama/NVIDIA integration
+│   │   ├── config.json      # bundled model profiles
+│   │   ├── config.py        # profile loading/validation
+│   │   ├── constants.py     # proxy constants (host, port, etc.)
+│   │   ├── monitor.py       # context‑window monitor & backup
+│   │   ├── Modelfiles/      # Ollama Modelfiles (qwen3vl128, qwen3vl64, …)
+│   │   ├── nvidia_proxy.py  # rate‑limit reverse proxy for NVIDIA APIs
+│   │   └── README.md        # agent subpackage documentation
+│   ├── converter/           # Ren'Py conversion toolkit (top-level `converter` module)
+│   │   ├── __init__.py      # Entry point (main())
+│   │   ├── pipeline.py      # End-to-end decompile → compose → apply pipeline
+│   │   ├── config.json      # Decompile-generated GameConfig (src/converter/config.json)
+│   │   ├── py.typed
+│   │   ├── utility/         # Shared utilities (tqdm)
+│   │   ├── decompile/       # Ren'Py decompile/extract subpackage
+│   │   │   ├── __init__.py
+│   │   │   ├── decompile.py # Core logic + CLI entry point
+│   │   │   ├── config.py    # write_config, load_config
+│   │   │   ├── constants.py
+│   │   │   ├── discovery.py # find_game_folder, find_game_folders
+│   │   │   ├── exclusions.py
+│   │   │   ├── extract.py   # extract_rpa_file
+│   │   │   ├── flow.py      # process_game, process_all_games
+│   │   │   ├── restore.py   # restore_decompile
+│   │   │   ├── scan.py
+│   │   │   ├── staging.py
+│   │   │   └── README.md    # This subpackage documentation
+│   │   ├── compose/         # Composite compose + apply subpackage
+│   │   │   ├── __init__.py
+│   │   │   ├── cli.py       # Command-line entry point
+│   │   │   ├── config.py    # GameConfig + load_config
+│   │   │   ├── composer.py  # Compose pass orchestration
+│   │   │   ├── applier.py   # Apply pass orchestration
+│   │   │   ├── manifest.py  # Per-category manifest read/write
+│   │   │   ├── models.py    # Typed domain models
+│   │   │   ├── parser.py    # Ren'Py script parsing
+│   │   │   ├── resolver.py  # Asset path resolution
+│   │   │   ├── conditions.py
+│   │   │   ├── compositor.py
+│   │   │   ├── character_associator.py
+│   │   │   ├── emitter.py
+│   │   │   ├── record.py
+│   │   │   ├── regexp.py
+│   │   │   └── README.md    # This subpackage documentation
+│   │   └── restore/         # Restore .rpy files from archive.rpa
+│   │       ├── __init__.py
+│   │       ├── errors.py
+│   │       └── restore.py   # restore_rpy_files, restore_from_manifest
+│   └── renpy_game/          # User places Ren'Py games here (gitignored except .gitkeep)
+│       ├── CampMourningWood-0.25.0.1-pc/
 │       │   └── game/
-│       │       ├── *.rpyc                # Compiled scripts
-│       │   └── CampMourningWood-0.25.0.1-pc/  # Game build directory
-│       └── sample_visual_novel/           # Example game 2
+│       │       ├── *.rpyc   # Compiled scripts (decompiled to *.rpy)
+│       │       ├── archive.rpa # Extracted alongside
+│       │       └── ...
+│       └── sample_visual_novel/
 │           └── game/
-│               └── dialogue.rpy           # Sample decompiled file
-├── uv.lock
+│               └── dialogue.rpy   # Sample decompiled file
 ```
 
 ## 🔧 Pipeline Overview
 
-1. **Decompile** `.rpyc` files and extract `.rpa` archives using the `src\converter\decompile\` subpackage
-2. **Create composites** from different components (backgrounds, GUI, characters, scenes)
-3. **Feed composites** to a ComfyUI workflow driven by a local API‑based driver for conversion
+1. **Decompile** `.rpyc` files and extract `.rpa` archives using the `src/converter/decompile/` subpackage (writes `src/converter/config.json`)
+2. **Create composites** from different components (backgrounds, GUI, characters, scenes) using the `src/converter/compose/` subpackage
+3. **Adopt composites** into live Ren'Py scripts (rewrite `show`/`scene` statements, emit `ConditionSwitch` wrappers, write `composite_images.rpy`)
+4. **(Optional) Restore** modified `.rpy` files from the archive using the `src/converter/restore/` subpackage
+
+All stages are config-driven via `src/converter/config.json`; none require a `--game` argument.
 
 ## 📚 Recent Additions
 
-### Decompile Subpackage (`src\converter\decompile\`)
+### Compose Subpackage (`src/converter/compose/`)
+
+New generalized subpackage for building photoreal composites from Ren'Py game assets:
+
+- **`GameConfig` / `load_config`** — Game-specific config loaded from decompile-generated `src/converter/config.json`
+- **`Composer.compose()`** — Scans `.rpy` scripts for layeredimage/screen/image declarations, composites referenced PNGs, writes per-category manifests
+- **`Applier.apply()`** — Rewrites `show`/`scene` statements to composite tags, emits runtime `ConditionSwitch` wrappers, declares composites in `composite_images.rpy`
+- **`ManifestWriter`** — Writes per-category manifests (`manifest_bg.json`, …) + `manifest_index.json`
+- **`restore_rpy_files()` / `restore_from_manifest()`** — Revert modified `.rpy` files from `archive.rpa` (in `converter/restore`)
+
+See `src/converter/compose/README.md` for full documentation.
+
+### Decompile Subpackage (`src/converter/decompile/`)
 
 New subpackage for handling Ren'Py script decompilation and RPA archive extraction:
 
@@ -157,22 +240,24 @@ New subpackage for handling Ren'Py script decompilation and RPA archive extracti
 
 Example extraction path structure:
 ```
-.src\renpy_game\CampMourningWood-0.25.0.1\
+.src\renpy_game\CampMourningWood-0.25.0.1-pc\
   └─ CampMourningWood-0.25.0.1-pc\game\
       ├─ archive.rpa          # Original file preserved
       ├─ archive/             # Extracted directory (named after .rpa stem)
-      │  ├─ file1.dat
-      │  └─ ...
+      │  ├─ bgs/
+      │  ├─ chars/
+      │  ├─ gui/
+      │  └─ xxx/
       ├─ audio/
-      ├─ chars/
-      └─ *.rpy                # Decompiled .rpy files
+      ├─ *.rpy                # Decompiled .rpy files
+      └─ ...
 ```
 
 ### Package Management
 
 - **rpa-toolkit** installed via: `uv add git+https://github.com/regiellis/rpa-toolkit.git@435f202e7cb9aeeaf6c006cf928d9661f8830e6e`
 - Added to `pyproject.toml` dependencies
-- Integrated with `mise` through `.mise.toml` scripts section
+- Integrated with `mise` through `mise.toml` scripts section
 
 ## 🛠️ Usage Patterns
 
@@ -208,9 +293,28 @@ if cached:
     # Process files in game_dir
 ```
 
+### Compose + Apply (via Python import)
+
+```python
+from converter.compose.config import load_config
+from converter.compose.composer import Composer
+from converter.compose.manifest import ManifestWriter
+from converter.compose.applier import Applier
+
+config = load_config("src/converter/config.json")
+
+# 1. Compose → manifest + PNGs
+manifest = Composer(config).compose(dry_run=False)
+ManifestWriter(config).write(manifest, dry_run=False)
+
+# 2. Apply → adopt composites into live scripts
+manifest, report = Applier(config).apply()
+```
+
 ## 🚧 Roadmap
 
 - [x] **Add decompilation utilities** for `.rpyc`/`.rpa` extraction ✅
+- [x] **Add compose/apply subpackage** for photoreal composites ✅
 - [ ] Integrate ComfyUI local API driver
 - [ ] Provide example workflow JSON for ComfyUI
 - [ ] Expand Modelfiles for additional context sizes and models
