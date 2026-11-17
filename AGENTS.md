@@ -89,3 +89,13 @@ Do **not** hardcode Python versions or paths; respect `.python-version` and mise
 - Check `src/converter/compose/README.md` for compose/apply/restore documentation.
 - Use the skills in `.agents/skills/` when applicable (e.g. `git-commit` for commits, `context-map` before large changes).
 - If you need to change package metadata, edit `pyproject.toml` and regenerate `uv.lock` with `uv lock`.
+
+## Done means
+
+- `uv run ruff` passes with zero errors, and `uv run mypy src/` passes with zero issues — the required checks before any pull request (`CONTRIBUTION.md`).
+
+## Never merges without a human
+
+A person has to have **read this diff** before it lands. Telling an agent "merge it when you're done" is approving a goal, not this change — so it does not count for anything on this list. Everywhere else it counts fine, which is the point of having a list.
+
+- Any change to `main` (direct pushes are blocked by GitHub branch protection; requires a pull request with at least one approving review)
