@@ -44,22 +44,24 @@ def _resolve_speaker_name(
 ) -> str:
     """Resolve a speaker to its canonical character folder name for display.
 
-    Special speakers (e.g. ``narrator``) are kept as-is.  Player aliases
-    (``you``, ``y``) map to ``player_folder`` when configured.  Other speakers
-    are resolved via the ``Character()`` alias map (e.g. ``"h"`` -> ``"hazel"``).
+    Player aliases (``you``, ``y``) map to ``player_folder`` when configured
+    (takes priority since they are also in special_speakers).  Other special
+    speakers (e.g. ``narrator``) are kept as-is.  Remaining speakers are
+    resolved via the ``Character()`` alias map (e.g. ``"h"`` -> ``"hazel"``).
     Speakers that cannot be resolved are returned unchanged.
     """
     special_speakers = config.special_speakers
     player_folder = config.player_folder
     player_aliases = set(config.player_aliases)
 
-    # 1. Special speaker — keep as-is.
-    if speaker.lower() in {s.lower() for s in special_speakers}:
-        return speaker
-
-    # 2. Player alias maps to player_folder.
+    # 1. Player alias maps to player_folder (takes priority over special
+    #    speakers since "you"/"y" are both in special_speakers).
     if speaker.lower() in {a.lower() for a in player_aliases} and player_folder:
         return player_folder
+
+    # 2. Special speaker — keep as-is.
+    if speaker.lower() in {s.lower() for s in special_speakers}:
+        return speaker
 
     # 3. Resolve via Character() alias map.
     matched = associator.resolve_speaker(speaker)

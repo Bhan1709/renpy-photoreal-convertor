@@ -21,13 +21,107 @@ and merges all category manifests in memory.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import cast
 
+from .character_associator import CharacterAssociator
 from .config import GameConfig
 from .errors import ManifestError
 from .models import CompositeManifest, CompositeRecord
 
 KNOWN_FAMILIES = ("bg", "char", "scene", "gui", "other")
+
+# Character alias file — source of truth for character names and their speaker
+# aliases.  Seeded during compose from chars/ folders and Character()
+# declarations; used by the interactive review task.
+CHARACTER_ALIASES_FILE = "character_aliases.json"
+
+
+def _load_character_aliases(reports_dir: Path) -> dict[str, dict]:
+    """Load character -> {folder, aliases} from reports/character_aliases.json."""
+    alias_path = reports_dir / CHARACTER_ALIASES_FILE
+    if alias_path.is_file():
+        try:
+            return json.loads(alias_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return {}
+    return {}
+
+
+def _save_character_aliases(reports_dir: Path, char_aliases: dict[str, dict]) -> None:
+    """Persist character -> {folder, aliases} map."""
+    alias_path = reports_dir / CHARACTER_ALIASES_FILE
+    alias_path.write_text(json.dumps(char_aliases, indent=2), encoding="utf-8")
+
+
+def _seed_character_aliases(config: GameConfig, reports_dir: Path) -> dict[str, dict]:
+    """Build character_aliases.json from chars/ folders and Character()
+    declarations.
+
+    If the file already exists, it is loaded and new aliases from
+    Character() declarations are merged in (manual edits are preserved).
+    If the file does not exist, it is created from scratch.
+
+    The ``folder`` field stores a forward-slash path relative to
+    ``game_folder`` (e.g. ``archive/chars/hazel``) so downstream processes
+    can locate assets without reconstructing the path from categories.
+    """
+    alias_path = reports_dir / CHARACTER_ALIASES_FILE
+
+    associator = CharacterAssociator(config)
+    alias_map = associator._aliases()  # normalized_speaker -> set of char folders
+    folders = set(associator.known_char_folders())
+
+    # Build relative path from game_folder to the char asset directory.
+    char_category_folder = config.folder_for("char")
+    rel_char_dir = Path("archive") / char_category_folder
+
+    # Start with existing data (if any) so manual edits are preserved.
+    if alias_path.is_file():
+        char_aliases = _load_character_aliases(reports_dir)
+    else:
+        char_aliases = {}
+
+    # Ensure every folder has an entry.
+    for folder in sorted(folders):
+        if folder not in char_aliases:
+            char_aliases[folder] = {
+                "folder": (rel_char_dir / folder).as_posix(),
+                "aliases": [],
+            }
+        else:
+            info = char_aliases[folder]
+            if "folder" not in info:
+                info["folder"] = (rel_char_dir / folder).as_posix()
+            if "aliases" not in info:
+                info["aliases"] = []
+
+    # Ensure narrator entry.
+    if "narrator" not in char_aliases:
+        char_aliases["narrator"] = {"folder": "narrator", "aliases": []}
+    # "context" is a common narrator-style speaker alias in Ren'Py dialogs.
+    narrator_aliases = char_aliases["narrator"].setdefault("aliases", [])
+    if "context" not in {a.lower() for a in narrator_aliases}:
+        narrator_aliases.append("context")
+
+    # Merge aliases from Character() declarations (append, don't overwrite).
+    # Skip self-references (folder maps to itself in the alias map).
+    for speaker_key, char_folders in alias_map.items():
+        for char_folder in char_folders:
+            if char_folder not in char_aliases:
+                continue
+            if speaker_key.lower() == char_folder.lower():
+                continue
+            existing = char_aliases[char_folder].setdefault("aliases", [])
+            if speaker_key not in {a.lower() for a in existing}:
+                existing.append(speaker_key)
+
+    # Sort aliases for readability.
+    for info in char_aliases.values():
+        info["aliases"] = sorted(info["aliases"], key=str.lower)
+
+    _save_character_aliases(reports_dir, char_aliases)
+    return char_aliases
 
 
 class ManifestWriter:
@@ -103,6 +197,10 @@ class ManifestWriter:
             # Build pending review: scenes without character association, plus
             # all unmapped speakers found across scene composites (speakers in
             # dialog that could not be mapped to any char folder).
+            # Seed character_aliases.json (source of truth for character names
+            # and speaker aliases) before generating the pending review.
+            _seed_character_aliases(self.config, reports_dir)
+
             scene_without_chars = [
                 {
                     "composite_path": r.composite_path,

@@ -17,13 +17,17 @@ import shutil
 import sys
 from pathlib import Path
 
-from .character_associator import CharacterAssociator
 from .config import GameConfig, load_config
-from .manifest import KNOWN_FAMILIES, ManifestWriter
+from .manifest import (
+    CHARACTER_ALIASES_FILE,
+    KNOWN_FAMILIES,
+    ManifestWriter,
+    _load_character_aliases,
+    _save_character_aliases,
+)
 
 REJECTED_SUBFOLDER = "rejected"
 REJECTED_PNGS_SUBFOLDER = "pngs"
-SPEAKER_ALIASES_FILE = "speaker_aliases.json"
 
 
 # --------------------------------------------------------------------------- #
@@ -60,51 +64,50 @@ def _clickable(path: Path | str, base: Path | None = None) -> str:
 # Config / data loading
 # --------------------------------------------------------------------------- #
 
-def _load_known_char_folders(config: GameConfig) -> set[str]:
-    """Return the set of known character folder names under ``chars/``.
+def _load_known_char_folders(config: GameConfig, reports_dir: Path) -> set[str]:
+    """Return the set of known character names from character_aliases.json.
 
+    The file is seeded during compose (from chars/ folders and Character()
+    declarations) and is the source of truth for character names thereafter.
     Includes ``narrator`` so it can be selected as a valid character name
     during interactive review even though it has no asset folder.
     """
-    associator = CharacterAssociator(config)
-    folders = set(associator.known_char_folders())
-    folders.add("narrator")
-    return folders
-
-
-def _load_speaker_aliases(reports_dir: Path) -> dict[str, str]:
-    """Load speaker -> character-folder alias map from reports/speaker_aliases.json."""
-    alias_path = reports_dir / SPEAKER_ALIASES_FILE
-    if alias_path.is_file():
-        try:
-            return json.loads(alias_path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            return {}
-    return {}
-
-
-def _save_speaker_aliases(reports_dir: Path, aliases: dict[str, str]) -> None:
-    """Persist speaker -> character-folder alias map."""
-    alias_path = reports_dir / SPEAKER_ALIASES_FILE
-    alias_path.write_text(json.dumps(aliases, indent=2), encoding="utf-8")
+    return set(_load_character_aliases(reports_dir).keys())
 
 
 def _resolve_speaker(
-    speaker: str, known_chars: set[str], aliases: dict[str, str],
+    speaker: str, char_aliases: dict[str, dict], config: GameConfig,
 ) -> str | None:
-    """Resolve a speaker name to a canonical character folder name.
+    """Resolve a speaker name to a canonical character name.
 
-    Checks direct folder-name match (case-insensitive) then the alias map.
+    Checks:
+      1. Direct character name match (case-insensitive).
+      2. Player alias (``you``, ``y``) -> ``player_folder`` when configured.
+      3. Alias match against character_aliases.json.
+
     Returns None when the speaker cannot be resolved.
     """
     speaker_lower = speaker.strip().lower()
     if not speaker_lower:
         return None
-    for folder in known_chars:
-        if folder.lower() == speaker_lower:
-            return folder
-    if speaker_lower in aliases:
-        return aliases[speaker_lower]
+
+    # 1. Direct character name match.
+    for char_name in char_aliases:
+        if char_name.lower() == speaker_lower:
+            return char_name
+
+    # 2. Player alias maps to player_folder.
+    player_folder = config.player_folder
+    player_aliases = set(config.player_aliases)
+    if player_folder and speaker_lower in {a.lower() for a in player_aliases}:
+        return player_folder
+
+    # 3. Alias match against character_aliases.json.
+    for char_name, info in char_aliases.items():
+        aliases = {a.lower() for a in info.get("aliases", [])}
+        if speaker_lower in aliases:
+            return char_name
+
     return None
 
 
@@ -340,17 +343,17 @@ def _process_unmapped_speakers(
     config: GameConfig,
     pending: dict,
     rejected_dir: Path,
-    aliases: dict[str, str],
+    char_aliases: dict[str, dict],
     all_data: dict[str, dict],
     reports_dir: Path,
-) -> dict[str, str]:
+) -> dict[str, dict]:
     """Interactively review each unmapped speaker one at a time."""
     unmapped = pending.get("unmapped_speakers", [])
     if not unmapped:
         print("No unmapped speakers to review.")
-        return aliases
+        return char_aliases
 
-    known_chars = _load_known_char_folders(config)
+    known_chars = set(char_aliases.keys())
     char_list = ", ".join(sorted(known_chars))
 
     for entry in list(unmapped):
@@ -381,11 +384,15 @@ def _process_unmapped_speakers(
                 print(f"  Kept '{speaker}' as unmapped (no changes).")
         else:
             # Validate entered character name.
-            resolved = _resolve_speaker(char_name, known_chars, aliases)
+            resolved = _resolve_speaker(char_name, char_aliases, config)
             if resolved:
                 # Valid character: add speaker as alias (append, do not overwrite).
-                aliases[speaker.strip().lower()] = resolved
-                _save_speaker_aliases(reports_dir, aliases)
+                aliases_list = char_aliases[resolved].setdefault("aliases", [])
+                speaker_key = speaker.strip().lower()
+                if speaker_key not in {a.lower() for a in aliases_list}:
+                    aliases_list.append(speaker_key)
+                    char_aliases[resolved]["aliases"] = sorted(aliases_list)
+                _save_character_aliases(reports_dir, char_aliases)
                 print(f"  Mapped '{speaker}' -> '{resolved}' (alias added).")
             else:
                 # Invalid character name -> ask to remove dialogs.
@@ -398,10 +405,7 @@ def _process_unmapped_speakers(
                         config, speaker, composite_paths, reports_dir, rejected_dir, all_data,
                     )
                 else:
-                    # Keep as-is with entered alias (update dialogs with entered name).
-                    aliases[speaker.strip().lower()] = char_name
-                    _save_speaker_aliases(reports_dir, aliases)
-                    # Update dialog context in manifests to use the entered name.
+                    # Keep as-is with entered name (update dialogs only, no alias mapping).
                     target_set = set(composite_paths)
                     for cat_data in all_data.values():
                         new_list: list[dict] = []
@@ -415,7 +419,7 @@ def _process_unmapped_speakers(
                         cat_data["composites"] = new_list
                         cat_data["summary"] = {"composites": len(new_list)}
                     _save_all_category_manifests(reports_dir, all_data)
-                    print(f"  Kept '{speaker}' -> '{char_name}' (unverified alias).")
+                    print(f"  Kept '{speaker}' -> '{char_name}' (unverified alias, dialogs updated).")
 
         # Remove this speaker from the pending review so it is not re-reviewed.
         pending["unmapped_speakers"] = [
@@ -424,7 +428,7 @@ def _process_unmapped_speakers(
         ]
         _save_pending_review(reports_dir, pending)
 
-    return aliases
+    return char_aliases
 
 
 # --------------------------------------------------------------------------- #
@@ -444,7 +448,8 @@ def _process_scenes_missing_chars(
         print("No scenes missing character association.")
         return
 
-    known_chars = _load_known_char_folders(config)
+    char_aliases = _load_character_aliases(reports_dir)
+    known_chars = set(char_aliases.keys())
     char_list = ", ".join(sorted(known_chars))
 
     for entry in list(scenes):
@@ -481,7 +486,7 @@ def _process_scenes_missing_chars(
             valid_resolved: list[str] = []
             invalid_names: list[str] = []
             for n in names:
-                resolved = _resolve_speaker(n, known_chars, {})
+                resolved = _resolve_speaker(n, char_aliases, config)
                 if resolved:
                     valid_resolved.append(resolved)
                 else:
@@ -545,7 +550,7 @@ def review(config_path: str = "src/converter/config.json") -> int:
     reports_dir = config.resolved_paths()["manifest_path"].parent
     rejected_dir = config.game_root / "composites" / REJECTED_SUBFOLDER
 
-    aliases = _load_speaker_aliases(reports_dir)
+    char_aliases = _load_character_aliases(reports_dir)
     all_data = _load_all_category_manifests(reports_dir)
 
     print("=== Interactive Scene Review ===")
@@ -554,8 +559,8 @@ def review(config_path: str = "src/converter/config.json") -> int:
     print()
 
     # Phase 1: Review unmapped speakers.
-    aliases = _process_unmapped_speakers(
-        config, pending, rejected_dir, aliases, all_data, reports_dir,
+    char_aliases = _process_unmapped_speakers(
+        config, pending, rejected_dir, char_aliases, all_data, reports_dir,
     )
 
     # Phase 2: Review scenes missing character association.
@@ -563,11 +568,10 @@ def review(config_path: str = "src/converter/config.json") -> int:
 
     print("\n=== Review Complete ===")
     print(f"Rejected records written to: {rejected_dir}")
-    print(f"Speaker aliases saved to: {reports_dir / SPEAKER_ALIASES_FILE}")
+    print(f"Character aliases saved to: {reports_dir / CHARACTER_ALIASES_FILE}")
     print()
     print("Next steps:")
-    print("  1. Re-run:  mise run compose-clean")
-    print("  2. Then:    mise run apply")
+    print("  Run:    mise run apply")
     return 0
 
 
