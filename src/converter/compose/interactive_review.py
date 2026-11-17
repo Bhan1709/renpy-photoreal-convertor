@@ -5,7 +5,7 @@ time, with clickable composite file links and interactive prompts.
 
 Mise task:
 
-    mise run review-interactive
+    mise run compose-review
 
 Run from the repository root.
 """
@@ -146,6 +146,16 @@ def _save_all_category_manifests(reports_dir: Path, all_data: dict[str, dict]) -
     for cat_name, cat_data in all_data.items():
         cat_path = reports_dir / f"manifest_{cat_name}.json"
         cat_path.write_text(json.dumps(cat_data, indent=2), encoding="utf-8")
+
+
+def _save_pending_review(reports_dir: Path, pending: dict) -> None:
+    """Write the pending review data back to ``scene_review_pending.json``.
+
+    Resolved entries (mapped/rejected speakers, associated/rejected scenes)
+    are removed from this file so they are not re-reviewed on subsequent runs.
+    """
+    pending_path = reports_dir / "scene_review_pending.json"
+    pending_path.write_text(json.dumps(pending, indent=2), encoding="utf-8")
 
 
 def _find_composite_index(
@@ -336,7 +346,7 @@ def _process_unmapped_speakers(
     known_chars = _load_known_char_folders(config)
     char_list = ", ".join(sorted(known_chars))
 
-    for entry in unmapped:
+    for entry in list(unmapped):
         speaker = entry["speaker"]
         composite_paths = entry["composites"]
 
@@ -362,44 +372,50 @@ def _process_unmapped_speakers(
                 )
             else:
                 print(f"  Kept '{speaker}' as unmapped (no changes).")
-            continue
-
-        # Validate entered character name.
-        resolved = _resolve_speaker(char_name, known_chars, aliases)
-        if resolved:
-            # Valid character: add speaker as alias (append, do not overwrite).
-            aliases[speaker.strip().lower()] = resolved
-            _save_speaker_aliases(reports_dir, aliases)
-            print(f"  Mapped '{speaker}' -> '{resolved}' (alias added).")
         else:
-            # Invalid character name -> ask to remove dialogs.
-            print(f"  '{char_name}' is not a known character folder.")
-            answer = input(
-                f"Remove dialog associations for '{speaker}'? (y/N): "
-            ).strip().lower()
-            if answer in ("y", "yes"):
-                _reject_speaker(
-                    config, speaker, composite_paths, reports_dir, rejected_dir, all_data,
-                )
-            else:
-                # Keep as-is with entered alias (update dialogs with entered name).
-                aliases[speaker.strip().lower()] = char_name
+            # Validate entered character name.
+            resolved = _resolve_speaker(char_name, known_chars, aliases)
+            if resolved:
+                # Valid character: add speaker as alias (append, do not overwrite).
+                aliases[speaker.strip().lower()] = resolved
                 _save_speaker_aliases(reports_dir, aliases)
-                # Update dialog context in manifests to use the entered name.
-                target_set = set(composite_paths)
-                for cat_data in all_data.values():
-                    new_list: list[dict] = []
-                    for comp in cat_data.get("composites", []):
-                        if comp.get("composite_path") not in target_set:
-                            new_list.append(comp)
-                            continue
-                        new_list.append(
-                            _replace_speaker_in_dialogs(comp, speaker, char_name)
-                        )
-                    cat_data["composites"] = new_list
-                    cat_data["summary"] = {"composites": len(new_list)}
-                _save_all_category_manifests(reports_dir, all_data)
-                print(f"  Kept '{speaker}' -> '{char_name}' (unverified alias).")
+                print(f"  Mapped '{speaker}' -> '{resolved}' (alias added).")
+            else:
+                # Invalid character name -> ask to remove dialogs.
+                print(f"  '{char_name}' is not a known character folder.")
+                answer = input(
+                    f"Remove dialog associations for '{speaker}'? (y/N): "
+                ).strip().lower()
+                if answer in ("y", "yes"):
+                    _reject_speaker(
+                        config, speaker, composite_paths, reports_dir, rejected_dir, all_data,
+                    )
+                else:
+                    # Keep as-is with entered alias (update dialogs with entered name).
+                    aliases[speaker.strip().lower()] = char_name
+                    _save_speaker_aliases(reports_dir, aliases)
+                    # Update dialog context in manifests to use the entered name.
+                    target_set = set(composite_paths)
+                    for cat_data in all_data.values():
+                        new_list: list[dict] = []
+                        for comp in cat_data.get("composites", []):
+                            if comp.get("composite_path") not in target_set:
+                                new_list.append(comp)
+                                continue
+                            new_list.append(
+                                _replace_speaker_in_dialogs(comp, speaker, char_name)
+                            )
+                        cat_data["composites"] = new_list
+                        cat_data["summary"] = {"composites": len(new_list)}
+                    _save_all_category_manifests(reports_dir, all_data)
+                    print(f"  Kept '{speaker}' -> '{char_name}' (unverified alias).")
+
+        # Remove this speaker from the pending review so it is not re-reviewed.
+        pending["unmapped_speakers"] = [
+            e for e in pending.get("unmapped_speakers", [])
+            if e.get("speaker") != speaker
+        ]
+        _save_pending_review(reports_dir, pending)
 
     return aliases
 
@@ -424,7 +440,7 @@ def _process_scenes_missing_chars(
     known_chars = _load_known_char_folders(config)
     char_list = ", ".join(sorted(known_chars))
 
-    for entry in scenes:
+    for entry in list(scenes):
         composite_path = entry["composite_path"]
         name = entry["name"]
 
@@ -452,37 +468,43 @@ def _process_scenes_missing_chars(
                 _reject_scene(
                     config, composite_path, name, reports_dir, rejected_dir, all_data,
                 )
-            continue
-
-        # Validate entered character name.
-        resolved = _resolve_speaker(char_name, known_chars, {})
-        if resolved:
-            # Valid character: update manifest entry.
-            _assign_character_to_scene_composite(
-                all_data, composite_path, resolved
-            )
-            _save_all_category_manifests(reports_dir, all_data)
-            print(f"  Assigned '{resolved}' to scene '{name}'.")
         else:
-            # Invalid character name -> ask to keep without characters.
-            print(f"  '{char_name}' is not a known character folder.")
-            answer = input(
-                f"Keep scene '{name}' in manifest without character associations? (y/N): "
-            ).strip().lower()
-            if answer in ("y", "yes"):
-                # Update manifest entry with the name user entered (do nothing if blank).
-                if char_name:
-                    _assign_character_to_scene_composite(
-                        all_data, composite_path, char_name
-                    )
-                    _save_all_category_manifests(reports_dir, all_data)
-                    print(f"  Assigned '{char_name}' to scene '{name}' (unverified).")
-                else:
-                    print(f"  Kept '{name}' without characters (no changes).")
-            else:
-                _reject_scene(
-                    config, composite_path, name, reports_dir, rejected_dir, all_data,
+            # Validate entered character name.
+            resolved = _resolve_speaker(char_name, known_chars, {})
+            if resolved:
+                # Valid character: update manifest entry.
+                _assign_character_to_scene_composite(
+                    all_data, composite_path, resolved
                 )
+                _save_all_category_manifests(reports_dir, all_data)
+                print(f"  Assigned '{resolved}' to scene '{name}'.")
+            else:
+                # Invalid character name -> ask to keep without characters.
+                print(f"  '{char_name}' is not a known character folder.")
+                answer = input(
+                    f"Keep scene '{name}' in manifest without character associations? (y/N): "
+                ).strip().lower()
+                if answer in ("y", "yes"):
+                    # Update manifest entry with the name user entered (do nothing if blank).
+                    if char_name:
+                        _assign_character_to_scene_composite(
+                            all_data, composite_path, char_name
+                        )
+                        _save_all_category_manifests(reports_dir, all_data)
+                        print(f"  Assigned '{char_name}' to scene '{name}' (unverified).")
+                    else:
+                        print(f"  Kept '{name}' without characters (no changes).")
+                else:
+                    _reject_scene(
+                        config, composite_path, name, reports_dir, rejected_dir, all_data,
+                    )
+
+        # Remove this scene from the pending review so it is not re-reviewed.
+        pending["scenes"] = [
+            e for e in pending.get("scenes", [])
+            if e.get("composite_path") != composite_path
+        ]
+        _save_pending_review(reports_dir, pending)
 
 
 # --------------------------------------------------------------------------- #
