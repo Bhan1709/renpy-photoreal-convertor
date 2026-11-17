@@ -96,9 +96,10 @@ def _seed_character_aliases(config: GameConfig, reports_dir: Path) -> dict[str, 
             if "aliases" not in info:
                 info["aliases"] = []
 
-    # Ensure narrator entry.
+    # Ensure narrator entry. Narrator has no corresponding char folder, so it
+    # carries only an aliases list (e.g. "context").
     if "narrator" not in char_aliases:
-        char_aliases["narrator"] = {"folder": "narrator", "aliases": []}
+        char_aliases["narrator"] = {"aliases": []}
     # "context" is a common narrator-style speaker alias in Ren'Py dialogs.
     narrator_aliases = char_aliases["narrator"].setdefault("aliases", [])
     if "context" not in {a.lower() for a in narrator_aliases}:
@@ -161,6 +162,8 @@ class ManifestWriter:
                 for r in scene_records
                 if not r.characters
             ]
+            pending_scenes = missing
+            unmapped_speakers: dict[str, list[str]] = {}
             association_summary = {
                 "images": len(scene_records),
                 "associated": len(scene_records) - len(missing),
@@ -223,7 +226,11 @@ class ManifestWriter:
                         all_unmapped.setdefault(speaker, []).append(
                             f"{r.composite_path}"
                         )
-            pending_path = reports_dir / "scene_review_pending.json"
+            pending_scenes = cast(
+                list[str], [s["composite_path"] for s in scene_without_chars]
+            )
+            unmapped_speakers = dict(all_unmapped)
+            pending_path = reports_dir / "review_pending.json"
             pending_path.write_text(
                 json.dumps({
                     "pending_reviews": len(scene_without_chars),
@@ -240,7 +247,7 @@ class ManifestWriter:
                 dict, manifest.summary.get("scene_character_associations", {})
             )
 
-        _print_summary(manifest, association_summary)
+        _print_summary(manifest, association_summary, pending_scenes, unmapped_speakers)
         return manifest
 
     # ------------------------------------------------------------------ #
@@ -292,17 +299,25 @@ class ManifestWriter:
         """
         paths = config.resolved_paths()
         reports_dir = paths["manifest_path"].parent
-        pending_path = reports_dir / "scene_review_pending.json"
+        pending_path = reports_dir / "review_pending.json"
         if not pending_path.is_file():
             return {}
         return json.loads(pending_path.read_text(encoding="utf-8"))
 
 
-def _print_summary(manifest: CompositeManifest, association_summary: object | None = None) -> None:
+def _print_summary(
+    manifest: CompositeManifest,
+    association_summary: object | None = None,
+    pending_scenes: list[str] | None = None,
+    unmapped_speakers: dict[str, list[str]] | None = None,
+) -> None:
     print(json.dumps({
         "scripts_scanned": manifest.summary["scripts_scanned"],
         "composites": manifest.summary["composites"],
         "uses_processed": manifest.summary["uses_processed"],
-        "unresolved": sorted(manifest.unresolved),
-        "scene_character_associations": association_summary if isinstance(association_summary, dict) else {},
+        # Scene composites with no character association (details in review_pending.json).
+        "unresolved_scenes": len(pending_scenes or []),
+        # Speakers in scene dialogs not mapped to any char folder.
+        "unmapped_speakers": len(unmapped_speakers)
+            if isinstance(unmapped_speakers, dict) else 0,
     }, indent=2))

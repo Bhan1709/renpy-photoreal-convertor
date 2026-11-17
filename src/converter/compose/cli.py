@@ -100,9 +100,10 @@ def main(argv=None) -> int:
     # compose to regenerate manifests and clear the pending list.
     pending = ManifestWriter.load_pending_review(config)
     scenes = pending.get("scenes", [])
+    speakers = pending.get("unmapped_speakers", [])
     if scenes:
         reports_dir = config.resolved_paths()["manifest_path"].parent
-        pending_path = reports_dir / "scene_review_pending.json"
+        pending_path = reports_dir / "review_pending.json"
         print(
             f"\nBLOCKED: {len(scenes)} scene composite(s) lack character association.\n"
             "Review and resolve them in:\n"
@@ -111,6 +112,17 @@ def main(argv=None) -> int:
             file=sys.stderr,
         )
         return 1
+
+    # Suggest interactive review for any remaining pending items (unmapped
+    # speakers, or scenes already associated but still pending).
+    if scenes or speakers:
+        print(
+            f"\nNext step: review {len(scenes)} unresolved scene(s) and "
+            f"{len(speakers)} unmapped speaker(s):\n"
+            "  mise run compose-review\n"
+            "or\n"
+            f"  python -m converter.compose.review compose-review {args.config}"
+        )
 
     applier = Applier(config)
     applier.apply()
