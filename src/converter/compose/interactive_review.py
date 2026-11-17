@@ -30,12 +30,28 @@ SPEAKER_ALIASES_FILE = "speaker_aliases.json"
 # Clickable path helpers
 # --------------------------------------------------------------------------- #
 
+
+def _is_tty() -> bool:
+    """Return True when stdout is attached to an interactive terminal."""
+    return hasattr(sys.stdout, "isatty") and sys.stdout.isatty()
+
+
 def _clickable(path: Path | str) -> str:
-    """Return a clickable file:// URI for ``path`` (works in most terminals)."""
+    """Return a clickable link for ``path``.
+
+    Uses ANSI OSC 8 hyperlinks when stdout is a TTY (supported by Windows
+    Terminal, VS Code, iTerm2, kitty, alacritty, etc.).  Falls back to the
+    plain file:// URI otherwise so the path is still readable/copyable.
+    """
     p = Path(path)
     if not p.is_absolute():
         p = p.resolve()
-    return p.as_uri()
+    uri = p.as_uri()
+    label = str(p)
+    if _is_tty():
+        # OSC 8 hyperlink: ESC ] 8 ; ; URI BEL  LABEL  ESC ] 8 ; ; BEL
+        return f"\033]8;;{uri}\033\\{label}\033]8;;\033\\"
+    return uri
 
 
 # --------------------------------------------------------------------------- #
