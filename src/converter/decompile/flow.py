@@ -87,6 +87,22 @@ def process_game(
             set_game_folder_rel_path(game_folder)
 
     print("\n=== Decompile flow complete ===")
+
+    print("\n=== Next steps ===")
+    print("Run compose to build photoreal composites from the decompiled game:")
+    print("  mise run compose-clean")
+    print("or")
+    print("  python -m converter.pipeline --compose-only --clean-output")
+    print()
+
+    print("Manual alternative: adjust exclusions before composing:")
+    print(f"  1. Edit exclusion patterns in {CONFIG_PATH} if needed.")
+    print("  2. Sync exclusions:")
+    print("     mise run exclusions-sync")
+    print("  or")
+    print("     python src/converter/decompile/sync_exclusions_cli.py")
+    print()
+
     return summary
 
 
