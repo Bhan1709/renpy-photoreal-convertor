@@ -2,7 +2,7 @@
 
 Mise tasks:
 
-    mise run compose-review      # Review scenes needing character association + unmapped speakers
+    mise run compose-review      # Interactive review of scenes + unmapped speakers
     mise run chars-list          # Fetch all character names (source of truth)
 
 Run from the repository root.
@@ -14,7 +14,7 @@ import sys
 
 from .character_associator import CharacterAssociator
 from .config import load_config
-from .manifest import ManifestWriter
+from .interactive_review import review as interactive_review
 
 
 def chars_list(config_path: str = "src/converter/config.json") -> int:
@@ -29,44 +29,12 @@ def chars_list(config_path: str = "src/converter/config.json") -> int:
 
 
 def compose_review(config_path: str = "src/converter/config.json") -> int:
-    """Review scenes needing character association and unmapped speakers."""
-    config = load_config(config_path)
-    pending = ManifestWriter.load_pending_review(config)
+    """Review scenes needing character association and unmapped speakers.
 
-    if not pending:
-        print("No pending scene reviews — all scene composites have character associations.")
-        return 0
-
-    scenes = pending.get("scenes", [])
-    unmapped = pending.get("unmapped_speakers", [])
-    pending_count = pending.get("pending_reviews", len(scenes))
-    print(f"=== Pending Scene Reviews ({pending_count} scene(s) without character association) ===\n")
-    for entry in scenes:
-        print(f"  Composite: {entry['composite_path']}")
-        print(f"  Name:      {entry['name']}")
-        print(f"  Defined:   {entry['definition']['script']}:{entry['definition']['line']}")
-        print("  Usage locations:")
-        for loc in entry["usage_locations"]:
-            print(f"    - {loc['script']}:{loc['line']}  {loc['statement']}")
-        print()
-
-    if unmapped:
-        print(f"=== Unmapped Speakers ({len(unmapped)} speaker(s) with no character map) ===\n")
-        print("These speakers appear in scene dialog but could not be mapped to a char folder.\n"
-              "Add a ``Character()`` declaration (e.g. ``define h = Character(\"Hazel\", image=\"ha\")``)\n"
-              "or a matching folder under ``chars/`` to resolve them.\n")
-        for entry in unmapped:
-            print(f"  Speaker: {entry['speaker']}")
-            print(f"  Found in: {', '.join(entry['composites'])}")
-            print()
-    else:
-        print("No unmapped speakers found.")
-
-    print("\nNext steps:")
-    print("  1. Resolve unmapped speakers by adding Character() declarations.")
-    print("  2. Re-run:  mise run compose-clean")
-    print("  3. Then:    mise run apply")
-    return 1
+    Delegates to the interactive review flow in
+    :mod:`converter.compose.interactive_review`.
+    """
+    return interactive_review(config_path)
 
 
 def main(argv: list[str] | None = None) -> int:
