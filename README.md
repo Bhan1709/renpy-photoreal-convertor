@@ -108,27 +108,27 @@ This project is intended to be a toolkit to convert Ren'Py based games and visua
 7. **Compose photoreal composites** (after decompile):
 
    ```bash
-   # Full pipeline: decompile → prompt for exclusions → compose (apply deferred)
+   mise run compose
+   ```
+
+   Compose is the single entry point: it checks exclusion patterns first, then
+   offers clean, compose, clean+compose, review, and apply. Apply can be undone
+   with `mise run restore-compose`.
+
+   Advanced (explicit actions / pipeline flags):
+
+   ```bash
+   # Skip the menu with an explicit action
+   python -m converter.compose clean
+   python -m converter.compose clean-compose
+   python -m converter.compose review
+   python -m converter.compose apply
+
+   # Full pipeline: decompile → exclusions → compose (apply deferred)
    python -m converter.pipeline
-
-   # Compose only (skip decompile; uses src/converter/config.json)
-   python -m converter.pipeline --compose-only
-
-   # Apply only (requires an existing manifest)
-   python -m converter.pipeline --apply-only
 
    # Undo compose/apply (restore .rpy files from archive.rpa)
    python -m converter.pipeline --restore-compose
-   ```
-
-   Or via mise:
-
-   ```bash
-   mise run pipeline
-   mise run compose
-   mise run compose-clean
-   mise run apply
-   mise run restore-compose
    ```
 
 ## 📁 Project Structure
@@ -175,7 +175,7 @@ This project is intended to be a toolkit to convert Ren'Py based games and visua
 │   │   │   ├── scan.py
 │   │   │   ├── staging.py
 │   │   │   └── README.md    # This subpackage documentation
-│   │   ├── compose/         # Composite compose + apply subpackage
+│   │   ├── compose/         # Compose/review/apply subpackage
 │   │   │   ├── __init__.py
 │   │   │   ├── cli.py       # Command-line entry point
 │   │   │   ├── config.py    # GameConfig + load_config

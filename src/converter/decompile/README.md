@@ -54,7 +54,7 @@ src/
 │   │   ├── constants.py     # Paths, extensions, category folder patterns
 │   │   ├── decompile_files.py  # decompile_rpyc_files (via rpa-toolkit)
 │   │   ├── discovery.py     # find_game_folder, find_game_folders
-│   │   ├── exclusions.py    # matches_exclusion, filter_source_files, sync_exclusions
+│   │   ├── exclusions.py    # matches_exclusion, filter_source_files, sync_exclusions, prompt_exclusion_patterns
 │   │   ├── extract.py       # extract_rpa_file, extract_all_rpa
 │   │   ├── flow.py          # process_game, process_all_games (end-to-end flow)
 │   │   ├── restore.py       # restore_decompile (undo decompile outputs)
@@ -87,6 +87,25 @@ python src\converter\decompile\decompile.py
 mise run decompile
 ```
 
+When decompile finishes it points you at the next step:
+
+```bash
+mise run compose
+```
+
+Compose is the single entry point for the photoreal pass: it first runs the
+exclusion check (asking whether to add script/image exclusion patterns), then
+offers clean, compose, clean+compose, review, and apply.
+
+To edit exclusions by hand instead, open `src/converter/config.json` and adjust:
+
+- `exclusion.script.patterns` — filters `rpy_files` / `ren_py_files`
+  (e.g. `"archive/"`).
+- `exclusion.image.patterns` — filters image folders/layers scanned by compose.
+
+The compose exclusion check syncs these automatically; no separate sync step is
+needed.
+
 ### Via Python Import
 
 ```python
@@ -103,7 +122,7 @@ process_all_games()
 
 ```bash
 mise run decompile                    # Full generalized flow
-mise run exclusions-sync              # Filter config.json matching patterns by exclusion.patterns
+mise run compose                      # Next step: exclusion check + compose menu
 ```
 
 ---
@@ -194,10 +213,18 @@ entries.
 **Returns:** `{"rpy": [...], "ren_py": [...], "extracted_archives": [...]}`
 
 #### `sync_exclusions(config_path=...)`
-Removes any `rpy_files`/`ren_py_files` entry matching `exclusion.patterns`
-and rewrites `config.json`.
+Removes any `rpy_files`/`ren_py_files` entry matching
+`exclusion.script.patterns` and rewrites `config.json`. Image exclusions
+(`exclusion.image.patterns`) are applied during compose rather than here.
 
 **Returns:** `{"rpy_before", "rpy_after", "ren_py_before", "ren_py_after"}`
+
+#### `prompt_exclusion_patterns(config_path=...)`
+Interactively shows the current script/image exclusion patterns, asks for
+comma-separated additions for each, and writes `config.json` when anything
+changed (pressing Enter keeps the current list).
+
+**Returns:** `True` if `config.json` was updated, `False` otherwise.
 
 ### Flow
 
@@ -298,12 +325,12 @@ Example config output:
 
 ```toml
 [tasks.decompile]
-description = "Generalized decompile flow for the first game found"
-run = "python src/converter/decompile/decompile.py"
+description = "Decompile a Ren'Py game (interactive: clean, decompile, clean+decompile, or quit)"
+run = "python -m converter.decompile"
 
-[tasks.exclusions-sync]
-description = "Filter config.json matching patterns by exclusion.patterns"
-run = "python src/converter/decompile/sync_exclusions_cli.py"
+[tasks.compose]
+description = "Compose a Ren'Py game (interactive: exclusion check, clean, compose, clean+compose, review, apply)"
+run = "python -m converter.compose"
 ```
 
 ### `pyproject.toml` (dependencies)
@@ -354,7 +381,7 @@ extract_rpa_file(Path("src/renpy_game/my_game/archive.rpa"))
 ```python
 from src.converter.decompile.exclusions import sync_exclusions
 
-# User sets exclusion.patterns manually in config.json first, e.g. ["archive/"]
+# Set exclusion.script.patterns in config.json first, e.g. ["archive/"]
 result = sync_exclusions()
 print(f"rpy_files: {result['rpy_before']} -> {result['rpy_after']}")
 ```

@@ -1,54 +1,78 @@
-"""Sync exclusion patterns into src/converter/config.json (typer + rich).
-
-Removes any entry from ``rpy_files`` and ``ren_py_files`` that matches a
-pattern in ``exclusion.patterns``, then writes the updated config back.
+"""Sync exclusion patterns into ``src/converter/config.json`` (typer + rich).
 
 Usage::
 
-    python -m converter.decompile.sync-exclusions
+    python -m converter.decompile.sync_exclusions_cli
 
-Run ``mise run decompile`` first to generate ``config.json``, then set
-``exclusion.patterns`` manually (e.g. ``["archive/"]``), and run this
-script to drop the matched entries from the matching-pattern lists.
+The compose entry point calls :func:`run_exclusion_sync` as its first step, so
+script and image exclusions are always reviewed before composing.  Run this
+module directly to sync without composing.
 """
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
-from cli import create_app, error, info, kv, rule
+import typer
+
+from cli import confirm, create_app, error, info, is_interactive, kv, rule, success
+
+from .exclusions import prompt_exclusion_patterns, sync_exclusions
 
 app = create_app("Sync exclusion patterns into src/converter/config.json.")
 
 CONFIG_PATH = Path("src/converter/config.json")
 
 
-@app.command()
-def main() -> int:
-    """Sync exclusion patterns into config.json."""
-    rule("Sync exclusions")
-    kv("Config", str(CONFIG_PATH))
+def run_exclusion_sync(
+    config_path: Path = CONFIG_PATH,
+    *,
+    prompt: bool = True,
+) -> int:
+    """Optionally add new exclusion patterns, then sync ``config.json``.
 
-    if not CONFIG_PATH.exists():
-        error(f"Config not found: {CONFIG_PATH}")
+    Shared by the standalone CLI and the compose entry point.
+    With ``prompt=True`` (the default) the user is asked whether to add script
+    or image exclusions first; the question is skipped when there is no
+    interactive terminal.
+
+    Returns a process exit code: ``0`` on success, ``1`` on failure.
+    """
+    rule("Exclusion check")
+    kv("Config", str(config_path))
+
+    if not config_path.is_file():
+        error(f"Config not found: {config_path}")
         info("Run 'mise run decompile' first to generate it.")
         return 1
 
-    from converter.decompile.exclusions import sync_exclusions
+    if prompt and is_interactive():
+        answer = confirm(
+            "Add or update script/image exclusion patterns?", default=False
+        )
+        if answer is None:
+            info("Aborted.")
+            return 1
+        if answer:
+            prompt_exclusion_patterns(config_path)
 
-    result = sync_exclusions(CONFIG_PATH)
+    result = sync_exclusions(config_path)
     if not result:
         error("Failed to sync exclusions.")
         return 1
 
-    rule("Sync complete")
     kv("rpy_files", f"{result['rpy_before']} -> {result['rpy_after']}")
     kv("ren_py_files", f"{result['ren_py_before']} -> {result['ren_py_after']}")
-    kv("Config", str(CONFIG_PATH))
+    success("Exclusions synced into config.json.")
     return 0
 
 
-if __name__ == "__main__":
-    import sys
+@app.command()
+def main() -> None:
+    """Sync exclusion patterns into config.json."""
+    raise typer.Exit(run_exclusion_sync(CONFIG_PATH, prompt=True))
 
+
+if __name__ == "__main__":
     sys.exit(app())

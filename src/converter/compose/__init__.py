@@ -36,10 +36,14 @@ Restore (revert modified .rpy files from archive)::
     results = restore_rpy_files(config)  # all .rpy files
     results = restore_from_manifest(config)  # only files touched by apply
 
-One-shot CLI::
+Interactive CLI (exclusion check, then action menu)::
 
-    python -m converter.compose --config src/converter/config.json
-    python -m converter.compose --config src/converter/config.json --restore
+    python -m converter.compose                  # exclusion check -> menu
+    python -m converter.compose clean            # remove previous compose output
+    python -m converter.compose compose          # compose only (no apply)
+    python -m converter.compose clean-compose    # clean output, then compose
+    python -m converter.compose review           # review scenes + speakers
+    python -m converter.compose apply            # adopt composites into scripts
 """
 
 from __future__ import annotations

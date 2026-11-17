@@ -3,9 +3,10 @@
 Reviews unmapped speakers and scenes missing character associations one at a
 time, with clickable composite file links and interactive prompts.
 
-Mise task:
+Invoked from:
 
-    mise run compose-review
+    mise run compose          # menu -> Review composites
+    python -m converter.compose review
 
 Run from the repository root.
 """
@@ -710,7 +711,7 @@ def review(config_path: str = "src/converter/config.json") -> int:
     kv("Character aliases", str(reports_dir / CHARACTER_ALIASES_FILE))
     console.print()
     info("Next steps:")
-    info("  Run:    mise run apply")
+    info("  Apply:  mise run compose apply")
     return 0
 
 

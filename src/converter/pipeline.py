@@ -28,35 +28,23 @@ Run from the repo root::
 
 from __future__ import annotations
 
-import json
-import shutil
 import sys
 from pathlib import Path
 
 import typer
 
-from cli import (
-    console,
-    create_app,
-    error,
-    info,
-    kv,
-    note,
-    prompt_text,
-    rule,
-    step,
-    substep,
-    success,
-)
+from cli import console, create_app, error, info, note, rule, step
 
-from .compose.apply_pass import Applier
-from .compose.compose_pass import Composer
+from .compose.cli import (
+    apply_game,
+    compose_game,
+    print_review_instructions,
+)
 from .compose.config import GameConfig, load_config
-from .compose.manifest import ManifestWriter
 from .decompile.constants import CONFIG_PATH
 from .decompile.decompile_files import decompile_rpyc_files
 from .decompile.discovery import find_game_folders
-from .decompile.exclusions import sync_exclusions
+from .decompile.exclusions import prompt_exclusion_patterns, sync_exclusions
 from .decompile.extract import extract_rpa_file
 from .restore import restore_from_manifest, restore_rpy_files
 
@@ -99,163 +87,6 @@ def _restore_compose_game(config: GameConfig, dry_run: bool) -> None:
         return
     for path, status in sorted(results.items()):
         console.print(f"  [{status}] {path}")
-
-
-def _prompt_exclusion_patterns(config_path: Path = CONFIG_PATH) -> None:
-    """Prompt the user to add exclusion patterns to ``config.json``.
-
-    Reads the current ``exclusion.script.patterns`` and
-    ``exclusion.image.patterns`` from ``config.json``, asks the user for
-    additional comma-separated patterns for each type, merges them in, and
-    writes the file back.  Pressing Enter keeps the current patterns unchanged.
-
-    Script exclusions filter matching entries from ``rpy_files``/``ren_py_files``
-    (the include set used by parser.files() and character_associator).
-    Image exclusions filter layers whose source path matches a pattern in
-    record._normalize_layers, preventing those image folders from being scanned.
-    """
-    if not config_path.is_file():
-        error(f"Config not found: {config_path}")
-        info("Run decompile first to generate it.")
-        return
-
-    try:
-        data = json.loads(config_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        error(f"Could not read config {config_path}: {exc}")
-        return
-
-    exclusion = data.get("exclusion", {}) or {}
-    script_current = exclusion.get("script", {}).get("patterns", [])
-    image_current = exclusion.get("image", {}).get("patterns", [])
-
-    rule("Exclusion patterns")
-    kv("Script exclusions", str(script_current))
-    raw = prompt_text(
-        "Enter additional script exclusion patterns (comma-separated) "
-        "or press Enter to keep current",
-        default="",
-    )
-    if raw is None:
-        info("Aborted.")
-        return
-    script_patterns = [p.strip() for p in raw.split(",") if p.strip()] if raw else []
-    if script_patterns:
-        script_current = sorted(set(script_current) | set(script_patterns))
-
-    kv("Image exclusions", str(image_current))
-    raw = prompt_text(
-        "Enter additional image exclusion patterns (comma-separated) "
-        "or press Enter to keep current",
-        default="",
-    )
-    if raw is None:
-        info("Aborted.")
-        return
-    image_patterns = [p.strip() for p in raw.split(",") if p.strip()] if raw else []
-    if image_patterns:
-        image_current = sorted(set(image_current) | set(image_patterns))
-
-    if not script_patterns and not image_patterns:
-        return
-
-    data["exclusion"] = {
-        "script": {
-            "patterns": script_current,
-            "note": "Patterns matched against rpy_files/ren_py_files entries; matching entries are removed from the scan list",
-        },
-        "image": {
-            "patterns": image_current,
-            "note": "Patterns matched against image source paths; layers whose source starts with a matching folder are excluded from compose scanning",
-        },
-    }
-    try:
-        config_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-        success(
-            f"Updated exclusion patterns: script={script_current}, image={image_current}"
-        )
-    except OSError as exc:
-        error(f"Could not write config {config_path}: {exc}")
-
-
-def _clean_output_dir(config: GameConfig) -> None:
-    """Remove prior generated PNGs and manifest before composing."""
-    paths = config.resolved_paths()
-    output_dir = paths["output_dir"]
-    if output_dir.exists():
-        shutil.rmtree(output_dir)
-        success(f"Cleaned output directory: {output_dir}")
-
-
-def _print_manual_review_instructions(config: GameConfig) -> None:
-    """Print end-of-compose instructions for resolving pending reviews."""
-    reports_dir = config.resolved_paths()["manifest_path"].parent
-    pending_path = reports_dir / "review_pending.json"
-
-    if not pending_path.is_file():
-        return
-
-    try:
-        pending = json.loads(pending_path.read_text(encoding="utf-8"))
-    except OSError, json.JSONDecodeError:
-        return
-
-    scenes = pending.get("scenes", [])
-    speakers = pending.get("unmapped_speakers", [])
-    if not scenes and not speakers:
-        return
-
-    rule("Pending scene review")
-    info(f"{len(scenes)} scene composite(s) lack character association.")
-    info(f"{len(speakers)} speaker(s) not mapped to a character folder.")
-    kv("Review file", str(pending_path))
-    console.print()
-    info("Recommended next step: review interactively with compose-review:")
-    console.print("  [cyan]mise run compose-review[/cyan]")
-    console.print("or")
-    console.print(
-        f"  [cyan]python -m converter.compose.review cli compose-review {CONFIG_PATH}[/cyan]"
-    )
-    console.print()
-
-    info("Alternative: resolve manually by editing the report files:")
-    if scenes:
-        substep("Associate a character with a scene composite:")
-        console.print(f"   - Open {reports_dir / 'manifest_scene.json'}")
-        console.print("   - Find the scene composite under ``composites`` and add:")
-        console.print('        "characters": [')
-        console.print(
-            '            {"character": "<folder>", "evidence": ["script_identifier:<script>:<line>"]}'
-        )
-        console.print("        ],")
-        console.print('        "character_association_status": "associated",')
-        console.print(
-            "   - Then cut-and-paste that record into manifest_scene.json and"
-        )
-        console.print(
-            "     remove it from the ``scenes`` array in review_pending.json."
-        )
-        console.print()
-    if speakers:
-        substep("Resolve an unmapped speaker:")
-        console.print(f"   - Open {reports_dir / 'character_aliases.json'}")
-        console.print("   - Add the speaker under its character folder, e.g.:")
-        console.print('        "clothes": {')
-        console.print('            "folder": "archive/chars/clothes",')
-        console.print('            "aliases": ["clothes"]')
-        console.print("        },")
-        console.print("   - Then remove the speaker from ``unmapped_speakers`` in")
-        console.print("     review_pending.json.")
-        console.print()
-
-    info("After resolving (either way), verify nothing remains:")
-    console.print("  [cyan]mise run compose-review[/cyan]")
-    console.print("or")
-    console.print(
-        f"  [cyan]python -m converter.compose.review cli compose-review {CONFIG_PATH}[/cyan]"
-        f"  python -m converter.compose.review cli compose-review {CONFIG_PATH}"
-    )
-    console.print("  then apply:  mise run apply")
 
 
 def run_pipeline(
@@ -303,23 +134,16 @@ def run_pipeline(
         rule(f"Pipeline: {config.name}")
 
         if compose_only:
-            _prompt_exclusion_patterns(CONFIG_PATH)
+            prompt_exclusion_patterns(CONFIG_PATH)
             sync_exclusions(CONFIG_PATH)
             config = load_config(CONFIG_PATH)
-            if clean_output:
-                _clean_output_dir(config)
-            manifest = Composer(config).compose(
-                dry_run=dry_run, clean_output=clean_output
-            )
-            ManifestWriter(config).write(manifest, dry_run=dry_run)
+            compose_game(config, dry_run=dry_run, clean=clean_output)
             rule("Compose complete (apply step deferred)")
-            _print_manual_review_instructions(config)
+            print_review_instructions(config, CONFIG_PATH)
             return 0
 
         if apply_only:
-            Applier(config).apply()
-            rule("Pipeline complete")
-            return 0
+            return apply_game(config)
 
     # --- Default flow: decompile -> exclusions prompt -> compose (no apply) ---
     # Auto-discover the first game folder under src/renpy_game (no --game needed).
@@ -338,7 +162,7 @@ def run_pipeline(
 
     # --- Stage 2: prompt user for exclusion patterns ---
     step(2, "Prompt for exclusion patterns")
-    _prompt_exclusion_patterns(CONFIG_PATH)
+    prompt_exclusion_patterns(CONFIG_PATH)
 
     # --- Stage 3: sync exclusions + load decompile config ---
     step(3, "Sync exclusions + load config")
@@ -348,12 +172,9 @@ def run_pipeline(
     # --- Stage 4: compose (manifest + PNGs) only ---
     # Apply is intentionally deferred so the user can verify compose output.
     step(4, "Compose manifest + PNGs (apply deferred)")
-    if clean_output:
-        _clean_output_dir(config)
-    manifest = Composer(config).compose(dry_run=dry_run, clean_output=clean_output)
-    ManifestWriter(config).write(manifest, dry_run=dry_run)
+    compose_game(config, dry_run=dry_run, clean=clean_output)
     rule("Compose complete (apply step deferred)")
-    _print_manual_review_instructions(config)
+    print_review_instructions(config, CONFIG_PATH)
 
     rule("Pipeline complete")
     return 0

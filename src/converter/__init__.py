@@ -28,7 +28,7 @@ def _main() -> None:
         "  [green]python -m converter.pipeline[/green]        # Decompile -> compose pipeline"
     )
     console.print(
-        "  [green]python -m converter.compose[/green]         # Compose + apply for a game"
+        "  [green]python -m converter.compose[/green]         # Compose composites (interactive menu)"
     )
     console.print(
         "  [green]python -m converter.compose.review[/green]  # Interactive composite review"
