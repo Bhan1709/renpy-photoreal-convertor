@@ -1,5 +1,7 @@
 # Ren'Py Photoreal VN Converter
 
+[![AI Ready](https://img.shields.io/badge/AI--Ready-yes-brightgreen?style=flat)](https://github.com/johnpapa/ai-ready)
+
 This project is intended to be a toolkit to convert Ren'Py based games and visual novels from 2D format to photorealistic versions using local Ollama and free open-source models.
 
 ## 🎮 Features
@@ -319,5 +321,9 @@ manifest, report = Applier(config).apply()
 - [ ] Provide example workflow JSON for ComfyUI
 - [ ] Expand Modelfiles for additional context sizes and models
 - [ ] Document CI/CD and testing setup
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for how to raise contributions and open pull requests. All changes must be made on a dedicated branch (Conventional Branch naming) and use Conventional Commits. Before opening a PR, run `uv run ruff` and `uv run mypy src/` and confirm both pass.
 
 Feel free to open issues or contribute new profiles, Modelfiles, or pipeline steps.

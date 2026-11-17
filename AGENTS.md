@@ -63,8 +63,21 @@ Do **not** hardcode Python versions or paths; respect `.python-version` and mise
 
 ## 5. Coding conventions & rules
 
-- **Do not commit or push unless explicitly asked.** Agents must not create git commits, push branches, or alter the commit history unless the user specifically requests it. Limit yourself to reading files, making code edits, and running commands/tests — leave version-control actions to the user.
-- **Never commit directly to `main`.** All changes must be made on a dedicated feature branch (e.g. `feature/your-change-name`), never on `main` or the default branch. Create a branch before committing, then open a pull request for review. See `CONTRIBUTION.md` for branch naming (Conventional Branch) and commit message (Conventional Commits) requirements.
+## 5. Coding conventions & rules
+
+### Authorization (read first)
+
+- **Every git operation requires separate explicit approval.** Commit, push, branch creation, merge, pull request opening, and file deletion each need their own explicit request. No git operation is assumed approved from a prior conversation or command.
+- **Session-scoped authorization only.** Permission to commit or push for one specific command applies only to that command. It does not carry over to subsequent requests, and each new commit, push, or merge requires its own explicit request. A prior approval is never standing authorization for later commands.
+- **Commit-on-merge is not automatic.** Allowing a commit in one context does not authorize merging that branch, nor does it authorize commits on later requests. Each commit, push, or merge is a separate decision requiring its own explicit approval.
+- **Standing authorizations do not exist.** Saying "yes" once never means "yes forever." Each session, each command, each pull request needs its own explicit request.
+- **Present-before-acting.** For any version control operation, the agent states exactly what it will do and waits for a yes/no before running any git command.
+
+### What agents must NOT do
+
+- Do not commit, push, create branches, delete files, open pull requests, or merge without being explicitly asked for that specific operation.
+- Do not perform cleanup (removing, renaming, or deleting files) without explicit user approval, even if it seems obvious or redundant.
+- Do not commit directly to `main`. All changes must be made on a dedicated feature branch (e.g. `feature/your-change-name`), never on `main` or the default branch. Create a branch before committing, then open a pull request for review. See `CONTRIBUTING.md` for branch naming (Conventional Branch) and commit message (Conventional Commits) requirements.
 - **Pre-commit hook.** A hook at `.githooks/pre-commit` blocks commits on `main`, `master`, or `develop`. It is active via `git config core.hooksPath .githooks` (already set). If it ever fires, create a feature branch and try again.
 - **GitHub branch protection.** `main` is protected on GitHub: direct pushes are blocked; all changes must come through a pull request with at least one approving review.
 - **Clean up temporary files.** Remove any temporary files, scratch scripts, test outputs, or artifacts created during testing before you finish. Do not leave test files, debug output, or temporary data in the repository.
@@ -73,6 +86,12 @@ Do **not** hardcode Python versions or paths; respect `.python-version` and mise
 - **`opencode.json` is auto-generated.** Edits are allowed for local testing, but expect the CLI to overwrite it on profile launch. Do not commit profile-specific secrets into it.
 - **`src/renpy_game/*` is gitignored** (except `.gitkeep`). Do not add game assets or extracted archives to commits.
 - **Respect the NVIDIA proxy rate limit.** The local proxy (`nvidia_proxy.py`) enforces ~36 RPM to stay under NVIDIA's 40 RPM quota. Do not bypass or raise the rate limit without a reason.
+- **No force-push on shared branches.** Never force-push to `main`, `master`, `develop`, or any branch others may have pulled. If history must be rewritten on your own feature branch, ask first.
+- **No committing secrets or `.env` real values.** Never commit `mise.local.toml`, `.env`, or any file containing real `NVIDIA_API_KEY`, `GH_TOKEN`, or other credentials. Only placeholder templates may be tracked.
+- **Review before merge, even for agent-authored changes.** An agent must not approve or merge its own diffs. Every pull request needs a human approving review before it lands.
+- **Run ruff + mypy before every commit.** `uv run ruff` must pass with zero errors and `uv run mypy src/` with zero issues before any commit is created.
+- **One logical change per commit.** Keep each commit to a single, logically grouped change. Do not bundle unrelated fixes into one commit.
+- **Verify on a copy before apply/restore.** The compose/apply pass rewrites live `.rpy` scripts. Run with `--dry-run` first, or test on a copy, before applying or restoring to the live game folder.
 - **Context backups.** `ConversationMonitor` saves Markdown backups under `logs/conversations/` when the context threshold is approached. Do not delete these backups during an active session.
 - Match `PARAMETER num_ctx` in Ollama Modelfiles to the `context_limit` in the corresponding `config.json` profile entry.
 - Existing tooling caches: `.ruff_cache`, `.mypy_cache` — `ruff` and `mypy` are used where configured; run via `uv run ruff` / `uv run mypy` if available.
@@ -89,3 +108,13 @@ Do **not** hardcode Python versions or paths; respect `.python-version` and mise
 - Check `src/converter/compose/README.md` for compose/apply/restore documentation.
 - Use the skills in `.agents/skills/` when applicable (e.g. `git-commit` for commits, `context-map` before large changes).
 - If you need to change package metadata, edit `pyproject.toml` and regenerate `uv.lock` with `uv lock`.
+
+## Done means
+
+- `uv run ruff` passes with zero errors, and `uv run mypy src/` passes with zero issues — the required checks before any pull request (`CONTRIBUTING.md`).
+
+## Never merges without a human
+
+A person has to have **read this diff** before it lands. Telling an agent "merge it when you're done" is approving a goal, not this change — so it does not count for anything on this list. Everywhere else it counts fine, which is the point of having a list.
+
+- Any change to `main` (direct pushes are blocked by GitHub branch protection; requires a pull request with at least one approving review)

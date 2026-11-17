@@ -1,7 +1,8 @@
-# Contribution Guide
+# Contributing
 
 Thank you for contributing to the Ren'Py Photoreal VN Converter! This guide
-describes how to raise contributions and pull requests (PRs).
+describes how to raise contributions and pull requests (PRs). The full rules
+live here.
 
 ## Before you start
 
@@ -55,7 +56,7 @@ Two layers prevent direct commits to `main`:
 3. Follow [Conventional Commits](https://www.conventionalcommits.org/):
    ```
    <type>(<scope>): <summary>
-   
+
    <body>
    ```
    Valid types: `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`,
@@ -108,7 +109,7 @@ fix, not the implementation details.
 
 - `src/converter/decompile/decompile.py` — refactored into submodules
 - `src/converter/decompile/scan.py` — added image category detection
-- `CONTRIBUTION.md` — added contribution guide
+- `CONTRIBUTING.md` — added contribution guide
 
 ## Checks
 
