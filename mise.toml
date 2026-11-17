@@ -70,9 +70,9 @@ description = "List all character folder names (source of truth for character ma
 run = "python -m converter.compose.review chars-list"
 
 [tasks.compose-review]
-description = "Review scenes needing character association and unmapped speakers (blocks apply until resolved)."
-run = "python -m converter.compose.review compose-review"
-
-[tasks.review-interactive]
 description = "Interactively review unmapped speakers and scenes missing character association, one at a time."
 run = "python -m converter.compose.interactive_review"
+
+[tasks.review-interactive]
+description = "Alias for compose-review: interactive review of speakers and scenes."
+run = "mise run compose-review"
