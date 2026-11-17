@@ -159,6 +159,71 @@ def _clean_output_dir(config: GameConfig) -> None:
         print(f"Cleaned output directory: {output_dir}")
 
 
+def _print_manual_review_instructions(config: GameConfig) -> None:
+    """Print end-of-compose instructions for resolving pending reviews.
+
+    The primary recommendation is to run ``compose-review`` interactively.
+    Manual editing of the report files is offered as an alternative for users
+    who prefer to resolve items by hand.
+    """
+    reports_dir = config.resolved_paths()["manifest_path"].parent
+    pending_path = reports_dir / "review_pending.json"
+
+    if not pending_path.is_file():
+        return
+
+    try:
+        pending = json.loads(pending_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return
+
+    scenes = pending.get("scenes", [])
+    speakers = pending.get("unmapped_speakers", [])
+    if not scenes and not speakers:
+        return
+
+    print("\n=== Pending scene review ===")
+    print(f"{len(scenes)} scene composite(s) lack character association.")
+    print(f"{len(speakers)} speaker(s) not mapped to a character folder.")
+    print(f"Review file: {pending_path}")
+    print()
+    print("Recommended next step: review interactively with compose-review:")
+    print("  mise run compose-review")
+    print("or")
+    print(f"  python -m converter.compose.review compose-review {CONFIG_PATH}")
+    print()
+
+    print("Alternative: resolve manually by editing the report files:")
+    if scenes:
+        print("1) Associate a character with a scene composite:")
+        print(f"   - Open {reports_dir / 'manifest_scene.json'}")
+        print("   - Find the scene composite under ``composites`` and add:")
+        print('        "characters": [')
+        print('            {"character": "<folder>", "evidence": ["script_identifier:<script>:<line>"]}')
+        print("        ],")
+        print('        "character_association_status": "associated",')
+        print("   - Then cut-and-paste that record into manifest_scene.json and")
+        print("     remove it from the ``scenes`` array in review_pending.json.")
+        print()
+    if speakers:
+        print("2) Resolve an unmapped speaker:")
+        print(f"   - Open {reports_dir / 'character_aliases.json'}")
+        print('   - Add the speaker under its character folder, e.g.:')
+        print('        "clothes": {')
+        print('            "folder": "archive/chars/clothes",')
+        print('            "aliases": ["clothes"]')
+        print("        },")
+        print("   - Then remove the speaker from ``unmapped_speakers`` in")
+        print("     review_pending.json.")
+        print()
+
+    print("After resolving (either way), verify nothing remains:")
+    print("  mise run compose-review")
+    print("or")
+    print(f"  python -m converter.compose.review compose-review {CONFIG_PATH}")
+    print("  then apply:  mise run apply")
+
+
 def run_pipeline(
     dry_run: bool = False,
     compose_only: bool = False,
@@ -212,6 +277,7 @@ def run_pipeline(
             manifest = Composer(config).compose(dry_run=dry_run, clean_output=clean_output)
             ManifestWriter(config).write(manifest, dry_run=dry_run)
             print("\n=== Compose complete. Apply step deferred. ===")
+            _print_manual_review_instructions(config)
             return 0
 
         if apply_only:
@@ -247,6 +313,7 @@ def run_pipeline(
     manifest = Composer(config).compose(dry_run=dry_run, clean_output=clean_output)
     ManifestWriter(config).write(manifest, dry_run=dry_run)
     print("\n=== Compose complete. Apply step deferred. ===")
+    _print_manual_review_instructions(config)
 
     print("\n=== Pipeline complete ===")
     return 0

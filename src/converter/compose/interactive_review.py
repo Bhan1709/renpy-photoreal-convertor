@@ -152,12 +152,12 @@ def _save_all_category_manifests(reports_dir: Path, all_data: dict[str, dict]) -
 
 
 def _save_pending_review(reports_dir: Path, pending: dict) -> None:
-    """Write the pending review data back to ``scene_review_pending.json``.
+    """Write the pending review data back to ``review_pending.json``.
 
     Resolved entries (mapped/rejected speakers, associated/rejected scenes)
     are removed from this file so they are not re-reviewed on subsequent runs.
     """
-    pending_path = reports_dir / "scene_review_pending.json"
+    pending_path = reports_dir / "review_pending.json"
     pending_path.write_text(json.dumps(pending, indent=2), encoding="utf-8")
 
 
