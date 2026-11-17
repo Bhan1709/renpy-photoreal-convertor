@@ -61,9 +61,15 @@ def _clickable(path: Path | str, base: Path | None = None) -> str:
 # --------------------------------------------------------------------------- #
 
 def _load_known_char_folders(config: GameConfig) -> set[str]:
-    """Return the set of known character folder names under ``chars/``."""
+    """Return the set of known character folder names under ``chars/``.
+
+    Includes ``narrator`` so it can be selected as a valid character name
+    during interactive review even though it has no asset folder.
+    """
     associator = CharacterAssociator(config)
-    return set(associator.known_char_folders())
+    folders = set(associator.known_char_folders())
+    folders.add("narrator")
+    return folders
 
 
 def _load_speaker_aliases(reports_dir: Path) -> dict[str, str]:
