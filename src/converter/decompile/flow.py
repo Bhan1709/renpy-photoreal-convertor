@@ -12,7 +12,17 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from cli import Choice, console, error, info, kv, rule, select, success
+from cli import (
+    Choice,
+    console,
+    error,
+    info,
+    is_interactive,
+    kv,
+    rule,
+    select,
+    success,
+)
 
 from .config import write_config
 from .constants import CONFIG_PATH, GAME_FOLDER, RENPY_GAMES, ROOT
@@ -97,28 +107,25 @@ def process_game(
             set_game_folder_rel_path(game_folder)
 
     grid = Table.grid(expand=False, padding=(0, 1))
-    grid.add_column(style="dim", width=3)
+    grid.add_column(style="dim", width=1)
     grid.add_column()
     grid.add_row(
-        Text.from_markup("[dim]1.[/dim]"),
-        Text.from_markup(f"Edit exclusion patterns in {CONFIG_PATH} if needed."),
-    )
-    grid.add_row(
-        Text.from_markup("[dim]2.[/dim]"),
-        Text.from_markup("Sync exclusions:"),
-    )
-    grid.add_row(
-        Text(""),
-        Text.from_markup("     [cyan]mise run exclusions-sync[/cyan]"),
-    )
-    grid.add_row(
-        Text(""),
-        Text.from_markup("[dim]   or[/dim]"),
-    )
-    grid.add_row(
-        Text(""),
+        Text.from_markup("[dim]-[/dim]"),
         Text.from_markup(
-            "     [cyan]python src/converter/decompile/sync_exclusions_cli.py[/cyan]"
+            f"Script exclusions: [cyan]exclusion.script.patterns[/cyan] "
+            f"in {CONFIG_PATH}"
+        ),
+    )
+    grid.add_row(
+        Text.from_markup("[dim]-[/dim]"),
+        Text.from_markup(
+            "Image exclusions: [cyan]exclusion.image.patterns[/cyan] in the same file"
+        ),
+    )
+    grid.add_row(
+        Text.from_markup("[dim]-[/dim]"),
+        Text.from_markup(
+            "[dim]Compose syncs these automatically; no separate sync step.[/dim]"
         ),
     )
 
@@ -126,21 +133,15 @@ def process_game(
     console.print(
         Panel(
             Group(
-                Text(
-                    "Manual alternative: adjust exclusions before composing",
-                    style="bold blue",
-                ),
-                Text(""),
-                grid,
-                Text(""),
-                Text(
-                    "Copy-paste this command to run compose later:", style="bold blue"
-                ),
-                Text.from_markup("  [cyan]mise run compose-clean[/cyan]"),
-                Text.from_markup("[dim]or[/dim]"),
+                Text("Next step: compose photoreal composites", style="bold blue"),
+                Text.from_markup("  [cyan]mise run compose[/cyan]"),
                 Text.from_markup(
-                    "  [cyan]python -m converter.pipeline --compose-only --clean-output[/cyan]"
+                    "[dim]Checks exclusions first, then offers clean, compose, "
+                    "clean+compose, review, and apply.[/dim]"
                 ),
+                Text(""),
+                Text("Manual exclusion edit (optional)", style="bold blue"),
+                grid,
             ),
             title="Decompile flow complete",
             border_style="magenta",
@@ -149,17 +150,20 @@ def process_game(
     )
     console.print()
 
+    if not is_interactive():
+        info("No interactive terminal: run 'mise run compose' when ready.")
+        return summary
+
     choice = select(
-        "What would you like to do next?",
+        "Continue to compose?",
         choices=[
             Choice(
-                title="Run compose-clean now (build photoreal composites)",
-                value="compose_clean",
+                title="Yes, open the compose menu (clean, compose, review, apply)",
+                value="compose",
             ),
-            Choice(title="Run compose now (default options)", value="compose"),
-            Choice(title="Quit", value="quit"),
+            Choice(title="Quit (run 'mise run compose' later)", value="quit"),
         ],
-        default="compose_clean",
+        default="compose",
         use_shortcuts=True,
     )
 
@@ -167,19 +171,8 @@ def process_game(
         info("Aborted.")
         return summary
 
-    if choice == "compose_clean":
-        cmd = [
-            sys.executable,
-            "-m",
-            "converter.pipeline",
-            "--compose-only",
-            "--clean-output",
-        ]
-        info(f"Running: {' '.join(cmd)}")
-        return subprocess.run(cmd, check=False).returncode
-
     if choice == "compose":
-        cmd = [sys.executable, "-m", "converter.pipeline", "--compose-only"]
+        cmd = [sys.executable, "-m", "converter.compose"]
         info(f"Running: {' '.join(cmd)}")
         return subprocess.run(cmd, check=False).returncode
 

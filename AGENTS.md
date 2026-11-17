@@ -56,7 +56,7 @@ Do **not** hardcode Python versions or paths; respect `.python-version` and mise
 │   │   │                  # monitor.py, nvidia_proxy.py, Modelfiles/, __main__.py
 │   ├── converter/         # Ren'Py conversion toolkit (pipeline.py, config.json, __init__.py)
 │   │   ├── decompile/     # Ren'Py decompile/extract subpackage (decompile.py, __init__.py)
-│   │   ├── compose/       # Composite compose + apply subpackage (composer.py, applier.py, config.py, cli.py)
+│   │   ├── compose/       # Compose/review/apply subpackage (cli.py, compose_pass/, apply_pass/, review/)
 │   │   └── restore/       # Restore .rpy files from archive.rpa (restore.py, __init__.py)
 │   └── renpy_game/        # User places Ren'Py games here (gitignored except .gitkeep)
 ```

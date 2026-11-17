@@ -135,37 +135,47 @@ Use :meth:`GameConfig.resolved_paths` to get all resolved absolute output paths.
 
 ### Via CLI
 
+`python -m converter.compose` is a single interactive entry point. It always
+starts with an **exclusion check** (asks whether to add script/image exclusion
+patterns, then syncs them into `src/converter/config.json`), then shows an
+action menu:
+
+| Choice | Effect |
+|--------|--------|
+| Clean previous compose output | Removes `<game_root>/composites` |
+| Compose (no apply) | Renders composites + manifests, apply deferred |
+| Clean and compose | Cleans first, then composes |
+| Review composites | Runs the interactive scene/speaker review |
+| Apply composites | Adopts composites into live `.rpy` scripts |
+| Quit | Exits without changes |
+
+After composing, the CLI prints the pending scene/speaker review details and
+offers to run the interactive review now or quit.
+
 ```bash
-# Defaults to src/converter/config.json (produced by decompile)
-python -m converter.compose --config src/converter/config.json
+# Interactive menu (exclusions -> action menu -> post-compose review prompt)
+python -m converter.compose
 
-# Explicit output directory
-python -m converter.compose --config src/converter/config.json --output-dir "composites"
+# Skip the menu with an explicit action
+python -m converter.compose clean            # remove previous compose output
+python -m converter.compose compose          # compose only (no apply)
+python -m converter.compose clean-compose    # clean output, then compose
+python -m converter.compose review           # review scenes/speakers
+python -m converter.compose apply            # adopt composites into scripts
 
-# Custom manifest path
-python -m converter.compose --config src/converter/config.json --manifest "composites/reports/manifest.json"
-
-# Dry run (no PNGs or manifest written, apply skipped)
-python -m converter.compose --config src/converter/config.json --dry-run
-
-# Remove prior generated PNGs and manifest before rendering
-python -m converter.compose --config src/converter/config.json --clean-output
-
-# Compose pass only (skip script adoption)
-python -m converter.compose --config src/converter/config.json --compose-only
-
-# Apply pass only (requires an existing manifest)
-python -m converter.compose --config src/converter/config.json --apply-only
-
-# Restore .rpy files touched by the apply pass (per manifest)
-python -m converter.compose --config src/converter/config.json --restore-compose
+# Options
+--config PATH   # defaults to src/converter/config.json
+--dry-run       # compose without writing PNGs/manifests (skips review + apply)
 ```
 
-All CLI modes are also available through :mod:`converter.pipeline` (which adds
-the decompile stage and exclusion prompts):
+Non-interactive terminals (scripts, CI) skip prompts: the exclusion step only
+syncs, and no review prompt is shown.
+
+The full pipeline is also available through :mod:`converter.pipeline` (which
+adds the decompile stage):
 
 ```bash
-uv run python -m converter.pipeline                 # decompile -> exclusions -> compose (apply deferred)
+uv run python -m converter.pipeline                  # decompile -> exclusions -> compose (apply deferred)
 uv run python -m converter.pipeline --compose-only   # compose only (skip decompile)
 uv run python -m converter.pipeline --apply-only     # apply only (needs manifest)
 uv run python -m converter.pipeline --dry-run        # compose without writing
@@ -175,10 +185,8 @@ uv run python -m converter.pipeline --restore-compose # undo compose/apply (.rpy
 Or via mise tasks:
 
 ```bash
-mise run pipeline         # default flow: decompile + exclusions + compose
-mise run compose          # compose only (uses src/converter/config.json)
-mise run compose-clean    # compose only with --clean-output
-mise run apply            # apply only (requires manifest)
+mise run decompile        # decompile + extract, write config.json
+mise run compose          # interactive compose (exclusions -> menu -> review/apply)
 mise run restore-compose  # undo compose/apply (.rpy from archive)
 ```
 

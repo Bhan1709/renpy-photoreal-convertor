@@ -1,9 +1,13 @@
 """Review utilities for scene character association and unmapped speakers (typer + rich).
 
-Mise tasks:
+Invoked from::
 
-    mise run compose-review      # Interactive review of scenes + unmapped speakers
-    mise run chars-list          # Fetch all character names (source of truth)
+    mise run compose          # menu -> Review composites
+    python -m converter.compose review
+
+Character names (source of truth)::
+
+    python -m converter.compose.review chars-list
 
 Run from the repository root.
 """

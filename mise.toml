@@ -6,59 +6,22 @@ uv = "latest"
 [settings]
 python.uv_venv_auto = "create|source"
 
-############## AGENT TASKS ##############
+############## AGENT ##############
 
 [tasks.agent]
 description = "Launch OpenCode with a model profile (omit profile for interactive picker; or pass stop-proxy / list-profiles)"
 run = "python -m agent"
 
-############## CONVERTER TASKS ##############
- 
-[tasks.converter]
-description = "Show converter welcome message and list available entry points"
-run = "python -m converter.__init__"
-
-[tasks.pipeline]
-description = "Default flow: decompile + prompt for exclusion patterns + compose (skip apply). Verify compose output before applying."
-run = "python -m converter.pipeline"
-
-############## COMPILE TASKS ##############
+############## CONVERTER ##############
 
 [tasks.decompile]
 description = "Decompile a Ren'Py game (interactive: clean, decompile, clean+decompile, or quit)"
 run = "python -m converter.decompile"
 
-[tasks.exclusions-sync]
-description = "Remove exclusion-pattern-matched entries from rpy_files/ren_py_files in src/converter/config.json"
-run = "python src/converter/decompile/sync_exclusions_cli.py"
-
-############## COMPOSE TASKS ##############
-
 [tasks.compose]
-description = "Compose composites + write manifest for a game (skip apply). Uses src/converter/config.json (no --game needed)."
-run = 'python -m converter.pipeline --compose-only'
-
-[tasks.compose-clean]
-description = "Removes older composites and composes new ones with manifests. Uses src/converter/config.json (no --game needed)."
-run = 'python -m converter.pipeline --compose-only --clean-output'
-
-[tasks.config-compose]
-description = "Compose composites directly via converter.compose CLI (requires --config)"
+description = "Compose a Ren'Py game (interactive: exclusion check, clean, compose, clean+compose, review, apply)"
 run = "python -m converter.compose"
 
-[tasks.compose-review]
-description = "Interactively review unmapped speakers and scenes missing character association, one at a time."
-run = "python -m converter.compose.review"
-
-[tasks.chars]
-description = "Fetch all character names (source of truth) from config.json"
-run = "python -m converter.compose.review chars-list"
-
-[tasks.apply]
-description = "Apply composites into live .rpy scripts for a game. Uses src/converter/config.json (no --game needed)."
-run = 'python -m converter.pipeline --apply-only'
-
 [tasks.restore-compose]
-description = "Undo compose/apply: restore .rpy files from archive.rpa for a game. Uses src/converter/config.json (no --game needed)."
-run = 'python -m converter.pipeline --restore-compose'
-
+description = "Undo compose/apply: restore .rpy files from archive.rpa"
+run = "python -m converter.pipeline --restore-compose"

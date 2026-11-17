@@ -16,6 +16,8 @@ Modern CLI design inspired by uv, ruff, and Cargo:
 
 from __future__ import annotations
 
+import sys
+
 import questionary
 import typer
 from questionary import Choice, Separator  # noqa: F401  # re-exported for consumers
@@ -174,6 +176,15 @@ def prompt_text(message: str, default: str = "") -> str | None:
     except KeyboardInterrupt, EOFError:
         console.print()
         return None
+
+
+def is_interactive() -> bool:
+    """Return ``True`` when stdin and stdout are attached to a terminal.
+
+    Interactive prompts are skipped (and info messages printed instead) when
+    the CLI runs without a TTY, for example from a script or CI job.
+    """
+    return bool(sys.stdin and sys.stdin.isatty() and sys.stdout and sys.stdout.isatty())
 
 
 def select(

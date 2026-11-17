@@ -6,7 +6,7 @@ import fnmatch
 import json
 from pathlib import Path
 
-from cli import error
+from cli import error, info, kv, prompt_text, rule, success
 
 from .config import load_config
 
@@ -101,3 +101,93 @@ def sync_exclusions(config_path: Path = Path("src/converter/config.json")) -> di
         "ren_py_before": len(before_ren_py),
         "ren_py_after": len(config["ren_py_files"]),
     }
+
+
+def prompt_exclusion_patterns(
+    config_path: Path = Path("src/converter/config.json"),
+) -> bool:
+    r"""Interactively add script and image exclusion patterns to ``config.json``.
+
+    Shows the current ``exclusion.script.patterns`` and
+    ``exclusion.image.patterns``, asks for comma-separated additions for each
+    (pressing Enter keeps the current list), and writes the file back when
+    anything changed.
+
+    Script exclusions filter entries from ``rpy_files``/``ren_py_files`` (the
+    include set used by ``parser.files()`` and the character associator).
+    Image exclusions filter layers whose source path matches a pattern, so
+    those image folders are not scanned during compose.
+
+    Returns ``True`` if ``config.json`` was updated, ``False`` otherwise.
+    """
+    if not config_path.is_file():
+        error(f"Config not found: {config_path}")
+        info("Run decompile first to generate it.")
+        return False
+
+    try:
+        data = json.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        error(f"Could not read config {config_path}: {exc}")
+        return False
+
+    exclusion = data.get("exclusion", {}) or {}
+    script_current = list(exclusion.get("script", {}).get("patterns", []) or [])
+    image_current = list(exclusion.get("image", {}).get("patterns", []) or [])
+
+    rule("Exclusion patterns")
+    kv("Script exclusions", str(script_current))
+    raw = prompt_text(
+        "Add script exclusion patterns (comma-separated), "
+        "or press Enter to keep current",
+        default="",
+    )
+    if raw is None:
+        info("Aborted.")
+        return False
+    script_new = [p.strip() for p in raw.split(",") if p.strip()]
+    if script_new:
+        script_current = sorted(set(script_current) | set(script_new))
+
+    kv("Image exclusions", str(image_current))
+    raw = prompt_text(
+        "Add image exclusion patterns (comma-separated), "
+        "or press Enter to keep current",
+        default="",
+    )
+    if raw is None:
+        info("Aborted.")
+        return False
+    image_new = [p.strip() for p in raw.split(",") if p.strip()]
+    if image_new:
+        image_current = sorted(set(image_current) | set(image_new))
+
+    if not script_new and not image_new:
+        info("No new exclusion patterns; keeping the current config.")
+        return False
+
+    data["exclusion"] = {
+        "script": {
+            "patterns": script_current,
+            "note": (
+                "Patterns matched against rpy_files/ren_py_files entries; "
+                "matching entries are removed from the scan list"
+            ),
+        },
+        "image": {
+            "patterns": image_current,
+            "note": (
+                "Patterns matched against image source paths; layers whose "
+                "source starts with a matching folder are excluded from "
+                "compose scanning"
+            ),
+        },
+    }
+    try:
+        config_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    except OSError as exc:
+        error(f"Could not write config {config_path}: {exc}")
+        return False
+
+    success(f"Updated exclusions: script={script_current}, image={image_current}")
+    return True
