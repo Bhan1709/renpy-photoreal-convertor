@@ -299,9 +299,9 @@ if cached:
 
 ```python
 from converter.compose.config import load_config
-from converter.compose.composer import Composer
+from converter.compose.compose_pass import Composer
 from converter.compose.manifest import ManifestWriter
-from converter.compose.applier import Applier
+from converter.compose.apply_pass import Applier
 
 config = load_config("src/converter/config.json")
 

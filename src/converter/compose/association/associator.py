@@ -11,11 +11,11 @@ import re
 from collections import defaultdict
 from pathlib import Path
 
-from .config import GameConfig
-from .errors import ComposeError
-from .models import Layer
-from .parser import files
-from .regexp import (
+from ..config import GameConfig
+from ..errors import ComposeError
+from ..models import Layer
+from ..parsing.files import files
+from ..regexp import (
     CHARACTER_DEF_RE,
     HEADING_RE,
     IDENTIFIER_RE,
@@ -29,7 +29,8 @@ class CharacterAssociator:
     """Infers involved characters from XXX asset paths and Ren'Py definitions."""
 
     def __init__(
-        self, config: GameConfig,
+        self,
+        config: GameConfig,
         script_lines: dict[Path, tuple[str, ...]] | None = None,
     ) -> None:
         self.config = config
@@ -87,9 +88,7 @@ class CharacterAssociator:
             for _, raw in body:
                 text = raw.split("#", 1)[0]
                 for token in IDENTIFIER_RE.findall(text):
-                    evidence_source = (
-                        f"script_identifier:{block.path.relative_to(self.config.game_root).as_posix()}:{block.line}"
-                    )
+                    evidence_source = f"script_identifier:{block.path.relative_to(self.config.game_root).as_posix()}:{block.line}"
                     add_alias(token, evidence_source)
                     add_identifier_tokens(token, evidence_source)
             try:
@@ -103,7 +102,7 @@ class CharacterAssociator:
                     except OSError:
                         lines = []
                 assert lines is not None
-                before = lines[max(0, block.line - 80): block.line - 1]
+                before = lines[max(0, block.line - 80) : block.line - 1]
                 base_line = max(1, block.line - 79)
                 headings = [
                     (i, raw)
@@ -130,7 +129,9 @@ class CharacterAssociator:
 
         for location in usage_locations or []:
             statement = location.get("statement", "")
-            usage_source = f"script_usage:{location.get('script')}:{location.get('line')}"
+            usage_source = (
+                f"script_usage:{location.get('script')}:{location.get('line')}"
+            )
             for token in IDENTIFIER_RE.findall(statement):
                 add_identifier_tokens(token, usage_source)
             for alias, canonicals in aliases.items():
@@ -265,9 +266,8 @@ class CharacterAssociator:
                 for canonical in candidates:
                     if canonical in self.config.non_character_folders:
                         continue
-                    if (
-                        canonical not in display_by_folder
-                        or len(display_name) > len(display_by_folder[canonical])
+                    if canonical not in display_by_folder or len(display_name) > len(
+                        display_by_folder[canonical]
                     ):
                         display_by_folder[canonical] = display_name
         return aliases, folders, display_by_folder

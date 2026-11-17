@@ -12,9 +12,9 @@ from __future__ import annotations
 
 import sys
 
-from .character_associator import CharacterAssociator
-from .config import load_config
-from .interactive_review import review as interactive_review
+from ..association import CharacterAssociator
+from ..config import load_config
+from .interactive import review as interactive_review
 
 
 def chars_list(config_path: str = "src/converter/config.json") -> int:
@@ -32,7 +32,7 @@ def compose_review(config_path: str = "src/converter/config.json") -> int:
     """Review scenes needing character association and unmapped speakers.
 
     Delegates to the interactive review flow in
-    :mod:`converter.compose.interactive_review`.
+    :mod:`converter.compose.review.interactive`.
     """
     return interactive_review(config_path)
 
@@ -42,7 +42,9 @@ def main(argv: list[str] | None = None) -> int:
         argv = sys.argv[1:]
 
     if not argv:
-        print("Usage: python -m converter.compose.review <chars-list|compose-review> [config.json]")
+        print(
+            "Usage: python -m converter.compose.review <chars-list|compose-review> [config.json]"
+        )
         return 1
 
     command = argv[0]
@@ -54,7 +56,9 @@ def main(argv: list[str] | None = None) -> int:
         return compose_review(config_path)
 
     print(f"Unknown command: {command}")
-    print("Usage: python -m converter.compose.review <chars-list|compose-review> [config.json]")
+    print(
+        "Usage: python -m converter.compose.review <chars-list|compose-review> [config.json]"
+    )
     return 1
 
 

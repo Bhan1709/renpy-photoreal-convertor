@@ -66,9 +66,9 @@ Describe the flow in 4-6 steps using file-backed evidence:
 |---------|-------------|---------------|
 | Dependency injection via explicit `GameConfig` | `converter.compose.config.GameConfig`, passed to `Composer`, `Applier`, `Resolver`, `Compositor`, `CharacterAssociator` | No module-level mutable global state; thread-safe and unit-testable (`src/converter/compose/README.md` design principles) |
 | Frozen typed domain models | `src/converter/compose/models.py` (`Layer`, `CompositeRecord`, `CompositeManifest`, `AdoptionRecord`, `AdoptionReport`) with `replace()`/`field_replace` for immutable updates | Explicit, self-documenting data; immutable updates |
-| Strategy pattern | `converter.compose.compositor.Compositor` (CPU/PIL `CompositorStrategy` protocol) | Compositing backend interchangeable |
+| Strategy pattern | `converter.compose.compositing.Compositor` (CPU/PIL `CompositorStrategy` protocol) | Compositing backend interchangeable |
 | Custom exception hierarchy | `src/converter/compose/errors.py` (`ConfigError`, `ApplyError`, `ManifestError`); `src/converter/restore/errors.py` (`RestoreError`); `src/agent/config.py` (`ConfigError`) | Structured error handling per layer |
-| Single-responsibility modules | One concern per module (`parser`, `resolver`, `conditions`, `compositor`, `emitter`, `record`, `manifest`, `regexp`) | `src/converter/compose/README.md` design principles |
+| Single-responsibility modules | One concern per module (`parsing`, `resolution`, `conditions`, `compositing`, `association`, `records`, `compose_pass`, `apply_pass`, `manifest`, `regexp`, `review`) | `src/converter/compose/README.md` design principles |
 | Rate-limiting reverse proxy | `src/agent/nvidia_proxy.py` (`RateLimiter`, ~36 RPM, 429 retry) | Stay under NVIDIA 40 RPM quota (`AGENTS.md` §5) |
 | Context-window monitor + Markdown backups | `src/agent/monitor.py` (`ConversationMonitor`, backups under `logs/conversations/`) | Preserve conversation state near context limit (`AGENTS.md` §5) |
 

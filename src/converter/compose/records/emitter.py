@@ -1,21 +1,21 @@
 """Composite emission and deduplication during the compose pass.
 
 Encapsulates the state previously held in a closure inside
-:meth:`Composer.compose` so it can be instantiated and unit-tested
-independently.
+:meth:`converter.compose.compose_pass.orchestrate.Composer.compose` so it can be
+instantiated and unit-tested independently.
 """
 
 from __future__ import annotations
 
 from tqdm import tqdm  # type: ignore[import-untyped]
 
-from .character_associator import CharacterAssociator
-from .compositor import Compositor
-from .config import GameConfig
-from .models import CompositeRecord, Layer
-from .parser import ScriptBlock, ScriptIndex
+from ..association import CharacterAssociator
+from ..compositing import Compositor
+from ..config import GameConfig
+from ..models import CompositeRecord, Layer
+from ..parsing import ScriptBlock, ScriptIndex
+from ..resolution import Resolver
 from .record import _emit_record, _loc_to_usage, _normalize_layers, _record_key
-from .resolver import Resolver
 
 
 class _CompositeEmitter:
@@ -102,7 +102,9 @@ class _CompositeEmitter:
         self.use_count += 1
         self.bar.update(1)
 
-    def _merge_duplicate(self, key: tuple[str, str, str], locations: list[dict]) -> None:
+    def _merge_duplicate(
+        self, key: tuple[str, str, str], locations: list[dict]
+    ) -> None:
         """Merge usage locations for a duplicate composite key."""
         existing = self.records_by_key[key]
         new_locs = [

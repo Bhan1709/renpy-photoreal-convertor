@@ -24,16 +24,16 @@ import json
 from pathlib import Path
 from typing import cast
 
-from .character_associator import CharacterAssociator
-from .config import GameConfig
-from .errors import ManifestError
-from .models import CompositeManifest, CompositeRecord
+from ..association import CharacterAssociator
+from ..config import GameConfig
+from ..errors import ManifestError
+from ..models import CompositeManifest, CompositeRecord
 
 KNOWN_FAMILIES = ("bg", "char", "scene", "gui", "other")
 
 # Character alias file — source of truth for character names and their speaker
-# aliases.  Seeded during compose from chars/ folders and Character()
-# declarations; used by the interactive review task.
+# aliases.  Seeded during compose from chars/ folders and Character() declarations;
+# used by the interactive review task.
 CHARACTER_ALIASES_FILE = "character_aliases.json"
 
 
@@ -43,7 +43,7 @@ def _load_character_aliases(reports_dir: Path) -> dict[str, dict]:
     if alias_path.is_file():
         try:
             return json.loads(alias_path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
+        except json.JSONDecodeError, OSError:
             return {}
     return {}
 
@@ -136,7 +136,9 @@ class ManifestWriter:
     # ------------------------------------------------------------------ #
 
     def write(
-        self, manifest: CompositeManifest, dry_run: bool = False,
+        self,
+        manifest: CompositeManifest,
+        dry_run: bool = False,
     ) -> CompositeManifest:
         """Write per-category manifests + index to disk (unless ``dry_run``).
 
@@ -157,11 +159,7 @@ class ManifestWriter:
 
         if dry_run:
             scene_records = [r for r in manifest.composites_list if r.family == "scene"]
-            missing = [
-                r.composite_path
-                for r in scene_records
-                if not r.characters
-            ]
+            missing = [r.composite_path for r in scene_records if not r.characters]
             pending_scenes = missing
             unmapped_speakers: dict[str, list[str]] = {}
             association_summary = {
@@ -182,7 +180,9 @@ class ManifestWriter:
                     "summary": {"composites": len(cat_records)},
                 }
                 cat_path = reports_dir / f"manifest_{cat_name}.json"
-                cat_path.write_text(json.dumps(cat_manifest, indent=2), encoding="utf-8")
+                cat_path.write_text(
+                    json.dumps(cat_manifest, indent=2), encoding="utf-8"
+                )
                 category_files[cat_name] = str(cat_path)
 
             # Index carries the global (non-composite) data plus file references.
@@ -195,7 +195,9 @@ class ManifestWriter:
                 "unresolved": list(manifest.unresolved),
             }
             index_path = reports_dir / "manifest_index.json"
-            index_path.write_text(json.dumps(index_manifest, indent=2), encoding="utf-8")
+            index_path.write_text(
+                json.dumps(index_manifest, indent=2), encoding="utf-8"
+            )
 
             # Build pending review: scenes without character association, plus
             # all unmapped speakers found across scene composites (speakers in
@@ -208,9 +210,16 @@ class ManifestWriter:
                 {
                     "composite_path": r.composite_path,
                     "name": r.name,
-                    "definition": {"script": r.definition.script, "line": r.definition.line},
+                    "definition": {
+                        "script": r.definition.script,
+                        "line": r.definition.line,
+                    },
                     "usage_locations": [
-                        {"script": loc.script, "line": loc.line, "statement": loc.statement}
+                        {
+                            "script": loc.script,
+                            "line": loc.line,
+                            "statement": loc.statement,
+                        }
                         for loc in r.usage_locations
                     ],
                 }
@@ -232,14 +241,17 @@ class ManifestWriter:
             unmapped_speakers = dict(all_unmapped)
             pending_path = reports_dir / "review_pending.json"
             pending_path.write_text(
-                json.dumps({
-                    "pending_reviews": len(scene_without_chars),
-                    "scenes": scene_without_chars,
-                    "unmapped_speakers": [
-                        {"speaker": speaker, "composites": sorted(composites)}
-                        for speaker, composites in sorted(all_unmapped.items())
-                    ],
-                }, indent=2),
+                json.dumps(
+                    {
+                        "pending_reviews": len(scene_without_chars),
+                        "scenes": scene_without_chars,
+                        "unmapped_speakers": [
+                            {"speaker": speaker, "composites": sorted(composites)}
+                            for speaker, composites in sorted(all_unmapped.items())
+                        ],
+                    },
+                    indent=2,
+                ),
                 encoding="utf-8",
             )
 
@@ -279,9 +291,7 @@ class ManifestWriter:
             all_composites.extend(cat_data.get("composites", []))
 
         return CompositeManifest(
-            composites=tuple(
-                CompositeRecord.from_dict(c) for c in all_composites
-            ),
+            composites=tuple(CompositeRecord.from_dict(c) for c in all_composites),
             dynamic_states=index.get("dynamic_states", []),
             image_declarations=index.get("image_declarations", []),
             dynamic_declarations=index.get("dynamic_declarations", []),
@@ -311,13 +321,19 @@ def _print_summary(
     pending_scenes: list[str] | None = None,
     unmapped_speakers: dict[str, list[str]] | None = None,
 ) -> None:
-    print(json.dumps({
-        "scripts_scanned": manifest.summary["scripts_scanned"],
-        "composites": manifest.summary["composites"],
-        "uses_processed": manifest.summary["uses_processed"],
-        # Scene composites with no character association (details in review_pending.json).
-        "unresolved_scenes": len(pending_scenes or []),
-        # Speakers in scene dialogs not mapped to any char folder.
-        "unmapped_speakers": len(unmapped_speakers)
-            if isinstance(unmapped_speakers, dict) else 0,
-    }, indent=2))
+    print(
+        json.dumps(
+            {
+                "scripts_scanned": manifest.summary["scripts_scanned"],
+                "composites": manifest.summary["composites"],
+                "uses_processed": manifest.summary["uses_processed"],
+                # Scene composites with no character association (details in review_pending.json).
+                "unresolved_scenes": len(pending_scenes or []),
+                # Speakers in scene dialogs not mapped to any char folder.
+                "unmapped_speakers": len(unmapped_speakers)
+                if isinstance(unmapped_speakers, dict)
+                else 0,
+            },
+            indent=2,
+        )
+    )

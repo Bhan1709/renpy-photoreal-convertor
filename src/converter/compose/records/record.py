@@ -1,7 +1,7 @@
 """Record emission helpers for the compose pass.
 
 All functions that build, enrich, or render :class:`~converter.compose.models.CompositeRecord`
-instances live here.  This keeps :mod:`converter.compose.composer` focused on
+instances live here.  This keeps :mod:`converter.compose.compose_pass` focused on
 orchestration (pass ordering, index consumption, progress reporting) rather
 than record construction details.
 """
@@ -14,33 +14,37 @@ from pathlib import Path
 
 from PIL import Image
 
-from .character_associator import CharacterAssociator, _sub_non_alnum
-from .compositor import Compositor
-from .config import GameConfig
-from .models import (
+from ..association.associator import CharacterAssociator, _sub_non_alnum
+from ..compositing import Compositor
+from ..config import GameConfig
+from ..models import (
     CompositeRecord,
     DefinitionLocation,
     Layer,
     UsageLocation,
 )
-from .parser import (
+from ..parsing import (
     ScriptBlock,
     ScriptIndex,
     find_nearby_dialog,
 )
-from .resolver import Resolver
+from ..resolution import Resolver
 
 
 def _loc_to_usage(loc: dict) -> UsageLocation:
     """Convert a location dict to a :class:`UsageLocation`."""
     return UsageLocation(
-        script=loc["script"], line=loc["line"], statement=loc["statement"],
+        script=loc["script"],
+        line=loc["line"],
+        statement=loc["statement"],
         state_snapshot=loc.get("state_snapshot"),
     )
 
 
 def _resolve_speaker_name(
-    speaker: str, config: GameConfig, associator: CharacterAssociator,
+    speaker: str,
+    config: GameConfig,
+    associator: CharacterAssociator,
 ) -> str:
     """Resolve a speaker to its canonical character folder name for display.
 
@@ -81,12 +85,22 @@ def _normalize_layers(layers: list[Layer], config: GameConfig) -> list[Layer]:
     prefixes = tuple(f"{n}/" for n in config.categories.values())
     return [
         Layer(
-            source=x.source, line=x.line, group=x.group, conditions=x.conditions,
-            attribute=x.attribute, default_attribute=x.default_attribute,
-            offset=x.offset, offset_rel=x.offset_rel, chain_id=x.chain_id,
-            resolved_path=x.resolved_path, resolution_method=x.resolution_method,
-            warning=x.warning, unresolved_conditions=x.unresolved_conditions,
-            via_image_tag=x.via_image_tag, role=x.role, canvas_size=x.canvas_size,
+            source=x.source,
+            line=x.line,
+            group=x.group,
+            conditions=x.conditions,
+            attribute=x.attribute,
+            default_attribute=x.default_attribute,
+            offset=x.offset,
+            offset_rel=x.offset_rel,
+            chain_id=x.chain_id,
+            resolved_path=x.resolved_path,
+            resolution_method=x.resolution_method,
+            warning=x.warning,
+            unresolved_conditions=x.unresolved_conditions,
+            via_image_tag=x.via_image_tag,
+            role=x.role,
+            canvas_size=x.canvas_size,
             declaration_expression=x.declaration_expression,
         )
         for x in layers
@@ -106,8 +120,14 @@ def _restore_layer_order(layers: list[Layer], source_order: list[Layer]) -> list
 
     def key(layer: Layer) -> tuple:
         return (
-            layer.source, layer.line, layer.group, layer.conditions,
-            layer.attribute, layer.chain_id, layer.via_image_tag, layer.role,
+            layer.source,
+            layer.line,
+            layer.group,
+            layer.conditions,
+            layer.attribute,
+            layer.chain_id,
+            layer.via_image_tag,
+            layer.role,
         )
 
     positions: dict[tuple, int] = {}
@@ -141,7 +161,11 @@ def _record_key(kind: str, name: str, normalized: list[Layer]) -> tuple[str, str
 
 
 def _determine_family_and_path(
-    normalized: list[Layer], kind: str, name: str, config: GameConfig, digest: str,
+    normalized: list[Layer],
+    kind: str,
+    name: str,
+    config: GameConfig,
+    digest: str,
 ) -> tuple[Path, str, Path, str, str]:
     """Determine output family, sub-path, status, and target PNG path for a composite.
 
@@ -173,7 +197,10 @@ def _determine_family_and_path(
 
 
 def _render_or_reuse_png(
-    normalized: list[Layer], target: Path, compositor: Compositor, dry_run: bool,
+    normalized: list[Layer],
+    target: Path,
+    compositor: Compositor,
+    dry_run: bool,
 ) -> tuple[int, int] | None:
     """Render a composite PNG, or reuse an existing one if already on disk.
 
@@ -191,7 +218,7 @@ def _render_or_reuse_png(
             try:
                 with Image.open(target) as _im:
                     dimensions = _im.size
-            except (OSError, ValueError):
+            except OSError, ValueError:
                 dimensions = None
         else:
             image = compositor.composite(normalized, canvas_size=None)
@@ -218,7 +245,9 @@ def _build_base_record(
     """Build the base :class:`CompositeRecord` from shared data."""
     usage_locations = tuple(
         UsageLocation(
-            script=loc["script"], line=loc["line"], statement=loc["statement"],
+            script=loc["script"],
+            line=loc["line"],
+            statement=loc["statement"],
             state_snapshot=loc.get("state_snapshot"),
         )
         for loc in locations
@@ -246,7 +275,9 @@ def _build_base_record(
 
 
 def _enrich_char_record(
-    record: CompositeRecord, normalized: list[Layer], associator: CharacterAssociator,
+    record: CompositeRecord,
+    normalized: list[Layer],
+    associator: CharacterAssociator,
 ) -> CompositeRecord:
     """Enrich a ``char`` record with a character display name."""
     record = record.replace(family="char")
@@ -287,7 +318,11 @@ def _enrich_scene_record(
     block_file_index = index.per_file.get(block.path)
     block_lines = list(block_file_index.lines) if block_file_index is not None else None
     chars = associator.associate(
-        list(normalized), record.name, block, char_locs, lines=block_lines,
+        list(normalized),
+        record.name,
+        block,
+        char_locs,
+        lines=block_lines,
     )
 
     # Nearby dialog/narration surrounding each call site — recorded per usage location.
@@ -297,8 +332,10 @@ def _enrich_scene_record(
     for loc in usage_locations:
         lines = script_to_lines.get(loc.script)
         dialog = find_nearby_dialog(
-            Path(loc.script), loc.line,
-            max_dialogs_back=1, max_dialogs_forward=5,
+            Path(loc.script),
+            loc.line,
+            max_dialogs_back=1,
+            max_dialogs_forward=5,
             lines=list(lines) if lines is not None else None,
         )
         dialog_tuple = (
@@ -372,27 +409,40 @@ def _enrich_scene_record(
     for char_folder in sorted(dialog_chars):
         ev_list = dialog_chars[char_folder]
         if char_folder not in existing_chars:
-            merged_chars.append({
-                "character": char_folder,
-                "evidence": sorted(set(ev_list)),
-            })
+            merged_chars.append(
+                {
+                    "character": char_folder,
+                    "evidence": sorted(set(ev_list)),
+                }
+            )
             existing_chars.add(char_folder)
 
     if merged_chars or unmapped_speakers:
         record = record.replace(
             characters=tuple(merged_chars) if merged_chars else None,
             character_association_status="associated" if merged_chars else None,
-            unmapped_speakers=tuple(sorted(unmapped_speakers)) if unmapped_speakers else None,
+            unmapped_speakers=tuple(sorted(unmapped_speakers))
+            if unmapped_speakers
+            else None,
         )
 
     return record
 
 
 def _emit_record(
-    name: str, kind: str, normalized: list[Layer], locations: list[dict], block: ScriptBlock,
-    index: ScriptIndex, config: GameConfig, resolver: Resolver, compositor: Compositor,
-    associator: CharacterAssociator, *,
-    dry_run: bool = False, digest: str | None = None,
+    name: str,
+    kind: str,
+    normalized: list[Layer],
+    locations: list[dict],
+    block: ScriptBlock,
+    index: ScriptIndex,
+    config: GameConfig,
+    resolver: Resolver,
+    compositor: Compositor,
+    associator: CharacterAssociator,
+    *,
+    dry_run: bool = False,
+    digest: str | None = None,
 ) -> CompositeRecord | None:
     """Register a composite record (and optionally render its PNG).
 
@@ -413,8 +463,16 @@ def _emit_record(
         return None
 
     record = _build_base_record(
-        name, kind, normalized, locations, block, config, target, family,
-        status, dimensions,
+        name,
+        kind,
+        normalized,
+        locations,
+        block,
+        config,
+        target,
+        family,
+        status,
+        dimensions,
     )
     usage_locations = record.usage_locations
 
@@ -422,7 +480,13 @@ def _emit_record(
         record = _enrich_char_record(record, normalized, associator)
     elif family2 == "scene":
         record = _enrich_scene_record(
-            record, normalized, usage_locations, block, index, associator, config,
+            record,
+            normalized,
+            usage_locations,
+            block,
+            index,
+            associator,
+            config,
         )
 
     return record

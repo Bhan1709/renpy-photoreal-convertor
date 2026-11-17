@@ -97,7 +97,9 @@ class Layer:
             offset=tuple(data["offset"]) if data.get("offset") else None,
             offset_rel=tuple(data["offset_rel"]) if data.get("offset_rel") else None,
             chain_id=data.get("chain_id"),
-            resolved_path=Path(data["resolved_path"]) if data.get("resolved_path") else None,
+            resolved_path=Path(data["resolved_path"])
+            if data.get("resolved_path")
+            else None,
             resolution_method=data.get("resolution_method"),
             warning=data.get("warning"),
             unresolved_conditions=tuple(data.get("unresolved_conditions", [])),
@@ -154,7 +156,11 @@ class CompositeRecord:
 
     def with_usage(self, location: UsageLocation) -> CompositeRecord:
         """Return a copy with an additional usage location appended."""
-        locations = tuple(sorted(set(self.usage_locations) | {location}, key=lambda l: (l.script, l.line)))
+        locations = tuple(
+            sorted(
+                set(self.usage_locations) | {location}, key=lambda l: (l.script, l.line)
+            )
+        )
         return field_replace(self, usage_locations=locations)
 
     def replace(self, **changes) -> CompositeRecord:
@@ -168,14 +174,25 @@ class CompositeRecord:
             "name": self.name,
             "kind": self.kind,
             "status": self.status,
-            "definition": {"script": self.definition.script, "line": self.definition.line},
+            "definition": {
+                "script": self.definition.script,
+                "line": self.definition.line,
+            },
             "usage_locations": [
                 {
                     "script": loc.script,
                     "line": loc.line,
                     "statement": loc.statement,
-                    **({"state_snapshot": loc.state_snapshot} if loc.state_snapshot else {}),
-                    **({"dialog_context": list(loc.dialog_context)} if loc.dialog_context else {}),
+                    **(
+                        {"state_snapshot": loc.state_snapshot}
+                        if loc.state_snapshot
+                        else {}
+                    ),
+                    **(
+                        {"dialog_context": list(loc.dialog_context)}
+                        if loc.dialog_context
+                        else {}
+                    ),
                 }
                 for loc in self.usage_locations
             ],
@@ -213,19 +230,27 @@ class CompositeRecord:
                     line=loc["line"],
                     statement=loc["statement"],
                     state_snapshot=loc.get("state_snapshot"),
-                    dialog_context=tuple(loc["dialog_context"]) if loc.get("dialog_context") else None,
+                    dialog_context=tuple(loc["dialog_context"])
+                    if loc.get("dialog_context")
+                    else None,
                 )
                 for loc in data.get("usage_locations", [])
             ),
-            ordered_layers=tuple(Layer.from_dict(l) for l in data.get("ordered_layers", [])),
+            ordered_layers=tuple(
+                Layer.from_dict(l) for l in data.get("ordered_layers", [])
+            ),
             dimensions=tuple(data["dimensions"]) if data.get("dimensions") else None,
             dynamic_conditions=tuple(data.get("dynamic_conditions", [])),
             resolved_conditions=tuple(data.get("resolved_conditions", [])),
             family=data.get("family", data.get("kind", "")),
-            characters=tuple(data.get("characters", [])) if data.get("characters") else None,
+            characters=tuple(data.get("characters", []))
+            if data.get("characters")
+            else None,
             character_name=data.get("character_name"),
             character_association_status=data.get("character_association_status"),
-            unmapped_speakers=tuple(data.get("unmapped_speakers", [])) if data.get("unmapped_speakers") else None,
+            unmapped_speakers=tuple(data.get("unmapped_speakers", []))
+            if data.get("unmapped_speakers")
+            else None,
         )
 
 
