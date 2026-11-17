@@ -10,6 +10,8 @@ Main capabilities:
 - Decompile Ren'Py `.rpyc`/`.rpymc` scripts to readable `.rpy` source
 - Extract `.rpa`/`.rpi` archives into directory structures
 - Cache game folder relative paths for other converter subpackages
+- **Compose** photorealistic composites from game assets and adopt them into live Ren'Py scripts (`src/converter/compose/`)
+- **Restore** modified `.rpy` files from archives (`src/converter/restore/`)
 - Launch OpenCode with bundled model profiles (Ollama or NVIDIA) through `src/agent/`
 
 ## 2. Environment & package management
@@ -52,8 +54,10 @@ Do **not** hardcode Python versions or paths; respect `.python-version` and mise
 ├── src/
 │   ├── agent/             # OpenCode orchestration: cli.py, config.json, config.py, constants.py,
 │   │   │                  # monitor.py, nvidia_proxy.py, Modelfiles/, __main__.py
-│   ├── converter/         # Ren'Py decompile/extract subpackage (decompile.py, __init__.py)
-│   │   └── decompile/
+│   ├── converter/         # Ren'Py conversion toolkit (pipeline.py, config.json, __init__.py)
+│   │   ├── decompile/     # Ren'Py decompile/extract subpackage (decompile.py, __init__.py)
+│   │   ├── compose/       # Composite compose + apply subpackage (composer.py, applier.py, config.py, cli.py)
+│   │   └── restore/       # Restore .rpy files from archive.rpa (restore.py, __init__.py)
 │   └── renpy_game/        # User places Ren'Py games here (gitignored except .gitkeep)
 ```
 
@@ -82,5 +86,6 @@ Do **not** hardcode Python versions or paths; respect `.python-version` and mise
 
 - Check `src/agent/README.md` for the full agent CLI / profile / proxy documentation.
 - Check `src/converter/decompile/README.md` for decompile/extract documentation.
+- Check `src/converter/compose/README.md` for compose/apply/restore documentation.
 - Use the skills in `.agents/skills/` when applicable (e.g. `git-commit` for commits, `context-map` before large changes).
 - If you need to change package metadata, edit `pyproject.toml` and regenerate `uv.lock` with `uv lock`.
