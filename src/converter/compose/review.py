@@ -10,13 +10,11 @@ Run from the repository root.
 
 from __future__ import annotations
 
-import json
 import sys
-from pathlib import Path
 
+from .character_associator import CharacterAssociator
 from .config import load_config
 from .manifest import ManifestWriter
-from .character_associator import CharacterAssociator
 
 
 def chars_list(config_path: str = "src/converter/config.json") -> int:

@@ -431,18 +431,13 @@ def find_nearby_dialog(
         if m:
             if m.group(2) in NOT_SPEAKER:
                 return False
-            if _looks_like_asset_path(m.group(3)):
-                return False
-            return True
+            return not _looks_like_asset_path(m.group(3))
         m = NARRATOR_RE.match(raw)
         if m:
-            if _looks_like_asset_path(m.group(1)):
-                return False
-            return True
+            return not _looks_like_asset_path(m.group(1))
         return False
 
     def _extract_dialog(raw: str) -> DialogueLine | None:
-        text = raw.strip()
         m = SAY_RE.match(raw)
         if m:
             speaker = m.group(2)

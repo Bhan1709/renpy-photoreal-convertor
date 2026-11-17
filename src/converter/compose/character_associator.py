@@ -166,7 +166,7 @@ class CharacterAssociator:
         key = _sub_non_alnum(speaker)
         if not key:
             return set()
-        return set(self._aliases_cache.get(key, set()))
+        return set(self._aliases().get(key, set()))
 
     def display_name(self, char_folder: str) -> str:
         """Return the human-readable display name for a character asset folder."""

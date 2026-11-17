@@ -332,11 +332,12 @@ def _enrich_scene_record(
     # Merge dialog-inferred characters with any already found.
     existing_chars = {c["character"] for c in chars}
     merged_chars = list(chars)
-    for char_folder, evidence in sorted(dialog_chars.items()):
+    for char_folder in sorted(dialog_chars):
+        ev_list = dialog_chars[char_folder]
         if char_folder not in existing_chars:
             merged_chars.append({
                 "character": char_folder,
-                "evidence": sorted(set(evidence)),
+                "evidence": sorted(set(ev_list)),
             })
             existing_chars.add(char_folder)
 
