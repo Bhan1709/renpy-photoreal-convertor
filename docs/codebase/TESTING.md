@@ -44,7 +44,7 @@
 ### 6) Evidence
 
 - Scan output: `PERFORMANCE & TESTING` — "No performance testing configs detected."; `CI/CD PIPELINES` — "No CI/CD pipelines detected."
-- `CONTRIBUTION.md` §7: required pre-PR checks are `uv run ruff` and `uv run mypy src/` (lint + type check only; no test command).
+- `CONTRIBUTING.md` §7: required pre-PR checks are `uv run ruff` and `uv run mypy src/` (lint + type check only; no test command).
 - `README.md` 🚧 Roadmap: "Document CI/CD and testing setup" is listed as unchecked — confirms testing/CI is intentionally deferred.
 - `pyproject.toml`: dev dependency group contains only `mypy` and `ruff`; no test framework (e.g. pytest) is listed.
 

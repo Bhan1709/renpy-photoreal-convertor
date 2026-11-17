@@ -2,7 +2,7 @@
 
 Thank you for contributing to the Ren'Py Photoreal VN Converter! This guide
 describes how to raise contributions and pull requests (PRs). The full rules
-live here; see `CONTRIBUTION.md` for the same content kept in the project.
+live here.
 
 ## Before you start
 

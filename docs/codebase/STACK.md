@@ -30,8 +30,8 @@ List only high-impact production dependencies (frameworks, data, transport, auth
 
 | Tool | Purpose | Evidence |
 |------|---------|----------|
-| ruff | Linting/formatting (dev) | `pyproject.toml` `[dependency-groups] dev`; `CONTRIBUTION.md` required check `uv run ruff` |
-| mypy | Static type checking (dev) | `pyproject.toml` `[dependency-groups] dev`; `CONTRIBUTION.md` required check `uv run mypy src/` |
+| ruff | Linting/formatting (dev) | `pyproject.toml` `[dependency-groups] dev`; `CONTRIBUTING.md` required check `uv run ruff` |
+| mypy | Static type checking (dev) | `pyproject.toml` `[dependency-groups] dev`; `CONTRIBUTING.md` required check `uv run mypy src/` |
 
 ### 4) Key Commands
 
@@ -62,7 +62,7 @@ python src/converter/decompile/decompile.py  # decompile CLI shim
 - `pyproject.toml`
 - `uv.lock`
 - `src/agent/config.json`
-- `CONTRIBUTION.md`
+- `CONTRIBUTING.md`
 
 ## Extended Sections (Optional)
 

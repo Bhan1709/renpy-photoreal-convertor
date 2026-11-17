@@ -324,6 +324,6 @@ manifest, report = Applier(config).apply()
 
 ## Contributing
 
-See [CONTRIBUTION.md](CONTRIBUTION.md) for how to raise contributions and open pull requests. All changes must be made on a dedicated branch (Conventional Branch naming) and use Conventional Commits. Before opening a PR, run `uv run ruff` and `uv run mypy src/` and confirm both pass.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for how to raise contributions and open pull requests. All changes must be made on a dedicated branch (Conventional Branch naming) and use Conventional Commits. Before opening a PR, run `uv run ruff` and `uv run mypy src/` and confirm both pass.
 
 Feel free to open issues or contribute new profiles, Modelfiles, or pipeline steps.

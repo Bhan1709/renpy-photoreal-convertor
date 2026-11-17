@@ -66,7 +66,7 @@ Do **not** hardcode Python versions or paths; respect `.python-version` and mise
 - **Do not commit or push unless explicitly asked.** Agents must not create git commits, push branches, or alter the commit history unless the user specifically requests it. Limit yourself to reading files, making code edits, and running commands/tests — leave version-control actions to the user.
 - **Session-scoped authorization only.** If you grant the agent permission to commit or push for one specific command, that permission applies only to that command. It does not carry over to subsequent requests, and each new commit, push, or merge requires its own explicit request. A prior approval is never standing authorization for later commands.
 - **Commit-on-merge is not automatic.** Allowing a commit in one context does not authorize merging that branch, nor does it authorize commits on later requests. Each commit, push, or merge is a separate decision requiring its own explicit approval.
-- **Never commit directly to `main`.** All changes must be made on a dedicated feature branch (e.g. `feature/your-change-name`), never on `main` or the default branch. Create a branch before committing, then open a pull request for review. See `CONTRIBUTION.md` for branch naming (Conventional Branch) and commit message (Conventional Commits) requirements.
+- **Never commit directly to `main`.** All changes must be made on a dedicated feature branch (e.g. `feature/your-change-name`), never on `main` or the default branch. Create a branch before committing, then open a pull request for review. See `CONTRIBUTING.md` for branch naming (Conventional Branch) and commit message (Conventional Commits) requirements.
 - **Pre-commit hook.** A hook at `.githooks/pre-commit` blocks commits on `main`, `master`, or `develop`. It is active via `git config core.hooksPath .githooks` (already set). If it ever fires, create a feature branch and try again.
 - **GitHub branch protection.** `main` is protected on GitHub: direct pushes are blocked; all changes must come through a pull request with at least one approving review.
 - **Clean up temporary files.** Remove any temporary files, scratch scripts, test outputs, or artifacts created during testing before you finish. Do not leave test files, debug output, or temporary data in the repository.
@@ -100,7 +100,7 @@ Do **not** hardcode Python versions or paths; respect `.python-version` and mise
 
 ## Done means
 
-- `uv run ruff` passes with zero errors, and `uv run mypy src/` passes with zero issues — the required checks before any pull request (`CONTRIBUTION.md`).
+- `uv run ruff` passes with zero errors, and `uv run mypy src/` passes with zero issues — the required checks before any pull request (`CONTRIBUTING.md`).
 
 ## Never merges without a human
 

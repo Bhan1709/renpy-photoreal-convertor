@@ -91,7 +91,7 @@ Describe the flow in 4-6 steps using file-backed evidence:
 - `src/converter/restore/restore.py`
 - `src/agent/nvidia_proxy.py`, `src/agent/cli.py`, `src/agent/config.py`, `src/agent/monitor.py`
 - `AGENTS.md` (§3, §5)
-- `CONTRIBUTION.md`
+- `CONTRIBUTING.md`
 
 ## Extended Sections (Optional)
 

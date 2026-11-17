@@ -17,7 +17,7 @@
 
 - Formatter: ruff (configured via `pyproject.toml` `[dependency-groups] dev`; no `.ruff.toml`/`ruff.toml` found at root — ruff defaults / pyproject config).
 - Linter: ruff (same); type checker: mypy (`mypy>=2.4.1` dev dependency).
-- Most relevant enforced rules: `uv run ruff` and `uv run mypy src/` are the required pre-PR checks (`CONTRIBUTION.md` §7); both must pass with zero errors/issues.
+- Most relevant enforced rules: `uv run ruff` and `uv run mypy src/` are the required pre-PR checks (`CONTRIBUTING.md` §7); both must pass with zero errors/issues.
 - Run commands: `uv run ruff`; `uv run mypy src/` (also `mise` tasks exist for agent/qwen/pipeline/etc., but no dedicated lint/type task is defined in `mise.toml`).
 
 ### 3) Import and Module Conventions
@@ -49,7 +49,7 @@
 - `src/agent/nvidia_proxy.py`, `src/agent/constants.py` (naming)
 - `src/converter/compose/errors.py`, `src/converter/restore/errors.py`, `src/agent/config.py` (exceptions)
 - `src/agent/cli.py` (logging setup, `opencode.json` handling)
-- `CONTRIBUTION.md` §7 (required ruff + mypy checks)
+- `CONTRIBUTING.md` §7 (required ruff + mypy checks)
 - `.gitignore` (caches excluded from conventions evidence)
 
 ## Extended Sections (Optional)
