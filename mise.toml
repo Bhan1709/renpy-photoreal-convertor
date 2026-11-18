@@ -15,9 +15,9 @@ run = "python -m agent"
 ############## CONVERTER ##############
 
 [tasks.decompile]
-description = "Decompile a Ren'Py game (interactive: clean, decompile, clean+decompile, or quit)"
+description = "Decompile a Ren'Py game (interactive: clean, decompile, clean and decompile, or exit)"
 run = "python -m converter.decompile"
 
 [tasks.compose]
-description = "Compose a Ren'Py game (interactive: exclusion check, clean, compose, clean+compose, review, apply/restore)"
+description = "Create and review photoreal composites (interactive: clean, compose, review, apply, or restore)"
 run = "python -m converter.compose"

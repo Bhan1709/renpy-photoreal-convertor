@@ -6,6 +6,6 @@ Provides tqdm-based progress reporting reused across subpackages
 
 from __future__ import annotations
 
-from tqdm import tqdm  # type: ignore[import-untyped]
+from tqdm.rich import tqdm  # type: ignore[import-untyped]
 
 __all__ = ["tqdm"]

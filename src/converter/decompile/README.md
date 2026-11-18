@@ -93,9 +93,10 @@ When decompile finishes it points you at the next step:
 mise run compose
 ```
 
-Compose is the single entry point for the photoreal pass: it first runs the
-exclusion check (asking whether to add script/image exclusion patterns), then
-offers clean, compose, clean+compose, review, and apply.
+Compose is the single entry point for the photoreal pass: it offers clean,
+compose, clean+compose, review, and apply. Selecting compose or clean+compose
+runs the exclusion check (asking whether to add script/image exclusion
+patterns); the other actions skip it.
 
 To edit exclusions by hand instead, open `src/converter/config.json` and adjust:
 
@@ -103,8 +104,8 @@ To edit exclusions by hand instead, open `src/converter/config.json` and adjust:
   (e.g. `"archive/"`).
 - `exclusion.image.patterns` — filters image folders/layers scanned by compose.
 
-The compose exclusion check syncs these automatically; no separate sync step is
-needed.
+The compose exclusion check syncs these automatically when compose or
+clean+compose is selected; no separate sync step is needed.
 
 ### Via Python Import
 
@@ -122,7 +123,7 @@ process_all_games()
 
 ```bash
 mise run decompile                    # Full generalized flow
-mise run compose                      # Next step: exclusion check + compose menu
+mise run compose                      # Next step: compose menu
 ```
 
 ---
@@ -329,7 +330,7 @@ description = "Decompile a Ren'Py game (interactive: clean, decompile, clean+dec
 run = "python -m converter.decompile"
 
 [tasks.compose]
-description = "Compose a Ren'Py game (interactive: exclusion check, clean, compose, clean+compose, review, apply)"
+description = "Compose a Ren'Py game (interactive: clean, compose, clean+compose, review, apply)"
 run = "python -m converter.compose"
 ```
 

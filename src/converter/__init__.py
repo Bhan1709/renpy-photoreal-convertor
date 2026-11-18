@@ -9,7 +9,7 @@ entry point (``converter:main``).
 
 from __future__ import annotations
 
-from cli import console, create_app, info, rule
+from cli import command, console, create_app, info, rule
 
 from .utility import tqdm
 
@@ -23,21 +23,25 @@ def _main() -> None:
     """Show the converter welcome message and list available entry points."""
     rule("Ren'Py Photoreal VN Converter")
     console.print()
-    info("Available entry points:")
-    console.print(
-        "  [green]python -m converter.pipeline[/green]        # Decompile -> compose pipeline"
+    info("Choose a task:")
+    command(
+        "mise run decompile",
+        "Decompile scripts and extract game archives.",
     )
-    console.print(
-        "  [green]python -m converter.compose[/green]         # Compose composites (interactive menu)"
+    command(
+        "mise run compose",
+        "Create, review, and apply photoreal composites.",
     )
-    console.print(
-        "  [green]python -m converter.compose.review[/green]  # Interactive composite review"
+    command(
+        "python -m agent",
+        "Launch OpenCode with an Ollama or NVIDIA model profile.",
     )
-    console.print(
-        "  [green]python -m agent <profile>[/green]           # Launch OpenCode with a model profile"
+    command(
+        "python -m converter.pipeline",
+        "Run decompile and compose in one workflow.",
     )
     console.print()
-    info("Run any entry point with --help for details.")
+    info("Add --help to any command to see its options.")
 
 
 def main() -> None:

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from cli import loading
+
 from .constants import CATEGORY_FOLDER_PATTERNS, IMAGE_EXTENSIONS
 
 
@@ -39,10 +41,12 @@ def scan_extracted_archives(game_folder: Path) -> list[dict[str, str]]:
     for rpa_file in sorted(game_folder.rglob("*.rpa")):
         extract_dir = rpa_file.parent / rpa_file.stem
         if extract_dir.is_dir():
-            extracted.append({
-                "archive": rpa_file.relative_to(game_folder).as_posix(),
-                "extracted_folder": extract_dir.relative_to(game_folder).as_posix(),
-            })
+            extracted.append(
+                {
+                    "archive": rpa_file.relative_to(game_folder).as_posix(),
+                    "extracted_folder": extract_dir.relative_to(game_folder).as_posix(),
+                }
+            )
     return extracted
 
 
@@ -91,38 +95,39 @@ def scan_image_categories(game_folder: Path) -> dict:
             },
         }
     """
-    # --- Folder-based detection -------------------------------------
-    found: dict[str, str] = {}
-    for item in game_folder.rglob("*"):
-        if not item.is_dir():
-            continue
-        name_lower = item.name.lower()
-        for category, patterns in CATEGORY_FOLDER_PATTERNS.items():
-            if category in found:
+    with loading("Scanning image categories..."):
+        # --- Folder-based detection ---------------------------------
+        found: dict[str, str] = {}
+        for item in game_folder.rglob("*"):
+            if not item.is_dir():
                 continue
-            if name_lower in patterns:
-                found[category] = item.relative_to(game_folder).as_posix()
-                break
+            name_lower = item.name.lower()
+            for category, patterns in CATEGORY_FOLDER_PATTERNS.items():
+                if category in found:
+                    continue
+                if name_lower in patterns:
+                    found[category] = item.relative_to(game_folder).as_posix()
+                    break
 
-    if found:
-        return {
-            "classification_method": "folder_based",
-            "image_categories": found,
-        }
+        if found:
+            return {
+                "classification_method": "folder_based",
+                "image_categories": found,
+            }
 
-    # --- Mode-based fallback ----------------------------------------
-    char_images: list[str] = []
-    scene_images: list[str] = []
-    for item in sorted(game_folder.rglob("*")):
-        if not item.is_file():
-            continue
-        if item.suffix.lower() not in IMAGE_EXTENSIONS:
-            continue
-        mode = _image_mode(item)
-        if mode == "RGBA":
-            char_images.append(item.relative_to(game_folder).as_posix())
-        elif mode == "RGB":
-            scene_images.append(item.relative_to(game_folder).as_posix())
+        # --- Mode-based fallback ------------------------------------
+        char_images: list[str] = []
+        scene_images: list[str] = []
+        for item in sorted(game_folder.rglob("*")):
+            if not item.is_file():
+                continue
+            if item.suffix.lower() not in IMAGE_EXTENSIONS:
+                continue
+            mode = _image_mode(item)
+            if mode == "RGBA":
+                char_images.append(item.relative_to(game_folder).as_posix())
+            elif mode == "RGB":
+                scene_images.append(item.relative_to(game_folder).as_posix())
 
     return {
         "classification_method": "mode_based",

@@ -2,17 +2,17 @@
 
 Flow:
 
-1. **Exclusion check** — asks whether to add script/image exclusion patterns and
-   syncs them into ``src/converter/config.json`` (the same logic as
-   ``python -m converter.decompile.sync_exclusions_cli``).
-2. **Menu** — clean previous output, compose (no apply), clean and compose,
-   review composites, or apply composites.
-3. **After composing** — choose to review now or quit, with the manual review
+1. **Menu** — clean previous output, compose, clean and compose, review
+   composites, apply composites, or restore the original game files.
+2. **Exclusion check** — runs only after selecting ``compose`` or
+   ``clean-compose``; it asks whether to add script/image exclusion patterns
+   and syncs them into ``src/converter/config.json``.
+3. **After composing** — choose to review now or exit, with the manual review
    steps printed either way.
 
 Usage::
 
-    python -m converter.compose                  # interactive menu (exclusions -> clean/compose/review/apply/restore)
+    python -m converter.compose                  # interactive menu (exclusions only for compose actions)
     python -m converter.compose clean            # remove previous compose output
     python -m converter.compose compose          # compose only (no apply)
     python -m converter.compose clean-compose    # clean output, then compose
@@ -30,15 +30,25 @@ import sys
 from pathlib import Path
 
 import typer
+from rich.console import Group, RenderableType
+from rich.table import Table
+from rich.text import Text
 
 from cli import (
+    CYAN,
+    MAUVE,
+    SLATE,
     Choice,
+    command,
     console,
+    counted,
     create_app,
     error,
     info,
     is_interactive,
     kv,
+    loading,
+    print_panel,
     rule,
     select,
     substep,
@@ -54,8 +64,9 @@ from .compose_pass import Composer
 from .config import GameConfig, load_config
 from .errors import ConfigError
 from .manifest import ManifestWriter
+from .review_instructions import manual_scene_instructions, manual_speaker_instructions
 
-app = create_app("Compose photoreal composites for a Ren'Py game (interactive menu).")
+app = create_app("Create, review, and apply photoreal composites for a Ren'Py game.")
 
 ACTION_CLEAN = "clean"
 ACTION_COMPOSE = "compose"
@@ -80,13 +91,21 @@ ACTIONS = (
 # --------------------------------------------------------------------------- #
 
 
+def _print_missing_config_guidance(config_path: Path) -> int:
+    """Explain how to create a missing game configuration."""
+    info(f"No game configuration was found at {config_path}.")
+    info("Next step: decompile the game to create the configuration.")
+    command("mise run decompile")
+    return 0
+
+
 def load_game_config(config_path: Path) -> GameConfig | None:
     """Load a :class:`GameConfig`, printing a friendly error on failure."""
     try:
         return load_config(config_path)
     except (OSError, ConfigError) as exc:
-        error(f"Could not load config {config_path}: {exc}")
-        info("Run 'mise run decompile' first to generate it.")
+        error(f"Could not load the game configuration from {config_path}.\n{exc}")
+        info("Run 'mise run decompile' first to create it.")
         return None
 
 
@@ -94,10 +113,11 @@ def clean_output(config: GameConfig) -> None:
     """Remove previously generated composites (PNGs and report manifests)."""
     output_dir = config.resolved_paths()["output_dir"]
     if output_dir.exists():
-        shutil.rmtree(output_dir)
-        success(f"Cleaned composite output: {output_dir}")
+        with loading("Removing previous composite output..."):
+            shutil.rmtree(output_dir)
+        success(f"Removed previous composite output: {output_dir}")
     else:
-        info(f"Nothing to clean: {output_dir} does not exist.")
+        info(f"No previous composite output was found at {output_dir}.")
 
 
 def compose_game(
@@ -107,17 +127,38 @@ def compose_game(
     clean: bool = False,
 ) -> None:
     """Run the compose pass and write the split category manifests."""
-    rule("Compose pass")
+    rule("Creating composites")
     if clean:
-        substep("Removing previous composites")
+        substep("Removing previous composite output", last=True)
         clean_output(config)
 
     manifest = Composer(config).compose(dry_run=dry_run, clean_output=clean)
     ManifestWriter(config).write(manifest, dry_run=dry_run)
+    composite_count = counted(len(manifest.composites_list), "composite")
     if dry_run:
-        info(f"Dry run: {len(manifest.composites_list)} composite(s) planned.")
+        info(f"Dry run: {composite_count} would be created.")
     else:
-        success(f"Composed {len(manifest.composites_list)} composite(s).")
+        success(f"Created {composite_count}.")
+
+
+def _compose_with_exclusions(
+    config_path: Path,
+    *,
+    dry_run: bool,
+    clean: bool,
+) -> int:
+    """Sync exclusions, reload the config, compose, and offer review."""
+    if run_exclusion_sync(config_path, prompt=True) != 0:
+        return 1
+
+    # Exclusion sync rewrites config.json, so reload before composing to pick up
+    # the updated script lists.
+    config = load_game_config(config_path)
+    if config is None:
+        return 1
+
+    compose_game(config, dry_run=dry_run, clean=clean)
+    return post_compose(config, config_path, dry_run=dry_run)
 
 
 def pending_review(config: GameConfig) -> tuple[list[str], list[str]]:
@@ -127,69 +168,75 @@ def pending_review(config: GameConfig) -> tuple[list[str], list[str]]:
 
 
 def print_review_instructions(config: GameConfig, config_path: Path) -> None:
-    """Print the manual steps for resolving pending scene/speaker reviews."""
+    """Print a boxed guide for resolving pending scene and speaker reviews."""
     scenes, speakers = pending_review(config)
     if not scenes and not speakers:
         return
 
     reports_dir = config.resolved_paths()["manifest_path"].parent
     pending_path = reports_dir / "review_pending.json"
-    review_cmd = f"python -m converter.compose.review compose-review {config_path}"
-    scene_manifest = reports_dir / "manifest_scene.json"
-    aliases_path = reports_dir / "character_aliases.json"
+    review_cmd = f'python -m converter.compose.review compose-review "{config_path}"'
 
-    scene_json = (
-        '    "characters": [\n'
-        '        {"character": "<folder>", '
-        '"evidence": ["script_identifier:<script>:<line>"]}\n'
-        "    ],\n"
-        '    "character_association_status": "associated",'
+    summary = Table.grid(expand=False, padding=(0, 2))
+    summary.add_column(style=SLATE, no_wrap=True)
+    summary.add_column(style=CYAN, overflow="fold")
+    summary.add_row(
+        Text("Scenes without character associations"),
+        Text(counted(len(scenes), "scene composite")),
     )
-    speaker_json = (
-        '    "clothes": {\n'
-        '        "folder": "archive/chars/clothes",\n'
-        '        "aliases": ["clothes"]\n'
-        "    },"
+    summary.add_row(
+        Text("Unmapped speakers"),
+        Text(counted(len(speakers), "speaker")),
+    )
+    summary.add_row(Text("Pending review file"), Text(str(pending_path)))
+
+    recommended = Table.grid(expand=False, padding=(0, 2))
+    recommended.add_column(style=CYAN, overflow="fold")
+    recommended.add_column(style=SLATE, overflow="fold")
+    recommended.add_row(
+        Text("mise run compose"),
+        Text("Open the menu and choose 'Review character and speaker mappings'."),
     )
 
-    rule("Pending review")
-    info(f"{len(scenes)} scene composite(s) lack character association.")
-    info(f"{len(speakers)} speaker(s) are not mapped to a character folder.")
-    kv("Review file", str(pending_path))
-    console.print()
+    direct_command = Table.grid(expand=False, padding=(0, 2))
+    direct_command.add_column(style=CYAN, overflow="fold")
+    direct_command.add_row(Text(review_cmd))
 
-    info("Review interactively (recommended):")
-    console.print("  [cyan]mise run compose[/cyan] [dim]-> Review composites[/dim]")
-    console.print("or")
-    console.print(f"  [cyan]{review_cmd}[/cyan]")
-    console.print()
+    apply_command = Table.grid(expand=False, padding=(0, 2))
+    apply_command.add_column(style=CYAN, overflow="fold")
+    apply_command.add_row(Text("mise run compose apply"))
 
-    info("Alternative: resolve manually by editing the report files.")
-    console.print()
+    content: list[RenderableType] = [
+        Text("Summary", style="bold"),
+        summary,
+        Text(""),
+        Text("Recommended action", style="bold"),
+        Text("Resolve the remaining items interactively."),
+        recommended,
+        Text(""),
+        Text("Direct command", style="bold"),
+        Text("Run the review command directly if you prefer not to use the menu."),
+        direct_command,
+    ]
 
     if scenes:
-        console.print("  Associate a character with a scene composite:")
-        console.print(f"    - Open {scene_manifest}")
-        console.print('    - Find the scene under "composites" and add:')
-        console.print(f"```json\n{scene_json}\n```")
-        console.print(
-            "    - Remove that record from the ``scenes`` array in review_pending.json."
-        )
-        console.print()
+        heading, instructions = manual_scene_instructions(reports_dir)
+        content.extend([Text(""), Text(heading, style="bold"), *instructions])
 
     if speakers:
-        console.print("  Resolve an unmapped speaker:")
-        console.print(f"    - Open {aliases_path}")
-        console.print("    - Add the speaker under its character folder, e.g.:")
-        console.print(f"```json\n{speaker_json}\n```")
-        console.print(
-            "    - Remove the speaker from ``unmapped_speakers`` in review_pending.json."
-        )
-        console.print()
+        heading, instructions = manual_speaker_instructions(reports_dir)
+        content.extend([Text(""), Text(heading, style="bold"), *instructions])
 
-    info("When nothing is pending, apply the composites:")
-    console.print("  [cyan]python -m converter.compose apply[/cyan]")
-    console.print()
+    content.extend(
+        [
+            Text(""),
+            Text("After review", style="bold"),
+            Text("Apply the reviewed composites to the game scripts:"),
+            apply_command,
+        ]
+    )
+
+    print_panel(Group(*content), title="Review required", style=MAUVE)
 
 
 def apply_game(config: GameConfig) -> int:
@@ -198,27 +245,33 @@ def apply_game(config: GameConfig) -> int:
     Refuses to run while scene composites still lack a character association,
     because that would emit composites with unknown speakers.
     """
+    if not ManifestWriter.has_composite_manifest(config):
+        info("No composites are available to apply.")
+        info("Next step: create the composites before applying them.")
+        command("mise run compose")
+        return 0
+
     scenes, speakers = pending_review(config)
     if scenes:
         pending_path = (
             config.resolved_paths()["manifest_path"].parent / "review_pending.json"
         )
         warning(
-            f"BLOCKED: {len(scenes)} scene composite(s) lack character "
-            f"association.\nResolve them in {pending_path}, then re-run compose.\n"
-            "Skipping apply pass."
+            "Apply blocked: character associations are still missing for "
+            f"{counted(len(scenes), 'scene composite')}.\n"
+            f"Resolve them in {pending_path}, then run compose again.\n"
+            "The live game scripts were not changed."
         )
         return 1
     if speakers:
         warning(
-            f"{len(speakers)} unmapped speaker(s) remain. "
-            "Review with `mise run compose` -> Review composites if composites "
-            "look wrong."
+            f"Unmapped speakers remaining: {counted(len(speakers), 'speaker')}.\n"
+            "Review them with 'mise run compose' if the composites look incorrect."
         )
 
-    rule("Apply pass")
+    rule("Applying composites to game scripts")
     Applier(config).apply()
-    success("Applied composites into live .rpy scripts.")
+    success("Applied composites to the live .rpy scripts.")
     return 0
 
 
@@ -229,18 +282,18 @@ def restore_game(config_path: Path, *, dry_run: bool) -> int:
     live ``game`` folder from the original source, overwriting apply-modified
     files while preserving ``game_folder/composites``.
     """
-    rule("Restore compose from source")
+    rule("Restoring game files from source")
     kv("Config", str(config_path))
     results = restore_compose_from_source(config_path, dry_run=dry_run)
     if not results:
-        info("(nothing to restore)")
+        info("No files needed restoring.")
         return 0
     for path, status in sorted(results.items()):
         console.print(f"  [{status}] {path}")
     if dry_run:
-        info("Dry run: no files were written.")
+        info("Dry run: no files were changed.")
     else:
-        success("Restore complete.")
+        success("Game files restored from source. Generated composites were kept.")
     return 0
 
 
@@ -264,50 +317,58 @@ def post_compose(
 ) -> int:
     """Offer to review after composing, and print the manual review steps."""
     print_review_instructions(config, config_path)
-    rule("Compose complete (apply deferred)")
+    rule("Dry run complete" if dry_run else "Composites ready for review")
 
     if dry_run:
-        info("Dry run: no files were written; skipping the review prompt.")
+        info("Dry run: no files were written, so the review prompt was skipped.")
         return 0
 
     if not is_interactive():
-        info("No interactive terminal: review later with 'mise run compose review'.")
+        info(
+            "No interactive terminal detected. Review later with "
+            "'mise run compose review'."
+        )
         return 0
 
     choice = select(
         "What would you like to do next?",
         choices=[
             Choice(
-                title="Review the composites now (interactive)",
+                title="Review composites now",
                 value=ACTION_REVIEW,
+                shortcut_key="r",
             ),
-            Choice(title="Quit (review/apply later)", value=ACTION_QUIT),
+            Choice(
+                title="Exit for now (review and apply later)",
+                value=ACTION_QUIT,
+                shortcut_key="x",
+            ),
         ],
         default=ACTION_REVIEW,
         use_shortcuts=True,
     )
     if choice is None or choice == ACTION_QUIT:
         info(
-            "Review later with 'mise run compose review'; "
-            "apply with 'mise run compose apply'."
+            "You can review later with 'mise run compose review' and apply with "
+            "'mise run compose apply'."
         )
         return 0
 
-    code = review_composites(config_path)
-    if code == 0:
-        info("Apply when ready: 'mise run compose apply'.")
-    return code
+    return review_composites(config_path)
 
 
 def interactive(config_path: Path, *, dry_run: bool) -> int:
-    """Exclusion check, then the compose action menu."""
-    if not is_interactive():
-        error("No interactive terminal: the compose menu cannot be shown.")
-        info("Pass an action instead: clean, compose, clean-compose, review, apply.")
-        info("Example: python -m converter.compose clean-compose")
-        return 1
+    """Show the compose action menu and run the selected action."""
+    if not config_path.is_file():
+        return _print_missing_config_guidance(config_path)
 
-    if run_exclusion_sync(config_path, prompt=True) != 0:
+    if not is_interactive():
+        error("The interactive compose menu requires an interactive terminal.")
+        info(
+            "Choose an action instead: clean, compose, clean-compose, review, "
+            "apply, or restore."
+        )
+        info("Example: python -m converter.compose clean-compose")
         return 1
 
     config = load_game_config(config_path)
@@ -318,21 +379,45 @@ def interactive(config_path: Path, *, dry_run: bool) -> int:
     kv("Config", str(config_path))
 
     choice = select(
-        "What would you like to do?",
+        "Choose an action",
         choices=[
-            Choice(title="Clean previous compose output", value=ACTION_CLEAN),
-            Choice(title="Compose", value=ACTION_COMPOSE),
-            Choice(title="Clean and compose", value=ACTION_CLEAN_COMPOSE),
-            Choice(title="Review composites (scenes + speakers)", value=ACTION_REVIEW),
-            Choice(title="Apply composites into live scripts", value=ACTION_APPLY),
-            Choice(title="Restore game folder from source", value=ACTION_RESTORE),
-            Choice(title="Quit", value=ACTION_QUIT),
+            Choice(
+                title="Clean previous composite output",
+                value=ACTION_CLEAN,
+                shortcut_key="c",
+            ),
+            Choice(
+                title="Compose new composites (game scripts stay unchanged)",
+                value=ACTION_COMPOSE,
+                shortcut_key="n",
+            ),
+            Choice(
+                title="Clean output, then compose",
+                value=ACTION_CLEAN_COMPOSE,
+                shortcut_key="a",
+            ),
+            Choice(
+                title="Review character and speaker mappings",
+                value=ACTION_REVIEW,
+                shortcut_key="r",
+            ),
+            Choice(
+                title="Apply reviewed composites to game scripts",
+                value=ACTION_APPLY,
+                shortcut_key="p",
+            ),
+            Choice(
+                title="Restore original game files (keep composites)",
+                value=ACTION_RESTORE,
+                shortcut_key="s",
+            ),
+            Choice(title="Exit", value=ACTION_QUIT, shortcut_key="x"),
         ],
         default=ACTION_COMPOSE,
         use_shortcuts=True,
     )
     if choice is None or choice == ACTION_QUIT:
-        info("Aborted.")
+        info("Cancelled. The compose action was not started.")
         return 0
 
     if choice == ACTION_CLEAN:
@@ -340,12 +425,18 @@ def interactive(config_path: Path, *, dry_run: bool) -> int:
         return 0
 
     if choice == ACTION_COMPOSE:
-        compose_game(config, dry_run=dry_run)
-        return post_compose(config, config_path, dry_run=dry_run)
+        return _compose_with_exclusions(
+            config_path,
+            dry_run=dry_run,
+            clean=False,
+        )
 
     if choice == ACTION_CLEAN_COMPOSE:
-        compose_game(config, dry_run=dry_run, clean=True)
-        return post_compose(config, config_path, dry_run=dry_run)
+        return _compose_with_exclusions(
+            config_path,
+            dry_run=dry_run,
+            clean=True,
+        )
 
     if choice == ACTION_REVIEW:
         return review_only(config_path)
@@ -359,20 +450,17 @@ def interactive(config_path: Path, *, dry_run: bool) -> int:
 def review_only(config_path: Path) -> int:
     """Run the interactive review and point at the follow-up apply step."""
     if not is_interactive():
-        error("No interactive terminal: the review step needs a terminal.")
-        info("Review in a terminal with 'mise run compose review'.")
+        error("The interactive review requires an interactive terminal.")
+        info("Run the review in a terminal with 'mise run compose review'.")
         return 1
 
-    code = review_composites(config_path)
-    if code == 0:
-        info("Apply when ready: 'mise run compose apply'.")
-    return code
+    return review_composites(config_path)
 
 
 def apply_action(config: GameConfig, *, dry_run: bool) -> int:
     """Run the apply pass, unless this is a dry run."""
     if dry_run:
-        info("Dry run: skipping the apply pass.")
+        info("Dry run: the apply step was skipped.")
         return 0
     return apply_game(config)
 
@@ -384,10 +472,8 @@ def apply_action(config: GameConfig, *, dry_run: bool) -> int:
 
 def run_action(action: str, config_path: Path, *, dry_run: bool) -> int:
     """Run one action without the menu (used by non-interactive invocations)."""
-    # The exclusion check is always the first step, matching the interactive flow.
-    # Restore does not need exclusions, so it skips that step.
-    if action != ACTION_RESTORE and run_exclusion_sync(config_path, prompt=True) != 0:
-        return 1
+    if not config_path.is_file():
+        return _print_missing_config_guidance(config_path)
 
     config = load_game_config(config_path)
     if config is None:
@@ -401,8 +487,11 @@ def run_action(action: str, config_path: Path, *, dry_run: bool) -> int:
         return 0
 
     if action in (ACTION_COMPOSE, ACTION_CLEAN_COMPOSE):
-        compose_game(config, dry_run=dry_run, clean=action == ACTION_CLEAN_COMPOSE)
-        return post_compose(config, config_path, dry_run=dry_run)
+        return _compose_with_exclusions(
+            config_path,
+            dry_run=dry_run,
+            clean=action == ACTION_CLEAN_COMPOSE,
+        )
 
     if action == ACTION_REVIEW:
         return review_only(config_path)
@@ -419,29 +508,30 @@ def main(
         None,
         help=(
             "Action to run without the menu: clean, compose, clean-compose, "
-            "review, apply. Omit for the interactive menu."
+            "review, apply, or restore. Omit for the interactive menu."
         ),
     ),
     config: Path = typer.Option(  # noqa: B008
         CONFIG_PATH,
         "--config",
-        help="Path to the decompile-generated config JSON.",
+        help="Path to the game configuration created by decompile.",
     ),
     dry_run: bool = typer.Option(
         False,
         "--dry-run",
-        help="Compose without writing PNGs or manifests (skips review/apply).",
+        help="Preview the compose and apply steps without writing any files.",
     ),
 ) -> None:
-    """Compose photoreal composites, interactively by default."""
+    """Create, review, and apply photoreal composites for a Ren'Py game."""
     if action is None:
         raise typer.Exit(interactive(config, dry_run=dry_run))
 
     normalized = action.strip().lower()
     if normalized not in ACTIONS:
         error(
-            f"Unknown action '{action}'. Choose one of: {', '.join(ACTIONS)}, "
-            "or omit the action for the interactive menu."
+            f"Unknown action '{action}'.\n"
+            f"Choose one of: {', '.join(ACTIONS)}.\n"
+            "Omit the action to open the interactive menu."
         )
         raise typer.Exit(2)
 

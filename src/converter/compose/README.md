@@ -54,6 +54,7 @@ decompile subpackage).  No ``--game`` lookup is needed.
 | ``apply_pass/`` | Apply pass orchestration (script rewriting, declarations, report) |
 | ``manifest/`` | Manifest read/write (per-category + index) |
 | ``review/`` | Interactive review of scene character associations + unmapped speakers |
+| ``review_instructions.py`` | Reusable manual fallback guidance for both review phases |
 | ``cli.py`` | Command-line entry point |
 | ``__main__.py`` | ``python -m converter.compose`` support |
 
@@ -135,25 +136,54 @@ Use :meth:`GameConfig.resolved_paths` to get all resolved absolute output paths.
 
 ### Via CLI
 
-`python -m converter.compose` is a single interactive entry point. It always
-starts with an **exclusion check** (asks whether to add script/image exclusion
-patterns, then syncs them into `src/converter/config.json`), then shows an
-action menu:
+`python -m converter.compose` is a single interactive entry point. It opens
+an action menu first. Choosing **Compose new composites** or **Clean output,
+then compose** then runs the **exclusion check** (asks whether to add
+script/image exclusion patterns and syncs them into
+`src/converter/config.json`). Clean, review, apply, and restore do not run the
+exclusion check.
 
 | Choice | Effect |
 |--------|--------|
-| Clean previous compose output | Removes `<game_root>/composites` |
-| Compose (no apply) | Renders composites + manifests, apply deferred |
-| Clean and compose | Cleans first, then composes |
-| Review composites | Runs the interactive scene/speaker review |
-| Apply composites | Adopts composites into live `.rpy` scripts |
-| Quit | Exits without changes |
+| Clean previous composite output | Removes `<game_root>/composites` |
+| Compose new composites (game scripts stay unchanged) | Renders composites and manifests; apply remains deferred |
+| Clean output, then compose | Removes previous output before composing |
+| Review character and speaker mappings | Runs the interactive scene/speaker review |
+| Apply reviewed composites to game scripts | Adopts composites into live `.rpy` scripts |
+| Restore original game files (keep composites) | Restores the live game folder from source while keeping generated composites |
+| Exit | Leaves the compose action unstarted |
 
 After composing, the CLI prints the pending scene/speaker review details and
-offers to run the interactive review now or quit.
+offers to run the interactive review now or quit. **Unmapped Speakers** appears
+above Phase 1, and **Scenes missing character associations** appears above
+Phase 2. Each review phase begins with its corresponding manual fallback
+instructions. Interactive selection menus keep seven rows visible at a time.
+During speaker review, the related composite list and character mapping choices
+remain visible together: the composite pane is read-only, the character pane
+supports arrow-key selection and type-to-filter, and **Tab** switches focus
+without losing either pane's scroll position.
+The character mapping menu can keep the speaker name, accept a custom name,
+remove its dialogs, or select a known character.
+
+Scene review uses the same persistent context-and-character workspace. The
+composite path is shown as separate metadata, while **Defined at** heads the
+numbered list of the definition and usage locations. **Space** toggles
+character checkboxes and **Enter** confirms the highlighted character plus any
+characters already toggled. Each scene offers three explicit outcomes:
+
+- **Keep without character association** removes only its `review_pending.json`
+  entry; the scene remains in `manifest_scene.json`.
+- **Remove from downstream processing** removes its `manifest_scene.json` entry
+  and moves the generated PNG into the rejected-output folder.
+- **Select character(s)** appends each selected character to the matching
+  scene's `characters` list in `manifest_scene.json`, preserves existing
+  associations, and sets `character_association_status` to `associated`. The
+  custom-character option resolves a known alias to its canonical character;
+  an unknown name is appended as an unverified association. The scene entry is
+  then removed from `review_pending.json`.
 
 ```bash
-# Interactive menu (exclusions -> action menu -> post-compose review prompt)
+# Interactive menu (exclusion check only after selecting a compose action)
 python -m converter.compose
 
 # Skip the menu with an explicit action
@@ -169,8 +199,10 @@ python -m converter.compose restore          # recover the live game folder from
 --dry-run       # compose without writing PNGs/manifests (skips review + apply)
 ```
 
-Non-interactive terminals (scripts, CI) skip prompts: the exclusion step only
-syncs, and no review prompt is shown.
+Non-interactive terminals (scripts, CI) skip prompts. The explicit `compose`
+and `clean-compose` actions still sync exclusions without asking; clean,
+review, apply, and restore do not sync exclusions, and no post-compose review
+prompt is shown.
 
 The full pipeline is also available through :mod:`converter.pipeline` (which
 adds the decompile stage):
@@ -193,7 +225,7 @@ Or via mise tasks:
 
 ```bash
 mise run decompile        # decompile + extract, write config.json
-mise run compose          # interactive compose (exclusions -> menu -> review/apply/restore)
+mise run compose          # interactive compose (exclusions only for compose actions)
 python -m converter.compose restore  # restore game folder from source, keep composites
 ```
 

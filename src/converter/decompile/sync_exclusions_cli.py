@@ -4,8 +4,8 @@ Usage::
 
     python -m converter.decompile.sync_exclusions_cli
 
-The compose entry point calls :func:`run_exclusion_sync` as its first step, so
-script and image exclusions are always reviewed before composing.  Run this
+The compose entry point calls :func:`run_exclusion_sync` only after the user
+selects a compose-producing action (``compose`` or ``clean-compose``). Run this
 module directly to sync without composing.
 """
 
@@ -49,22 +49,22 @@ def run_exclusion_sync(
 
     if prompt and is_interactive():
         answer = confirm(
-            "Add or update script/image exclusion patterns?", default=False
+            "Would you like to add or update exclusion patterns now?",
+            default=False,
         )
         if answer is None:
-            info("Aborted.")
+            info("Exclusion check cancelled. No exclusions were changed.")
             return 1
         if answer:
             prompt_exclusion_patterns(config_path)
 
     result = sync_exclusions(config_path)
     if not result:
-        error("Failed to sync exclusions.")
         return 1
 
-    kv("rpy_files", f"{result['rpy_before']} -> {result['rpy_after']}")
-    kv("ren_py_files", f"{result['ren_py_before']} -> {result['ren_py_after']}")
-    success("Exclusions synced into config.json.")
+    kv("Script files", f"{result['rpy_before']} -> {result['rpy_after']}")
+    kv("Ren'Py files", f"{result['ren_py_before']} -> {result['ren_py_after']}")
+    success("Exclusions synced to config.json.")
     return 0
 
 

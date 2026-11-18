@@ -14,11 +14,8 @@ All compiled regular expressions live in :mod:`..regexp`.
 from __future__ import annotations
 
 import json
-import sys
-import threading
-from itertools import cycle
 
-from tqdm import tqdm  # type: ignore[import-untyped]
+from cli import counted, info, loading, progress_bar
 
 from ..association import CharacterAssociator
 from ..compositing import Compositor
@@ -73,18 +70,22 @@ class Composer:
             clean_output: Accepted for API parity; actual cleanup is handled
                 by the caller/CLI before this method is invoked.
         """
-        index = index_scripts(self.config)
-        defaults = index.all_defaults
-        definitions = index.layeredimage_defs
-        screens = index.screens
-        image_declarations = index.image_decls
+        with loading("Indexing game scripts and state..."):
+            index = index_scripts(self.config)
+            defaults = index.all_defaults
+            definitions = index.layeredimage_defs
+            screens = index.screens
+            image_declarations = index.image_decls
 
-        # Pre-compute interprocedural label entry states.  This tracks variable
-        # assignments across label boundaries (e.g. ``call undressHazel`` sets
-        # ``hazelScarf = 0``) so that each ``show ha:`` usage gets the precise
-        # variable state rather than falling back to game defaults.
-        file_lines = {fi.path: fi.lines for fi in index.per_file.values()}
-        label_entry_states = compute_interprocedural_label_states(defaults, file_lines)
+            # Pre-compute interprocedural label entry states.  This tracks
+            # variable assignments across label boundaries (e.g. ``call
+            # undressHazel`` sets ``hazelScarf = 0``) so each ``show ha:``
+            # usage gets the precise variable state rather than falling back
+            # to game defaults.
+            file_lines = {fi.path: fi.lines for fi in index.per_file.values()}
+            label_entry_states = compute_interprocedural_label_states(
+                defaults, file_lines
+            )
 
         # Rebuild the associator with the indexed per-file lines so it never
         # re-reads scripts from disk (Optimization #1).
@@ -98,22 +99,9 @@ class Composer:
         # bar and ETA track the real work instead of an upper bound.
         #
         # The count pass can take several seconds on large games, so show a
-        # loading spinner while it runs, then hand off to the real progress bar.
-        stop_spin = threading.Event()
-
-        def _spin() -> None:
-            for mark in cycle("|/-\\"):
-                if stop_spin.is_set():
-                    break
-                sys.stdout.write(f"\rcounting composites {mark}")
-                sys.stdout.flush()
-                stop_spin.wait(0.1)
-            sys.stdout.write("\r" + " " * 30 + "\r")
-            sys.stdout.flush()
-
-        spinner = threading.Thread(target=_spin, daemon=True)
-        spinner.start()
-        try:
+        # Rich loading spinner while it runs, then hand off to the Rich progress
+        # bar for the actual composite processing.
+        with loading("Counting composites..."):
             total = _count_composites(
                 index,
                 definitions,
@@ -123,46 +111,44 @@ class Composer:
                 self.config,
                 label_entry_states,
             )
-        finally:
-            stop_spin.set()
-            spinner.join()
 
-        print(f"counted {total} composites")
-        bar = tqdm(total=max(total, 1), desc="composites processed", unit="composites")
+        info(f"Counted {counted(total, 'composite usage')} to process.")
+        with progress_bar(
+            total=total,
+            desc="Composite usages processed",
+            unit="usages",
+        ) as bar:
+            emitter = _CompositeEmitter(
+                self.config,
+                self.resolver,
+                self.compositor,
+                self.associator,
+                index,
+                bar,
+                dry_run=dry_run,
+            )
 
-        emitter = _CompositeEmitter(
-            self.config,
-            self.resolver,
-            self.compositor,
-            self.associator,
-            index,
-            bar,
-            dry_run=dry_run,
-        )
+            # --- Pass 1: layeredimage show/scene statements ---
+            _process_layeredimage_uses_from_index(
+                index, definitions, defaults, emitter, self.config, label_entry_states
+            )
 
-        # --- Pass 1: layeredimage show/scene statements ---
-        _process_layeredimage_uses_from_index(
-            index, definitions, defaults, emitter, self.config, label_entry_states
-        )
+            # --- Pass 2: ordinary image declarations ---
+            dynamic_declarations: list[dict] = []
+            _process_image_declarations_from_index(
+                index, image_declarations, emitter, dynamic_declarations, self.config
+            )
 
-        # --- Pass 2: ordinary image declarations ---
-        dynamic_declarations: list[dict] = []
-        _process_image_declarations_from_index(
-            index, image_declarations, emitter, dynamic_declarations, self.config
-        )
-
-        # --- Pass 3: screen stacks ---
-        _process_screen_stacks_from_index(
-            index,
-            screens,
-            definitions,
-            defaults,
-            emitter,
-            self.config,
-            label_entry_states,
-        )
-
-        bar.close()
+            # --- Pass 3: screen stacks ---
+            _process_screen_stacks_from_index(
+                index,
+                screens,
+                definitions,
+                defaults,
+                emitter,
+                self.config,
+                label_entry_states,
+            )
 
         # --- Build manifest ---
         previous_dynamic_states = _load_previous_dynamic_states(self.config)
