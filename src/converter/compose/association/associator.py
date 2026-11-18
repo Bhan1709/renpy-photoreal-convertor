@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import re
 from collections import defaultdict
+from dataclasses import dataclass
 from pathlib import Path
 
 from ..config import GameConfig
@@ -23,6 +24,15 @@ from ..regexp import (
     TOKEN_RE,
     WORD_RE,
 )
+
+
+@dataclass(frozen=True)
+class CharacterDeclaration:
+    """Canonical character data derived from Ren'Py ``Character(...)`` calls."""
+
+    name: str
+    aliases: frozenset[str]
+    image_tags: frozenset[str]
 
 
 class CharacterAssociator:
@@ -41,6 +51,7 @@ class CharacterAssociator:
         self._aliases_cache: dict[str, set[str]] | None = None
         self._xxx_tags_cache: set[str] | None = None
         self._display_names: dict[str, str] | None = None
+        self._declarations_cache: dict[str, CharacterDeclaration] | None = None
 
     # -- public API -------------------------------------------------------
 
@@ -172,30 +183,61 @@ class CharacterAssociator:
     def display_name(self, char_folder: str) -> str:
         """Return the human-readable display name for a character asset folder."""
         if self._display_names is None:
-            self._aliases_cache, self._xxx_tags_cache, self._display_names = (
-                self._build_aliases_and_display_names()
-            )
+            (
+                self._aliases_cache,
+                self._xxx_tags_cache,
+                self._display_names,
+                self._declarations_cache,
+            ) = self._build_aliases_and_display_names()
         return self._display_names.get(char_folder, char_folder)
+
+    def character_declarations(self) -> dict[str, CharacterDeclaration]:
+        """Return characters discovered only from ``Character(...)`` declarations.
+
+        The alias map used for speaker resolution also contains self-aliases for
+        every physical source directory. Those directories are intentionally
+        excluded here so callers can build a declaration-only character
+        catalog.
+        """
+        if self._declarations_cache is None:
+            (
+                self._aliases_cache,
+                self._xxx_tags_cache,
+                self._display_names,
+                self._declarations_cache,
+            ) = self._build_aliases_and_display_names()
+        return dict(self._declarations_cache)
 
     # -- internal ---------------------------------------------------------
 
     def _aliases(self) -> dict[str, set[str]]:
         if self._aliases_cache is None:
-            self._aliases_cache, self._xxx_tags_cache, self._display_names = (
-                self._build_aliases_and_display_names()
-            )
+            (
+                self._aliases_cache,
+                self._xxx_tags_cache,
+                self._display_names,
+                self._declarations_cache,
+            ) = self._build_aliases_and_display_names()
         return self._aliases_cache
 
     def _xxx_tags(self) -> set[str]:
         if self._xxx_tags_cache is None:
-            self._aliases_cache, self._xxx_tags_cache, self._display_names = (
-                self._build_aliases_and_display_names()
-            )
+            (
+                self._aliases_cache,
+                self._xxx_tags_cache,
+                self._display_names,
+                self._declarations_cache,
+            ) = self._build_aliases_and_display_names()
         return self._xxx_tags_cache
 
     def _build_aliases_and_display_names(
         self,
-    ) -> tuple[dict[str, set[str]], set[str], dict[str, str]]:
+    ) -> tuple[
+        dict[str, set[str]],
+        set[str],
+        dict[str, str],
+        dict[str, CharacterDeclaration],
+    ]:
         """Build the alias map and display-name map in a single script walk.
 
         ``_build_aliases`` and ``_build_display_names`` used to walk every
@@ -210,6 +252,8 @@ class CharacterAssociator:
             else set()
         )
         aliases: dict[str, set[str]] = defaultdict(set)
+        declared_aliases: dict[str, set[str]] = defaultdict(set)
+        declared_image_tags: dict[str, set[str]] = defaultdict(set)
         display_by_folder: dict[str, str] = {}
         for folder in folders:
             aliases[_sub_non_alnum(folder)].add(folder)
@@ -237,13 +281,15 @@ class CharacterAssociator:
                 except OSError:
                     continue
             for raw in lines:
-                match = CHARACTER_DEF_RE.match(raw.split("#", 1)[0].strip())
+                match = CHARACTER_DEF_RE.match(raw.strip())
                 if not match:
                     continue
                 speaker, _, display_name, tail = match.groups()
                 display = _sub_non_alnum(display_name).lower()
+                speaker_key = _sub_non_alnum(speaker).lower()
                 image_match = IMAGE_TAG_RE.search(tail)
                 image_tag = image_match.group(2).lower() if image_match else ""
+                image_key = _sub_non_alnum(image_tag)
                 candidates: set[str] = set()
                 if display in folders:
                     candidates.add(display)
@@ -259,9 +305,14 @@ class CharacterAssociator:
                 # Alias map: speaker/display/image-tag nicknames -> canonical folder.
                 for canonical in candidates:
                     aliases[display].add(canonical)
-                    aliases[_sub_non_alnum(speaker).lower()].add(canonical)
-                    if image_tag:
-                        aliases[_sub_non_alnum(image_tag)].add(canonical)
+                    aliases[speaker_key].add(canonical)
+                    if image_key:
+                        aliases[image_key].add(canonical)
+                    declared_aliases[canonical].update(
+                        alias for alias in (display, speaker_key, image_key) if alias
+                    )
+                    if image_key:
+                        declared_image_tags[canonical].add(image_key)
                 # Display-name map: canonical folder -> longest display name.
                 for canonical in candidates:
                     if canonical in self.config.non_character_folders:
@@ -270,7 +321,15 @@ class CharacterAssociator:
                         display_by_folder[canonical]
                     ):
                         display_by_folder[canonical] = display_name
-        return aliases, folders, display_by_folder
+        declarations = {
+            name: CharacterDeclaration(
+                name=name,
+                aliases=frozenset(declared_aliases[name]),
+                image_tags=frozenset(declared_image_tags[name]),
+            )
+            for name in sorted(declared_aliases)
+        }
+        return aliases, folders, display_by_folder, declarations
 
 
 def _sub_non_alnum(s: str) -> str:

@@ -262,7 +262,7 @@ def _parse_character_defs_in_lines(
     """Extract (speaker, display_name, image_tag) from Character() definitions in lines."""
     defs: list[tuple[str, str, str]] = []
     for raw in lines:
-        match = CHARACTER_DEF_RE.match(raw.split("#", 1)[0].strip())
+        match = CHARACTER_DEF_RE.match(raw.strip())
         if not match:
             continue
         speaker, _, display_name, tail = match.groups()

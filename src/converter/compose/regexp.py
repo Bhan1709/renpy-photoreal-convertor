@@ -32,7 +32,7 @@ DEFAULT_RE = re.compile(
 
 # Matches:  define <var> = Character("<display>", ... image="<tag>" ...)
 CHARACTER_DEF_RE = re.compile(
-    r"""^\s*define\s+([A-Za-z_]\w*)\s*=\s*Character\(\s*(['"])(.*?)\2(.*?)\)\s*$"""
+    r"""^\s*define\s+([A-Za-z_]\w*)\s*=\s*Character\(\s*(['"])(.*?)\2(.*?)\)\s*(?:#.*)?$"""
 )
 
 # Matches:  image <tag> = "<path>"  (inside Character() definition tail)

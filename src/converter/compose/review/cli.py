@@ -8,7 +8,7 @@ Invoked from::
 Standalone commands::
 
     python -m converter.compose.review compose-review <config>   # review scenes needing character association + unmapped speakers
-    python -m converter.compose.review chars-list <config>         # print all known character folder names (source of truth)
+    python -m converter.compose.review chars-list <config>         # print all characters declared via Character(...)
 
 Run from the repository root.
 """
@@ -44,17 +44,17 @@ def chars_list(
         help="Path to the game configuration JSON (default: src/converter/config.json)",
     ),
 ) -> int:
-    """List the character folders available for review."""
+    """List the characters declared for review."""
     config = load_config(config_path)
     associator = CharacterAssociator(config)
-    folders = sorted(associator.known_char_folders())
-    rule("Known character folders")
-    info(f"Found {counted(len(folders), 'character folder')}.")
+    characters = sorted(associator.character_declarations())
+    rule("Known characters")
+    info(f"Found {counted(len(characters), 'character')}.")
     if is_interactive():
-        browse_list("Known character folders", folders)
+        browse_list("Known characters", characters)
     else:
-        for folder in folders:
-            console.print(f"  {folder}")
+        for character in characters:
+            console.print(f"  {character}")
     return 0
 
 
