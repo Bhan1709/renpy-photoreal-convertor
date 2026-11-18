@@ -4,25 +4,25 @@ Public API
 ----------
 
     from converter.compose.manifest import ManifestWriter, KNOWN_FAMILIES
-    from converter.compose.manifest import CHARACTER_ALIASES_FILE
+    from converter.compose.manifest import CHARACTERS_FILE
 """
 
 from __future__ import annotations
 
 from .writer import (
-    CHARACTER_ALIASES_FILE,
+    CHARACTERS_FILE,
     KNOWN_FAMILIES,
     ManifestWriter,
-    _load_character_aliases,
-    _save_character_aliases,
-    _seed_character_aliases,
+    _load_characters,
+    _save_characters,
+    _seed_characters,
 )
 
 __all__ = [
-    "CHARACTER_ALIASES_FILE",
+    "CHARACTERS_FILE",
     "KNOWN_FAMILIES",
     "ManifestWriter",
-    "_load_character_aliases",
-    "_save_character_aliases",
-    "_seed_character_aliases",
+    "_load_characters",
+    "_save_characters",
+    "_seed_characters",
 ]

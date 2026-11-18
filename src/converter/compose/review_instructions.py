@@ -9,6 +9,8 @@ from rich.padding import Padding
 from rich.syntax import Syntax
 from rich.text import Text
 
+from .manifest import CHARACTERS_FILE
+
 
 def manual_scene_instructions(
     reports_dir: Path,
@@ -97,12 +99,12 @@ def manual_speaker_instructions(
 ) -> tuple[str, list[RenderableType]]:
     """Return the manual fallback instructions for speaker mappings."""
     pending_path = reports_dir / "review_pending.json"
-    aliases_path = reports_dir / "character_aliases.json"
+    characters_path = reports_dir / CHARACTERS_FILE
     speaker_json = (
         "{\n"
-        '  "clothes": {\n'
-        '    "folder": "archive/chars/clothes",\n'
-        '    "aliases": ["clothes"]\n'
+        '  "amber": {\n'
+        '    "folder": "composites/static/char/amber",\n'
+        '    "aliases": ["a", "am"]\n'
         "  }\n"
         "}"
     )
@@ -117,7 +119,7 @@ def manual_speaker_instructions(
                 )
             ),
             Padding(Text("- Map each speaker to the appropriate character:")),
-            Padding(Text(f"- Open {aliases_path}."), (0, 2)),
+            Padding(Text(f"- Open {characters_path}."), (0, 2)),
             Padding(
                 Text("- Add the speaker under its character folder, for example:"),
                 (0, 2),

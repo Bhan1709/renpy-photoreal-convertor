@@ -340,10 +340,24 @@ Under ``<output_dir>/reports/``:
 - ``manifest_scene.json`` — composites in the ``scene`` family
 - ``manifest_gui.json``  — composites in the ``gui`` family
 - ``manifest_other.json`` — composites that don't fit a known family
+- ``characters.json`` — canonical character names, generated folders, and speaker aliases
 - ``manifest_index.json`` — global data (summary, dynamic_states, image_declarations,
   dynamic_declarations, unresolved) plus references to each category file.
 
 The apply pass loads the index and merges all category manifests in memory.
+
+### Character catalog
+
+``characters.json`` is seeded during a non-dry-run compose pass. Its entries
+come only from Ren'Py ``Character(...)`` declarations in the configured scripts;
+source asset directories are not catalog entries on their own. The existing
+canonicalization and alias rules are retained, and manually added aliases are
+preserved for characters that still have a matching declaration. Each
+``folder`` value points to the generated static character-composite directory
+relative to the game root, for example
+``composites/static/char/amber``. When a declaration's image tag identifies an
+emitted composite, the catalog uses that composite's generated folder; otherwise
+it uses the canonical generated character path.
 
 ---
 ## Generalization notes

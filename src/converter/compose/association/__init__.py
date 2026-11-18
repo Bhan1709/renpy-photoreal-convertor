@@ -3,11 +3,11 @@
 Public API
 ----------
 
-    from converter.compose.association import CharacterAssociator
+    from converter.compose.association import CharacterAssociator, CharacterDeclaration
 """
 
 from __future__ import annotations
 
-from .associator import CharacterAssociator
+from .associator import CharacterAssociator, CharacterDeclaration
 
-__all__ = ["CharacterAssociator"]
+__all__ = ["CharacterAssociator", "CharacterDeclaration"]

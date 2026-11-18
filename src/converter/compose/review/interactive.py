@@ -46,11 +46,11 @@ from cli import (
 
 from ..config import GameConfig, load_config
 from ..manifest import (
-    CHARACTER_ALIASES_FILE,
+    CHARACTERS_FILE,
     KNOWN_FAMILIES,
     ManifestWriter,
-    _load_character_aliases,
-    _save_character_aliases,
+    _load_characters,
+    _save_characters,
 )
 from ..review_instructions import manual_scene_instructions, manual_speaker_instructions
 
@@ -100,14 +100,12 @@ def _clickable(path: Path | str, base: Path | None = None) -> str:
 
 
 def _load_known_char_folders(config: GameConfig, reports_dir: Path) -> set[str]:
-    """Return the set of known character names from character_aliases.json.
+    """Return the set of known character names from characters.json.
 
-    The file is seeded during compose (from chars/ folders and Character()
-    declarations) and is the source of truth for character names thereafter.
-    Includes ``narrator`` so it can be selected as a valid character name
-    during interactive review even though it has no asset folder.
+    The file is seeded during compose from Character() declarations and is the
+    source of truth for character names thereafter.
     """
-    return set(_load_character_aliases(reports_dir).keys())
+    return set(_load_characters(reports_dir).keys())
 
 
 def _known_character_entries(
@@ -195,7 +193,7 @@ def _resolve_speaker(
     Checks:
       1. Direct character name match (case-insensitive).
       2. Player alias (``you``, ``y``) -> ``player_folder`` when configured.
-      3. Alias match against character_aliases.json.
+      3. Alias match against characters.json.
 
     Returns None when the speaker cannot be resolved.
     """
@@ -214,7 +212,7 @@ def _resolve_speaker(
     if player_folder and speaker_lower in {a.lower() for a in player_aliases}:
         return player_folder
 
-    # 3. Alias match against character_aliases.json.
+    # 3. Alias match against characters.json.
     for char_name, info_ in char_aliases.items():
         aliases = {a.lower() for a in info_.get("aliases", [])}
         if speaker_lower in aliases:
@@ -361,7 +359,7 @@ def _map_speaker_to_character(
     if speaker_key not in {alias.lower() for alias in aliases_list}:
         aliases_list.append(speaker_key)
         char_aliases[resolved]["aliases"] = sorted(aliases_list)
-    _save_character_aliases(reports_dir, char_aliases)
+    _save_characters(reports_dir, char_aliases)
     _apply_speaker_mapping_to_manifests(
         all_data,
         composite_paths,
@@ -703,7 +701,7 @@ def _process_scenes_missing_chars(
         info("All scene composites have character associations.")
         return
 
-    char_aliases = _load_character_aliases(reports_dir)
+    char_aliases = _load_characters(reports_dir)
 
     for entry in list(scenes):
         composite_path = entry["composite_path"]
@@ -883,7 +881,7 @@ def review(config_path: str = "src/converter/config.json") -> int:
     reports_dir = config.resolved_paths()["manifest_path"].parent
     rejected_dir = config.game_root / "composites" / REJECTED_SUBFOLDER
 
-    char_aliases = _load_character_aliases(reports_dir)
+    char_aliases = _load_characters(reports_dir)
     all_data = _load_all_category_manifests(reports_dir)
 
     rule("Composite review")
@@ -894,9 +892,7 @@ def review(config_path: str = "src/converter/config.json") -> int:
     # Phase 1: Review unmapped speakers.
     if pending.get("unmapped_speakers"):
         rule("Phase 1:Unmapped Speakers")
-    console.print(
-        "[cyan]Map Speakers to characters"
-    )
+    console.print("[cyan]Map Speakers to characters")
     if pending.get("unmapped_speakers"):
         heading, instructions = manual_speaker_instructions(reports_dir)
         print_panel(
@@ -916,9 +912,7 @@ def review(config_path: str = "src/converter/config.json") -> int:
     # Phase 2: Review scenes missing character association.
     if pending.get("scenes"):
         rule("Phase 2: Associate characters with scenes")
-    console.print(
-        "[cyan]Missing scene and character association[/cyan]"
-    )
+    console.print("[cyan]Missing scene and character association[/cyan]")
     if pending.get("scenes"):
         heading, instructions = manual_scene_instructions(reports_dir)
         print_panel(
@@ -933,7 +927,7 @@ def review(config_path: str = "src/converter/config.json") -> int:
         "Review complete",
         [
             ("Rejected records", str(rejected_dir)),
-            ("Character aliases", str(reports_dir / CHARACTER_ALIASES_FILE)),
+            ("Characters", str(reports_dir / CHARACTERS_FILE)),
         ],
     )
     console.print()
