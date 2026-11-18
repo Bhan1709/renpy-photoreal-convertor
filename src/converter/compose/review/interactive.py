@@ -61,23 +61,17 @@ def _is_tty() -> bool:
 
 
 def _clickable(path: Path | str, base: Path | None = None) -> str:
-    """Return a clickable link for ``path``.
+    """Return a plain, copyable path for ``path``.
 
-    ``path`` may be relative to ``base`` (defaults to CWD).  Uses ANSI OSC 8
-    hyperlinks when stdout is a TTY (supported by Windows Terminal, VS Code,
-    iTerm2, kitty, alacritty, etc.).  Falls back to the plain file:// URI
-    otherwise so the path is still readable/copyable.
+    ``path`` may be relative to ``base`` (defaults to CWD).  Returns the
+    resolved absolute path as a plain string so output stays readable in any
+    terminal (no OSC 8 escape sequences that can render as raw ``]8;;`` text
+    when not interpreted).
     """
     p = Path(path)
     if not p.is_absolute():
         p = (base or Path.cwd()) / p
-        p = p.resolve()
-    uri = p.as_uri()
-    label = str(p)
-    if _is_tty():
-        # OSC 8 hyperlink: ESC ] 8 ; ; URI BEL  LABEL  ESC ] 8 ; ; BEL
-        return f"\033]8;;{uri}\033\\{label}\033]8;;\033\\"
-    return uri
+    return str(p.resolve())
 
 
 # --------------------------------------------------------------------------- #

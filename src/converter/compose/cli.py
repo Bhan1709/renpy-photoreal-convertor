@@ -12,12 +12,13 @@ Flow:
 
 Usage::
 
-    python -m converter.compose                  # interactive menu
+    python -m converter.compose                  # interactive menu (exclusions -> clean/compose/review/apply/restore)
     python -m converter.compose clean            # remove previous compose output
     python -m converter.compose compose          # compose only (no apply)
     python -m converter.compose clean-compose    # clean output, then compose
-    python -m converter.compose review           # review scenes/speakers
-    python -m converter.compose apply            # adopt composites into scripts
+    python -m converter.compose review           # review scene character associations + unmapped speakers
+    python -m converter.compose apply            # adopt composites into live .rpy scripts
+    python -m converter.compose restore          # recover the live game folder from source, keep composites
 
 Run from the repository root.
 """
@@ -47,6 +48,7 @@ from cli import (
 
 from ..decompile.constants import CONFIG_PATH
 from ..decompile.sync_exclusions_cli import run_exclusion_sync
+from ..restore import restore_compose_from_source
 from .apply_pass import Applier
 from .compose_pass import Composer
 from .config import GameConfig, load_config
@@ -60,6 +62,7 @@ ACTION_COMPOSE = "compose"
 ACTION_CLEAN_COMPOSE = "clean-compose"
 ACTION_REVIEW = "review"
 ACTION_APPLY = "apply"
+ACTION_RESTORE = "restore"
 ACTION_QUIT = "quit"
 
 ACTIONS = (
@@ -68,6 +71,7 @@ ACTIONS = (
     ACTION_CLEAN_COMPOSE,
     ACTION_REVIEW,
     ACTION_APPLY,
+    ACTION_RESTORE,
 )
 
 
@@ -131,6 +135,22 @@ def print_review_instructions(config: GameConfig, config_path: Path) -> None:
     reports_dir = config.resolved_paths()["manifest_path"].parent
     pending_path = reports_dir / "review_pending.json"
     review_cmd = f"python -m converter.compose.review compose-review {config_path}"
+    scene_manifest = reports_dir / "manifest_scene.json"
+    aliases_path = reports_dir / "character_aliases.json"
+
+    scene_json = (
+        '    "characters": [\n'
+        '        {"character": "<folder>", '
+        '"evidence": ["script_identifier:<script>:<line>"]}\n'
+        "    ],\n"
+        '    "character_association_status": "associated",'
+    )
+    speaker_json = (
+        '    "clothes": {\n'
+        '        "folder": "archive/chars/clothes",\n'
+        '        "aliases": ["clothes"]\n'
+        "    },"
+    )
 
     rule("Pending review")
     info(f"{len(scenes)} scene composite(s) lack character association.")
@@ -145,36 +165,30 @@ def print_review_instructions(config: GameConfig, config_path: Path) -> None:
     console.print()
 
     info("Alternative: resolve manually by editing the report files.")
+    console.print()
+
     if scenes:
-        substep("Associate a character with a scene composite:")
-        console.print(f"   - Open {reports_dir / 'manifest_scene.json'}")
-        console.print('   - Find the scene under "composites" and add:')
-        console.print('        "characters": [')
+        console.print("  Associate a character with a scene composite:")
+        console.print(f"    - Open {scene_manifest}")
+        console.print('    - Find the scene under "composites" and add:')
+        console.print(f"```json\n{scene_json}\n```")
         console.print(
-            '            {"character": "<folder>", '
-            '"evidence": ["script_identifier:<script>:<line>"]}'
-        )
-        console.print("        ],")
-        console.print('        "character_association_status": "associated",')
-        console.print(
-            "   - Remove that record from the ``scenes`` array in review_pending.json."
+            "    - Remove that record from the ``scenes`` array in review_pending.json."
         )
         console.print()
+
     if speakers:
-        substep("Resolve an unmapped speaker:")
-        console.print(f"   - Open {reports_dir / 'character_aliases.json'}")
-        console.print("   - Add the speaker under its character folder, e.g.:")
-        console.print('        "clothes": {')
-        console.print('            "folder": "archive/chars/clothes",')
-        console.print('            "aliases": ["clothes"]')
-        console.print("        },")
+        console.print("  Resolve an unmapped speaker:")
+        console.print(f"    - Open {aliases_path}")
+        console.print("    - Add the speaker under its character folder, e.g.:")
+        console.print(f"```json\n{speaker_json}\n```")
         console.print(
-            "   - Remove the speaker from ``unmapped_speakers`` in review_pending.json."
+            "    - Remove the speaker from ``unmapped_speakers`` in review_pending.json."
         )
         console.print()
 
     info("When nothing is pending, apply the composites:")
-    console.print("  [cyan]mise run compose apply[/cyan]")
+    console.print("  [cyan]python -m converter.compose apply[/cyan]")
     console.print()
 
 
@@ -205,6 +219,28 @@ def apply_game(config: GameConfig) -> int:
     rule("Apply pass")
     Applier(config).apply()
     success("Applied composites into live .rpy scripts.")
+    return 0
+
+
+def restore_game(config_path: Path, *, dry_run: bool) -> int:
+    """Restore the live game folder from the original source, keeping composites.
+
+    Reads ``config.json`` (``source_path`` + ``game_folder``) and recovers the
+    live ``game`` folder from the original source, overwriting apply-modified
+    files while preserving ``game_folder/composites``.
+    """
+    rule("Restore compose from source")
+    kv("Config", str(config_path))
+    results = restore_compose_from_source(config_path, dry_run=dry_run)
+    if not results:
+        info("(nothing to restore)")
+        return 0
+    for path, status in sorted(results.items()):
+        console.print(f"  [{status}] {path}")
+    if dry_run:
+        info("Dry run: no files were written.")
+    else:
+        success("Restore complete.")
     return 0
 
 
@@ -289,6 +325,7 @@ def interactive(config_path: Path, *, dry_run: bool) -> int:
             Choice(title="Clean and compose", value=ACTION_CLEAN_COMPOSE),
             Choice(title="Review composites (scenes + speakers)", value=ACTION_REVIEW),
             Choice(title="Apply composites into live scripts", value=ACTION_APPLY),
+            Choice(title="Restore game folder from source", value=ACTION_RESTORE),
             Choice(title="Quit", value=ACTION_QUIT),
         ],
         default=ACTION_COMPOSE,
@@ -313,7 +350,10 @@ def interactive(config_path: Path, *, dry_run: bool) -> int:
     if choice == ACTION_REVIEW:
         return review_only(config_path)
 
-    return apply_action(config, dry_run=dry_run)
+    if choice == ACTION_APPLY:
+        return apply_action(config, dry_run=dry_run)
+
+    return restore_game(config_path, dry_run=dry_run)
 
 
 def review_only(config_path: Path) -> int:
@@ -345,7 +385,8 @@ def apply_action(config: GameConfig, *, dry_run: bool) -> int:
 def run_action(action: str, config_path: Path, *, dry_run: bool) -> int:
     """Run one action without the menu (used by non-interactive invocations)."""
     # The exclusion check is always the first step, matching the interactive flow.
-    if run_exclusion_sync(config_path, prompt=True) != 0:
+    # Restore does not need exclusions, so it skips that step.
+    if action != ACTION_RESTORE and run_exclusion_sync(config_path, prompt=True) != 0:
         return 1
 
     config = load_game_config(config_path)
@@ -366,7 +407,10 @@ def run_action(action: str, config_path: Path, *, dry_run: bool) -> int:
     if action == ACTION_REVIEW:
         return review_only(config_path)
 
-    return apply_action(config, dry_run=dry_run)
+    if action == ACTION_APPLY:
+        return apply_action(config, dry_run=dry_run)
+
+    return restore_game(config_path, dry_run=dry_run)
 
 
 @app.command()

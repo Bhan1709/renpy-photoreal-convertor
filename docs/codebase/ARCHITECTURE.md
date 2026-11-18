@@ -54,7 +54,7 @@ Describe the flow in 4-6 steps using file-backed evidence:
 | `src/agent/config.py` | Load/validate bundled model profiles from `src/agent/config.json` (provider, model_name, context_limit) | Network I/O, OpenCode launch | `src/agent/config.py` |
 | `src/agent/nvidia_proxy.py` | FastAPI reverse proxy to `integrate.api.nvidia.com`, ~36 RPM rate limiter, retry on 429 | Profile selection, Ollama, conversation monitoring | `src/agent/nvidia_proxy.py` |
 | `src/agent/monitor.py` | Context-window monitor; saves Markdown backups to `logs/conversations/` near context limit | Proxy, profile loading | `AGENTS.md` §5; `src/agent/cli.py` (`ConversationMonitor`) |
-| `src/converter/pipeline.py` | End-to-end decompile → exclusions prompt → compose orchestration; restore-compose mode | Image compositing internals, proxy | `src/converter/pipeline.py` |
+| `src/converter/pipeline.py` | End-to-end decompile → exclusions prompt → compose orchestration | Image compositing internals, proxy | `src/converter/pipeline.py` |
 | `src/converter/decompile/` | Game-folder discovery, `.rpa` extraction, `.rpyc` decompilation, image-category scan, `config.json` generation | Compositing, script rewriting | `src/converter/decompile/README.md` |
 | `src/converter/compose/` | Script parsing, path resolution, condition evaluation, compositing, manifests, apply, declarations | Game discovery, `.rpa` extraction, OpenCode | `src/converter/compose/README.md` |
 | `src/converter/restore/` | Revert `.rpy` from `archive.rpa`; undo decompile | Creating composites | `src/converter/restore/restore.py` |

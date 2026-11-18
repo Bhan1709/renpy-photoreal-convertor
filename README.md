@@ -112,8 +112,10 @@ This project is intended to be a toolkit to convert Ren'Py based games and visua
    ```
 
    Compose is the single entry point: it checks exclusion patterns first, then
-   offers clean, compose, clean+compose, review, and apply. Apply can be undone
-   with `mise run restore-compose`.
+   offers clean, compose, clean+compose, review, apply, and restore. Restore can be
+   run via the compose CLI: `python -m converter.compose restore` (equivalently
+   choose "Restore game folder from source" in the interactive menu), which recovers
+   the live game folder from the original source while keeping the generated composites.
 
    Advanced (explicit actions / pipeline flags):
 
@@ -123,12 +125,10 @@ This project is intended to be a toolkit to convert Ren'Py based games and visua
    python -m converter.compose clean-compose
    python -m converter.compose review
    python -m converter.compose apply
+   python -m converter.compose restore
 
    # Full pipeline: decompile → exclusions → compose (apply deferred)
    python -m converter.pipeline
-
-   # Undo compose/apply (restore .rpy files from archive.rpa)
-   python -m converter.pipeline --restore-compose
    ```
 
 ## 📁 Project Structure
