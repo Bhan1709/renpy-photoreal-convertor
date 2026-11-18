@@ -51,7 +51,7 @@ def write_config(
 
     config_path.parent.mkdir(parents=True, exist_ok=True)
     config_path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
-    success(f"Wrote config: {config_path}")
+    success(f"Created the game configuration: {config_path}")
     return config_path
 
 
@@ -68,5 +68,5 @@ def load_config(config_path: Path = CONFIG_PATH) -> dict:
     try:
         return json.loads(config_path.read_text(encoding="utf-8"))
     except (FileNotFoundError, json.JSONDecodeError, OSError) as exc:
-        warning(f"Could not load config {config_path}: {exc}")
+        warning(f"Could not load the game configuration from {config_path}: {exc}")
         return {}

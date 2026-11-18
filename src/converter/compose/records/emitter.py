@@ -7,7 +7,7 @@ instantiated and unit-tested independently.
 
 from __future__ import annotations
 
-from tqdm import tqdm  # type: ignore[import-untyped]
+from tqdm.rich import tqdm  # type: ignore[import-untyped]
 
 from ..association import CharacterAssociator
 from ..compositing import Compositor

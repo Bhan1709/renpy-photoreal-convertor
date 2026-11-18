@@ -16,7 +16,18 @@ import sys
 
 import typer
 
-from cli import Choice, error, info, kv, rule, select, success, warning
+from cli import (
+    Choice,
+    counted,
+    error,
+    info,
+    kv,
+    print_summary,
+    rule,
+    select,
+    success,
+    warning,
+)
 
 from .constants import GAME_FOLDER, RENPY_GAMES
 from .discovery import find_game_folder
@@ -24,7 +35,10 @@ from .flow import process_game
 from .restore import restore_decompile
 
 app = typer.Typer(
-    help="Decompile a Ren'Py game: extract .rpa archives, decompile .rpyc files, and write config.json.",
+    help=(
+        "Decompile a Ren'Py game: extract archives, restore readable scripts, "
+        "and create the game configuration."
+    ),
     invoke_without_command=True,
 )
 
@@ -33,7 +47,9 @@ app = typer.Typer(
 def _default(
     ctx: typer.Context,
     dry_run: bool = typer.Option(
-        False, "--dry-run", help="Show what would be done without doing it"
+        False,
+        "--dry-run",
+        help="Preview the decompile steps without changing any files.",
     ),
 ) -> None:
     """Run the interactive menu when no subcommand is given."""
@@ -52,12 +68,20 @@ def _run_pipeline(dry_run: bool = False) -> int:
         return 1
 
     if isinstance(result, dict):
-        info(f"Game folder: {result.get('game_folder')}")
-        kv("Source game", str(result.get("source_game")))
-        kv("Files copied", str(result.get("copied", 0)))
-        kv("Archives extracted", str(len(result.get("extracted_archives", []))))
-        kv(".rpyc decompiled", str(result.get("decompiled", 0)))
-        kv("Config written", str(result.get("config")))
+        print_summary(
+            "Decompile summary",
+            [
+                ("Game folder", str(result.get("game_folder"))),
+                ("Source game", str(result.get("source_game"))),
+                ("Files copied", str(result.get("copied", 0))),
+                (
+                    "Archives extracted",
+                    str(len(result.get("extracted_archives", []))),
+                ),
+                (".rpyc decompiled", str(result.get("decompiled", 0))),
+                ("Config written", str(result.get("config"))),
+            ],
+        )
         return 0
     return 1
 
@@ -75,20 +99,21 @@ def _clean_decompile(dry_run: bool = False) -> int:
 
     if dry_run:
         info(
-            "[dry-run] would remove generated .rpy files and extracted archive directories"
+            "Dry run: generated .rpy files and extracted archive directories "
+            "would be removed."
         )
         return 0
 
     results = restore_decompile(target)
     if not results:
-        info("(nothing to clean)")
+        info("No generated files needed cleaning.")
         return 0
 
     removed = sum(1 for v in results.values() if v == "removed")
     skipped = sum(1 for v in results.values() if v.startswith("skipped"))
-    success(f"Cleaned {removed} file(s)/directory(ies)")
+    success(f"Removed {counted(removed, 'generated item')}.")
     if skipped:
-        warning(f"Skipped {skipped} item(s)")
+        warning(f"Skipped {counted(skipped, 'item')}.")
     return 0
 
 
@@ -98,27 +123,31 @@ def clean(
         False, "--dry-run", help="Show what would be removed without doing it"
     ),
 ) -> int:
-    """Clean previous decompile artifacts (.rpy files and extracted archive dirs)."""
+    """Remove generated .rpy files and extracted archive folders."""
     return _clean_decompile(dry_run=dry_run)
 
 
 @app.command()
 def decompile(
     dry_run: bool = typer.Option(
-        False, "--dry-run", help="Show what would be done without doing it"
+        False,
+        "--dry-run",
+        help="Preview the decompile steps without changing any files.",
     ),
 ) -> int:
-    """Run the decompile pipeline (find game, copy, extract, decompile, write config)."""
+    """Extract archives, restore readable scripts, and write config.json."""
     return _run_pipeline(dry_run=dry_run)
 
 
 @app.command()
 def clean_decompile(
     dry_run: bool = typer.Option(
-        False, "--dry-run", help="Show what would be done without doing it"
+        False,
+        "--dry-run",
+        help="Preview the decompile steps without changing any files.",
     ),
 ) -> int:
-    """Clean previous decompile artifacts, then run the decompile pipeline."""
+    """Remove previous decompile output, then decompile the game."""
     clean_code = _clean_decompile(dry_run=dry_run)
     if clean_code != 0 and not dry_run:
         return clean_code
@@ -130,19 +159,31 @@ def _interactive(dry_run: bool = False) -> int:
     rule("Decompile")
 
     choice = select(
-        "What would you like to do?",
+        "Choose an action",
         choices=[
-            Choice(title="Clean previous decompile", value="clean"),
-            Choice(title="Decompile now", value="decompile"),
-            Choice(title="Clean then decompile", value="clean_decompile"),
-            Choice(title="Quit", value="quit"),
+            Choice(
+                title="Clean previous decompile output",
+                value="clean",
+                shortcut_key="c",
+            ),
+            Choice(
+                title="Decompile the game",
+                value="decompile",
+                shortcut_key="d",
+            ),
+            Choice(
+                title="Clean output, then decompile",
+                value="clean_decompile",
+                shortcut_key="a",
+            ),
+            Choice(title="Exit", value="quit", shortcut_key="x"),
         ],
         default="decompile",
         use_shortcuts=True,
     )
 
     if choice is None:
-        info("Aborted.")
+        info("Cancelled. The decompile action was not started.")
         return 0
 
     if choice == "clean":

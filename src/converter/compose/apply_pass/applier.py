@@ -21,7 +21,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import NotRequired, TypedDict
 
-from tqdm import tqdm  # type: ignore[import-untyped]
+from cli import counted, loading, note, print_summary, progress_bar
 
 from ..conditions import condition_variables, get_label_assignments_map
 from ..config import GameConfig
@@ -73,7 +73,8 @@ class Applier:
         dynamic_states = index_payload["dynamic_states"]
         summary = dict(index_payload.get("summary", {}))
 
-        reset_map = get_label_assignments_map(self.config)
+        with loading("Loading script assignment states..."):
+            reset_map = get_label_assignments_map(self.config)
 
         mapping: dict[tuple[str, int], _CompositeUsageInfo] = {}
         used: dict[str, str | None] = {}
@@ -85,68 +86,79 @@ class Applier:
         usage_records: dict[tuple[str, int], list[tuple]] = defaultdict(list)
 
         category_files = self._category_manifest_files()
-        bar = tqdm(total=len(category_files), desc="applying manifests")
-        for cat_path in category_files:
-            cat_data = json.loads(cat_path.read_text(encoding="utf-8"))
-            for c in cat_data.get("composites", []):
-                record = CompositeRecord.from_dict(c)
-                all_records.append(record)
-                if record.status != "static":
-                    continue
-                for loc in record.usage_locations:
-                    if "/archive/" in loc.script:
+        with progress_bar(
+            total=len(category_files),
+            desc="Loading manifests",
+            unit="manifests",
+        ) as bar:
+            for cat_path in category_files:
+                cat_data = json.loads(cat_path.read_text(encoding="utf-8"))
+                for c in cat_data.get("composites", []):
+                    record = CompositeRecord.from_dict(c)
+                    all_records.append(record)
+                    if record.status != "static":
                         continue
-                    if not SHOW_RE.match(loc.statement.strip()):
+                    for loc in record.usage_locations:
+                        if "/archive/" in loc.script:
+                            continue
+                        if not SHOW_RE.match(loc.statement.strip()):
+                            continue
+                        key = (loc.script, loc.line)
+                        usage_records[key].append((record, loc))
+                bar.update(1)
+
+        with progress_bar(
+            total=len(usage_records),
+            desc="Resolving composite usages",
+            unit="usages",
+        ) as usage_bar:
+            for key, candidates in usage_records.items():
+                try:
+                    statement = candidates[0][1].statement
+                    path = self.config.game_root.parent / key[0]
+                    if not path.exists():
                         continue
-                    key = (loc.script, loc.line)
-                    usage_records[key].append((record, loc))
-            bar.update(1)
-        bar.close()
+                    composite_tags = {
+                        Path(record.composite_path).stem for record, _ in candidates
+                    }
+                    variables = set().union(
+                        *(_condition_variables(record) for record, _ in candidates)
+                    )
+                    written = self._written_before(path, key[1], reset_map)
+                    if len(composite_tags) == 1 and variables.issubset(written):
+                        name = next(iter(composite_tags))
+                        if self._line_uses_tag(path, key[1], name):
+                            already_direct += 1
+                        else:
+                            mapping[key] = {"name": name, "statement": statement}
+                        used[name] = next(iter(candidates))[0].composite_path
+                        continue
 
-        for key, candidates in usage_records.items():
-            statement = candidates[0][1].statement
-            path = self.config.game_root.parent / key[0]
-            if not path.exists():
-                continue
-            composite_tags = {
-                Path(record.composite_path).stem for record, _ in candidates
-            }
-            variables = set().union(
-                *(_condition_variables(record) for record, _ in candidates)
-            )
-            written = self._written_before(path, key[1], reset_map)
-            if len(composite_tags) == 1 and variables.issubset(written):
-                name = next(iter(composite_tags))
-                if self._line_uses_tag(path, key[1], name):
-                    already_direct += 1
-                else:
-                    mapping[key] = {"name": name, "statement": statement}
-                used[name] = next(iter(candidates))[0].composite_path
-                continue
-
-            # Multiple variants (runtime-dependent) — try to build a
-            # ConditionSwitch so the live script can select at runtime.
-            runtime_switch, _ = self._runtime_switch_for_usage(
-                candidates, key, statement, all_records
-            )
-            if runtime_switch:
-                runtime_switches[key] = runtime_switch
-                used[runtime_switch["tag"]] = None  # type: ignore[typeddict-item]
-                continue
-            elif len(composite_tags) == 1:
-                # Single variant — direct mapping even without a switch.
-                name = next(iter(composite_tags))
-                mapping[key] = {"name": name, "statement": statement}
-                used[name] = next(iter(candidates))[0].composite_path
-                continue
-            skipped.append(
-                {
-                    "script": key[0],
-                    "line": key[1],
-                    "statement": statement,
-                    "global_defaults": sorted(variables - written),
-                }
-            )
+                    # Multiple variants (runtime-dependent) — try to build a
+                    # ConditionSwitch so the live script can select at runtime.
+                    runtime_switch, _ = self._runtime_switch_for_usage(
+                        candidates, key, statement, all_records
+                    )
+                    if runtime_switch:
+                        runtime_switches[key] = runtime_switch
+                        used[runtime_switch["tag"]] = None  # type: ignore[typeddict-item]
+                        continue
+                    elif len(composite_tags) == 1:
+                        # Single variant — direct mapping even without a switch.
+                        name = next(iter(composite_tags))
+                        mapping[key] = {"name": name, "statement": statement}
+                        used[name] = next(iter(candidates))[0].composite_path
+                        continue
+                    skipped.append(
+                        {
+                            "script": key[0],
+                            "line": key[1],
+                            "statement": statement,
+                            "global_defaults": sorted(variables - written),
+                        }
+                    )
+                finally:
+                    usage_bar.update(1)
 
         # Build the merged manifest from the per-category composites streamed
         # above, so the apply pass can resolve generated images / missing files.
@@ -158,35 +170,42 @@ class Applier:
             unresolved=tuple(index_payload.get("unresolved", [])),
             summary=summary,
         )
-        image_tags, missing_generated = self._generated_composites(full_manifest)
+        with loading("Checking generated composite files..."):
+            image_tags, missing_generated = self._generated_composites(full_manifest)
 
         # --- Rewrite direct mappings ---
         by_file = self._group_by_file(mapping)
         applied = 0
         unchanged = 0
-        for script, entries in sorted(by_file.items()):
-            path = self.config.game_root / script
-            lines = path.read_text(encoding="utf-8-sig").splitlines(keepends=True)
-            newline = "\r\n" if any("\r\n" in line for line in lines[:50]) else "\n"
-            changed = 0
-            for line_no, info in sorted(entries, reverse=True):
-                index = line_no - 1
-                if (
-                    not (0 <= index < len(lines))
-                    or lines[index].split("#", 1)[0].strip() != info["statement"]
-                ):
-                    unchanged += 1
-                    continue
-                rewritten = _rewrite_script_line(
-                    lines[index], info["statement"], info["name"]
-                )  # type: ignore[typeddict-item]
-                if not rewritten.endswith(("\n", "\r")):
-                    rewritten += newline
-                lines[index] = rewritten
-                changed += 1
-            applied += changed
-            path.write_text("".join(lines), encoding="utf-8-sig")
-            print(f"{script}: {changed} replacements")
+        with progress_bar(
+            total=len(by_file),
+            desc="Updating game scripts",
+            unit="files",
+        ) as script_bar:
+            for script, entries in sorted(by_file.items()):
+                path = self.config.game_root / script
+                lines = path.read_text(encoding="utf-8-sig").splitlines(keepends=True)
+                newline = "\r\n" if any("\r\n" in line for line in lines[:50]) else "\n"
+                changed = 0
+                for line_no, info in sorted(entries, reverse=True):
+                    index = line_no - 1
+                    if (
+                        not (0 <= index < len(lines))
+                        or lines[index].split("#", 1)[0].strip() != info["statement"]
+                    ):
+                        unchanged += 1
+                        continue
+                    rewritten = _rewrite_script_line(
+                        lines[index], info["statement"], info["name"]
+                    )  # type: ignore[typeddict-item]
+                    if not rewritten.endswith(("\n", "\r")):
+                        rewritten += newline
+                    lines[index] = rewritten
+                    changed += 1
+                applied += changed
+                path.write_text("".join(lines), encoding="utf-8-sig")
+                note(f"{script}: {counted(changed, 'replacement')}.")
+                script_bar.update(1)
 
         # --- Runtime ConditionSwitch wrappers ---
         runtime_by_file: dict[str, list[tuple[int, _CompositeUsageInfo]]] = {}
@@ -195,41 +214,48 @@ class Applier:
             runtime_by_file.setdefault(rel, []).append((line, info))
         runtime_applied = 0
         runtime_already_applied = 0
-        for script, entries in sorted(runtime_by_file.items()):
-            path = self.config.game_root / script
-            lines = path.read_text(encoding="utf-8-sig").splitlines(keepends=True)
-            changed = False
-            for line_no, info in sorted(entries, reverse=True):
-                index = line_no - 1
-                if 0 <= index < len(lines) and re.match(
-                    rf"^(?:show|scene)\s+{re.escape(info['tag'])}(?:\s|:|$)",  # type: ignore[typeddict-item]
-                    lines[index].strip(),
-                ):
-                    runtime_already_applied += 1
-                    continue
-                if (
-                    not (0 <= index < len(lines))
-                    or lines[index].split("#", 1)[0].strip() != info["statement"]
-                ):
-                    skipped.append(
-                        {
-                            "script": f"game/{script}",
-                            "line": line_no,
-                            "statement": info["statement"],
-                            "reason": "source_line_changed",
-                        }
-                    )
-                    continue
-                lines[index] = _rewrite_script_line(
-                    lines[index], info["statement"], info["tag"]
-                )  # type: ignore[typeddict-item]
-                runtime_applied += 1
-                changed = True
-            if changed:
-                path.write_text("".join(lines), encoding="utf-8-sig")
+        with progress_bar(
+            total=len(runtime_by_file),
+            desc="Applying runtime selectors",
+            unit="files",
+        ) as runtime_bar:
+            for script, entries in sorted(runtime_by_file.items()):
+                path = self.config.game_root / script
+                lines = path.read_text(encoding="utf-8-sig").splitlines(keepends=True)
+                changed = False
+                for line_no, info in sorted(entries, reverse=True):
+                    index = line_no - 1
+                    if 0 <= index < len(lines) and re.match(
+                        rf"^(?:show|scene)\s+{re.escape(info['tag'])}(?:\s|:|$)",  # type: ignore[typeddict-item]
+                        lines[index].strip(),
+                    ):
+                        runtime_already_applied += 1
+                        continue
+                    if (
+                        not (0 <= index < len(lines))
+                        or lines[index].split("#", 1)[0].strip() != info["statement"]
+                    ):
+                        skipped.append(
+                            {
+                                "script": f"game/{script}",
+                                "line": line_no,
+                                "statement": info["statement"],
+                                "reason": "source_line_changed",
+                            }
+                        )
+                        continue
+                    lines[index] = _rewrite_script_line(
+                        lines[index], info["statement"], info["tag"]
+                    )  # type: ignore[typeddict-item]
+                    runtime_applied += 1
+                    changed = True
+                if changed:
+                    path.write_text("".join(lines), encoding="utf-8-sig")
+                runtime_bar.update(1)
 
         # --- Replace raw generated paths in screens with declared tags ---
-        runtime_paths_replaced = self._replace_generated_screen_paths(image_tags)
+        with loading("Replacing generated paths in screen declarations..."):
+            runtime_paths_replaced = self._replace_generated_screen_paths(image_tags)
 
         # --- Write composite_images.rpy declarations ---
         declarations = [
@@ -302,14 +328,23 @@ class Applier:
         )
         index_data["summary"] = full_manifest.summary
         index_path.write_text(json.dumps(index_data, indent=2), encoding="utf-8")
-        print(
-            f"applied {applied}, unchanged {unchanged}, skipped for runtime state {len(skipped)}, "
-            f"adopted {len(used)} composites, declared {len(image_tags)} generated images, "
-            f"runtime selector uses {runtime_applied + runtime_already_applied} "
-            f"({len(wrapper_declarations)} wrappers), "
-            f"updated {runtime_paths_replaced} screen image paths, "
-            f"skipped without safe state maps {len(skipped)}, "
-            f"missing files {len(missing_generated)}"
+        print_summary(
+            "Apply summary",
+            [
+                ("Applied statements", str(applied)),
+                ("Unchanged statements", str(unchanged)),
+                ("Skipped for runtime state", str(len(skipped))),
+                ("Adopted composites", str(len(used))),
+                ("Declared generated images", str(len(image_tags))),
+                (
+                    "Runtime selector uses",
+                    str(runtime_applied + runtime_already_applied),
+                ),
+                ("Runtime selector declarations", str(len(wrapper_declarations))),
+                ("Updated screen image paths", str(runtime_paths_replaced)),
+                ("Skipped without safe state maps", str(len(skipped))),
+                ("Missing generated files", str(len(missing_generated))),
+            ],
         )
         return full_manifest, report
 

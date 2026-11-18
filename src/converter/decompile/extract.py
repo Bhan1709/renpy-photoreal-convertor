@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from cli import error, info, success
+from cli import counted, error, info, loading, success
 
 
 def extract_rpa_file(rpa_file: Path) -> None:
@@ -26,17 +26,19 @@ def extract_rpa_file(rpa_file: Path) -> None:
                 return
 
             info(f"Extracting {rpa_file.name} -> {extract_dir}")
-            count = 0
-            for filename in files:
-                data = rpa.read(filename)
-                target = extract_dir / filename
-                target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_bytes(data)
-                count += 1
+            with loading(f"Extracting {rpa_file.name}..."):
+                count = 0
+                for filename in files:
+                    data = rpa.read(filename)
+                    target = extract_dir / filename
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_bytes(data)
+                    count += 1
 
-            success(
-                f"Extracted {count} file(s) from {rpa_file.name} into {extract_dir}"
-            )
+        success(
+            f"Extracted {counted(count, 'file')} from {rpa_file.name} "
+            f"into {extract_dir}."
+        )
     except Exception as e:  # noqa: BLE001
         error(f"Failed to extract {rpa_file.name}: {e}")
 
@@ -53,7 +55,7 @@ def extract_all_rpa(game_folder: Path) -> list[dict[str, str]]:
         info(f"No .rpa files found in {game_folder}")
         return []
 
-    info(f"Extracting {len(rpa_files)} .rpa file(s) into {game_folder}")
+    info(f"Extracting {counted(len(rpa_files), '.rpa file')} into {game_folder}")
     extracted: list[dict[str, str]] = []
     for rpa_file in rpa_files:
         extract_dir = rpa_file.parent / rpa_file.stem

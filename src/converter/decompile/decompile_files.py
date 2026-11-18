@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from cli import error, info, success
+from cli import counted, error, info, loading, success
 
 
 def decompile_rpyc_files(game_folder: Path) -> int:
@@ -20,23 +20,26 @@ def decompile_rpyc_files(game_folder: Path) -> int:
         info(f"No .rpyc files found in {game_folder}")
         return 0
 
-    info(f"Decompiling {len(rpyc_files)} .rpyc file(s) in {game_folder}")
+    info(f"Decompiling {counted(len(rpyc_files), '.rpyc file')} in {game_folder}")
     ok = err = fail = 0
     for rpyc_file in rpyc_files:
         try:
             output_path = rpyc_file.with_suffix(".rpy")
-            result = decompile_rpyc_file(
-                rpyc_file, output_path=output_path, overwrite=True
-            )
+            with loading(f"Decompiling {rpyc_file.name}..."):
+                result = decompile_rpyc_file(
+                    rpyc_file, output_path=output_path, overwrite=True
+                )
             if result.success:
                 success(f"Decompiled: {rpyc_file.name} -> {output_path.name}")
                 ok += 1
             else:
-                error(f"Error decompiling {rpyc_file.name}: {result.error}")
+                error(f"Could not decompile {rpyc_file.name}: {result.error}")
                 err += 1
         except Exception as e:  # noqa: BLE001
             error(f"Failed to decompile {rpyc_file.name}: {e}")
             fail += 1
 
-    success(f"Decompile done: {ok} ok, {err} error(s), {fail} failed")
+    success(
+        f"Decompile complete: {ok} succeeded, {counted(err, 'error')}, {fail} failed."
+    )
     return ok

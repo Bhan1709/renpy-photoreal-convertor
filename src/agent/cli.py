@@ -25,6 +25,7 @@ from cli import (
     error,
     info,
     kv,
+    loading,
     note,
     print_table,
     rule,
@@ -104,10 +105,11 @@ def _wait_for_proxy(
 ) -> bool:
     """Wait until the local NVIDIA proxy reports healthy."""
     deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if _proxy_is_healthy():
-            return True
-        time.sleep(interval)
+    with loading("Waiting for the NVIDIA proxy to become healthy..."):
+        while time.monotonic() < deadline:
+            if _proxy_is_healthy():
+                return True
+            time.sleep(interval)
     return False
 
 
@@ -169,11 +171,12 @@ def _stop_proxy() -> int:
         return 1
 
     deadline = time.monotonic() + PROXY_START_TIMEOUT_SECONDS
-    while time.monotonic() < deadline:
-        if _proxy_health() is None:
-            success(f"Stopped the NVIDIA proxy (pid {pid}).")
-            return 0
-        time.sleep(PROXY_POLL_INTERVAL_SECONDS)
+    with loading("Waiting for the NVIDIA proxy to stop..."):
+        while time.monotonic() < deadline:
+            if _proxy_health() is None:
+                success(f"Stopped the NVIDIA proxy (pid {pid}).")
+                return 0
+            time.sleep(PROXY_POLL_INTERVAL_SECONDS)
 
     warning(f"Sent a stop signal to pid {pid}, but the proxy is still responding.")
     return 1
@@ -344,9 +347,18 @@ def _print_profiles() -> int:
     for key in sorted(profiles):
         profile = profiles[key]
         rows.append(
-            [key, profile.provider, profile.model_name, str(profile.context_limit)]
+            [
+                key,
+                profile.provider,
+                profile.model_name,
+                f"{profile.context_limit:,}",
+            ]
         )
-    print_table("Available profiles", ["Key", "Provider", "Model", "Context"], rows)
+    print_table(
+        "Available model profiles",
+        ["Key", "Provider", "Model", "Context limit"],
+        rows,
+    )
     return 0
 
 
@@ -360,8 +372,8 @@ def run(
     profile: str | None = typer.Argument(
         None,
         help=(
-            "Profile key from config.json (e.g. nvidia-glm or qwen-3-vl-32k), "
-            "or an action: stop-proxy / list-profiles."
+            "Model profile key from config.json (for example nvidia-glm or "
+            "qwen-3-vl-32k), or a maintenance action: stop-proxy / list-profiles."
         ),
     ),
     list_profiles: bool = typer.Option(
@@ -373,9 +385,9 @@ def run(
 ) -> None:
     """Launch OpenCode with a model profile, or run a maintenance action.
 
-    Invoked with no profile, an interactive picker is shown. The actions
-    ``stop-proxy`` and ``list-profiles`` may be given either as flags or as the
-    positional argument, so ``mise agent stop-proxy`` and
+    With no profile, an interactive picker is shown. The ``stop-proxy`` and
+    ``list-profiles`` actions can be passed as either a flag or a positional
+    argument, so ``mise run agent stop-proxy`` and
     ``python -m agent --stop-proxy`` both work.
     """
     if list_profiles or profile == "list-profiles":
@@ -383,7 +395,7 @@ def run(
     if stop_proxy or profile == "stop-proxy":
         raise typer.Exit(_stop_proxy())
 
-    rule("Agent Launcher")
+    rule("Agent launcher")
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -392,8 +404,9 @@ def run(
         # No profile given: interactively pick one from the available list.
         if not (sys.stdin.isatty() and sys.stdout.isatty()):
             error(
-                "No profile given and no interactive terminal is available. "
-                "Pass a profile key explicitly, e.g. `python -m agent qwen-3-vl-32k`."
+                "No model profile was provided, and this terminal does not support "
+                "interactive prompts. Pass a profile key, for example: "
+                "`python -m agent qwen-3-vl-32k`."
             )
             raise typer.Exit(1)
 
@@ -404,7 +417,7 @@ def run(
             raise typer.Exit(1)
 
         if not profiles:
-            error("No profiles are defined in config.json.")
+            error("No model profiles are defined in config.json.")
             raise typer.Exit(1)
 
         # Build grouped, metadata-rich choices for the profile picker.
@@ -437,13 +450,13 @@ def run(
             )
 
         selected = select(
-            "Select a profile",
+            "Choose a model profile",
             choices=choices,
             default=min(profiles),
             use_shortcuts=True,
         )
         if selected is None:
-            info("No profile selected. Aborted.")
+            info("No model profile was selected. Cancelled.")
             raise typer.Exit(1)
         assert selected is not None
         profile = selected
@@ -464,7 +477,7 @@ def run(
     except (OSError, ConfigError) as exc:
         error(f"Could not update project config: {exc}")
         raise typer.Exit(1)
-    info(f"Selected model in project config: {config_path}")
+    info(f"Updated the project config with the selected model: {config_path}")
 
     step("1", f"Launching OpenCode with profile [{profile_obj.key}]")
 
@@ -481,7 +494,7 @@ def run(
         else:
             code = _run_with_ollama(profile_obj)
     except KeyboardInterrupt:
-        info("\n[BYE] Session interrupted by user.")
+        info("Session interrupted. Goodbye.")
         raise typer.Exit(130)
     finally:
         monitor.stop()

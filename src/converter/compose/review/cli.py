@@ -19,32 +19,42 @@ import sys
 
 import typer
 
-from cli import console, create_app, info, kv, rule
+from cli import (
+    browse_list,
+    console,
+    counted,
+    create_app,
+    info,
+    is_interactive,
+    kv,
+    rule,
+)
 
 from ..association import CharacterAssociator
 from ..config import load_config
 from .interactive import review as interactive_review
 
-app = create_app(
-    "Review utilities for scene character association and unmapped speakers."
-)
+app = create_app("Review scene character associations and map speakers to characters.")
 
 
 @app.command()
 def chars_list(
     config_path: str = typer.Argument(
         "src/converter/config.json",
-        help="Path to the GameConfig JSON (default: src/converter/config.json)",
+        help="Path to the game configuration JSON (default: src/converter/config.json)",
     ),
 ) -> int:
-    """Print all known character folder names (source of truth)."""
+    """List the character folders available for review."""
     config = load_config(config_path)
     associator = CharacterAssociator(config)
     folders = sorted(associator.known_char_folders())
-    rule("Character folders")
-    info(f"Total: {len(folders)}")
-    for folder in folders:
-        console.print(f"  {folder}")
+    rule("Known character folders")
+    info(f"Found {counted(len(folders), 'character folder')}.")
+    if is_interactive():
+        browse_list("Known character folders", folders)
+    else:
+        for folder in folders:
+            console.print(f"  {folder}")
     return 0
 
 
@@ -52,10 +62,10 @@ def chars_list(
 def compose_review(
     config_path: str = typer.Argument(
         "src/converter/config.json",
-        help="Path to the GameConfig JSON (default: src/converter/config.json)",
+        help="Path to the game configuration JSON (default: src/converter/config.json)",
     ),
 ) -> int:
-    """Review scenes needing character association and unmapped speakers.
+    """Associate scene characters and map unmapped speakers.
 
     Delegates to the interactive review flow in
     :mod:`converter.compose.review.interactive`.

@@ -24,6 +24,8 @@ import json
 from pathlib import Path
 from typing import cast
 
+from cli import print_summary
+
 from ..association import CharacterAssociator
 from ..config import GameConfig
 from ..errors import ManifestError
@@ -35,6 +37,19 @@ KNOWN_FAMILIES = ("bg", "char", "scene", "gui", "other")
 # aliases.  Seeded during compose from chars/ folders and Character() declarations;
 # used by the interactive review task.
 CHARACTER_ALIASES_FILE = "character_aliases.json"
+
+
+def _collect_unmapped_speakers(
+    manifest: CompositeManifest,
+) -> dict[str, list[str]]:
+    """Collect scene speakers that could not be mapped to a character folder."""
+    unmapped: dict[str, list[str]] = {}
+    for record in manifest.composites_list:
+        if record.family != "scene":
+            continue
+        for speaker in record.unmapped_speakers or ():
+            unmapped.setdefault(speaker, []).append(record.composite_path)
+    return unmapped
 
 
 def _load_character_aliases(reports_dir: Path) -> dict[str, dict]:
@@ -161,7 +176,7 @@ class ManifestWriter:
             scene_records = [r for r in manifest.composites_list if r.family == "scene"]
             missing = [r.composite_path for r in scene_records if not r.characters]
             pending_scenes = missing
-            unmapped_speakers: dict[str, list[str]] = {}
+            unmapped_speakers = _collect_unmapped_speakers(manifest)
             association_summary = {
                 "images": len(scene_records),
                 "associated": len(scene_records) - len(missing),
@@ -226,15 +241,7 @@ class ManifestWriter:
                 for r in manifest.composites_list
                 if r.family == "scene" and not r.characters
             ]
-            all_unmapped: dict[str, list[str]] = {}
-            for r in manifest.composites_list:
-                if r.family != "scene":
-                    continue
-                if r.unmapped_speakers:
-                    for speaker in r.unmapped_speakers:
-                        all_unmapped.setdefault(speaker, []).append(
-                            f"{r.composite_path}"
-                        )
+            all_unmapped = _collect_unmapped_speakers(manifest)
             pending_scenes = cast(
                 list[str], [s["composite_path"] for s in scene_without_chars]
             )
@@ -265,6 +272,13 @@ class ManifestWriter:
     # ------------------------------------------------------------------ #
     # Reading
     # ------------------------------------------------------------------ #
+
+    @classmethod
+    def has_composite_manifest(cls, config: GameConfig) -> bool:
+        """Return whether the compose pass has produced a manifest index."""
+        paths = config.resolved_paths()
+        index_path = paths["manifest_path"].parent / "manifest_index.json"
+        return index_path.is_file()
 
     @classmethod
     def load_all(cls, config: GameConfig) -> CompositeManifest:
@@ -321,19 +335,18 @@ def _print_summary(
     pending_scenes: list[str] | None = None,
     unmapped_speakers: dict[str, list[str]] | None = None,
 ) -> None:
-    print(
-        json.dumps(
-            {
-                "scripts_scanned": manifest.summary["scripts_scanned"],
-                "composites": manifest.summary["composites"],
-                "uses_processed": manifest.summary["uses_processed"],
-                # Scene composites with no character association (details in review_pending.json).
-                "unresolved_scenes": len(pending_scenes or []),
-                # Speakers in scene dialogs not mapped to any char folder.
-                "unmapped_speakers": len(unmapped_speakers)
-                if isinstance(unmapped_speakers, dict)
-                else 0,
-            },
-            indent=2,
-        )
+    print_summary(
+        "Compose summary",
+        [
+            ("Scripts scanned", str(manifest.summary["scripts_scanned"])),
+            ("Composites", str(manifest.summary["composites"])),
+            ("Uses processed", str(manifest.summary["uses_processed"])),
+            ("Unresolved scenes", str(len(pending_scenes or []))),
+            (
+                "Unmapped speakers",
+                str(
+                    len(unmapped_speakers) if isinstance(unmapped_speakers, dict) else 0
+                ),
+            ),
+        ],
     )

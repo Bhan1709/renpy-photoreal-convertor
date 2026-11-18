@@ -46,7 +46,9 @@ from .decompile.discovery import find_game_folders
 from .decompile.exclusions import prompt_exclusion_patterns, sync_exclusions
 from .decompile.extract import extract_rpa_file
 
-app = create_app("Decompile a Ren'Py game, then compose photoreal composites.")
+app = create_app(
+    "Decompile a Ren'Py game, then create photoreal composites for review."
+)
 
 
 # --------------------------------------------------------------------------- #
@@ -94,14 +96,14 @@ def run_pipeline(
     if compose_only or apply_only:
         sync_exclusions(CONFIG_PATH)
         config = load_config(CONFIG_PATH)
-        rule(f"Pipeline: {config.name}")
+        rule(f"Conversion pipeline: {config.name}")
 
         if compose_only:
             prompt_exclusion_patterns(CONFIG_PATH)
             sync_exclusions(CONFIG_PATH)
             config = load_config(CONFIG_PATH)
             compose_game(config, dry_run=dry_run, clean=clean_output)
-            rule("Compose complete (apply step deferred)")
+            rule("Composites ready for review")
             print_review_instructions(config, CONFIG_PATH)
             return 0
 
@@ -112,34 +114,32 @@ def run_pipeline(
     # Auto-discover the first game folder under src/renpy_game (no --game needed).
     folders = find_game_folders()
     if not folders:
-        error("No game folders found under src/renpy_game.")
+        error("No Ren'Py game folders were found under src/renpy_game.")
         return 1
 
     game_dir, _rel_path, target_folder = folders[0]
     name = game_dir.name
-    rule(f"Pipeline: {name}")
+    rule(f"Conversion pipeline: {name}")
 
     # --- Stage 1: decompile (.rpyc -> .rpy) + extract (.rpa -> archive/) ---
-    step(1, f"Decompile .rpyc + extract .rpa under {target_folder}")
+    step(1, f"Decompile scripts and extract archives under {target_folder}")
     _decompile_and_extract(target_folder)
 
     # --- Stage 2: prompt user for exclusion patterns ---
-    step(2, "Prompt for exclusion patterns")
+    step(2, "Review exclusion patterns")
     prompt_exclusion_patterns(CONFIG_PATH)
 
     # --- Stage 3: sync exclusions + load decompile config ---
-    step(3, "Sync exclusions + load config")
+    step(3, "Sync exclusions and load the game configuration")
     sync_exclusions(CONFIG_PATH)
     config = load_config(CONFIG_PATH)
 
     # --- Stage 4: compose (manifest + PNGs) only ---
     # Apply is intentionally deferred so the user can verify compose output.
-    step(4, "Compose manifest + PNGs (apply deferred)")
+    step(4, "Create composites and manifests (apply after review)")
     compose_game(config, dry_run=dry_run, clean=clean_output)
-    rule("Compose complete (apply step deferred)")
+    rule("Composites ready for review")
     print_review_instructions(config, CONFIG_PATH)
-
-    rule("Pipeline complete")
     return 0
 
 
@@ -151,25 +151,27 @@ def run_pipeline(
 @app.command()
 def main(
     dry_run: bool = typer.Option(
-        False, "--dry-run", help="Compose without writing; skips the apply pass."
+        False,
+        "--dry-run",
+        help="Preview the compose and apply steps without writing any files.",
     ),
     clean_output: bool = typer.Option(
         False,
         "--clean-output",
-        help="Remove prior generated PNGs and manifest before composing.",
+        help="Remove previous composite images and manifests before composing.",
     ),
     compose_only: bool = typer.Option(
         False,
         "--compose-only",
-        help="Compose + write manifest, then stop (skip apply). Assumes decompiled.",
+        help="Create composites and manifests without applying them.",
     ),
     apply_only: bool = typer.Option(
         False,
         "--apply-only",
-        help="Run the apply pass only (requires an existing manifest).",
+        help="Apply existing composites without running decompile again.",
     ),
 ) -> int:
-    """Run the decompile -> compose -> apply pipeline."""
+    """Run the decompile and compose workflow; apply remains deferred for review."""
     return run_pipeline(
         dry_run=dry_run,
         compose_only=compose_only,

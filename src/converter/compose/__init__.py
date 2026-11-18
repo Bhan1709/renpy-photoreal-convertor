@@ -36,9 +36,9 @@ Restore (revert modified .rpy files from archive)::
     results = restore_rpy_files(config)  # all .rpy files
     results = restore_from_manifest(config)  # only files touched by apply
 
-Interactive CLI (exclusion check, then action menu)::
+Interactive CLI (action menu; exclusion check only when composing)::
 
-    python -m converter.compose                  # exclusion check -> menu
+    python -m converter.compose                  # menu -> selected action
     python -m converter.compose clean            # remove previous compose output
     python -m converter.compose compose          # compose only (no apply)
     python -m converter.compose clean-compose    # clean output, then compose

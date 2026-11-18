@@ -103,6 +103,11 @@ def sync_exclusions(config_path: Path = Path("src/converter/config.json")) -> di
     }
 
 
+def _format_patterns(patterns: list[str]) -> str:
+    """Return a readable, comma-separated representation of patterns."""
+    return ", ".join(patterns) if patterns else "(none)"
+
+
 def prompt_exclusion_patterns(
     config_path: Path = Path("src/converter/config.json"),
 ) -> bool:
@@ -136,34 +141,32 @@ def prompt_exclusion_patterns(
     image_current = list(exclusion.get("image", {}).get("patterns", []) or [])
 
     rule("Exclusion patterns")
-    kv("Script exclusions", str(script_current))
+    kv("Current script exclusions", _format_patterns(script_current))
     raw = prompt_text(
-        "Add script exclusion patterns (comma-separated), "
-        "or press Enter to keep current",
+        "Add script exclusions (comma-separated; press Enter to keep the current list)",
         default="",
     )
     if raw is None:
-        info("Aborted.")
+        info("Exclusion update cancelled. No changes were made.")
         return False
     script_new = [p.strip() for p in raw.split(",") if p.strip()]
     if script_new:
         script_current = sorted(set(script_current) | set(script_new))
 
-    kv("Image exclusions", str(image_current))
+    kv("Current image exclusions", _format_patterns(image_current))
     raw = prompt_text(
-        "Add image exclusion patterns (comma-separated), "
-        "or press Enter to keep current",
+        "Add image exclusions (comma-separated; press Enter to keep the current list)",
         default="",
     )
     if raw is None:
-        info("Aborted.")
+        info("Exclusion update cancelled. No changes were made.")
         return False
     image_new = [p.strip() for p in raw.split(",") if p.strip()]
     if image_new:
         image_current = sorted(set(image_current) | set(image_new))
 
     if not script_new and not image_new:
-        info("No new exclusion patterns; keeping the current config.")
+        info("No new patterns entered. The existing exclusions were kept.")
         return False
 
     data["exclusion"] = {
@@ -189,5 +192,5 @@ def prompt_exclusion_patterns(
         error(f"Could not write config {config_path}: {exc}")
         return False
 
-    success(f"Updated exclusions: script={script_current}, image={image_current}")
+    success("Updated exclusion patterns in config.json.")
     return True

@@ -8,17 +8,19 @@ from pathlib import Path
 from typing import Any
 
 from rich.console import Group  # type: ignore[attr-defined]
-from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
 from cli import (
+    MAUVE,
     Choice,
     console,
+    counted,
     error,
     info,
     is_interactive,
     kv,
+    print_panel,
     rule,
     select,
     success,
@@ -77,15 +79,15 @@ def process_game(
     kv("Source game", game_dir.name)
 
     if dry_run:
-        info(f"[dry-run] would copy relevant files into {dest}")
+        info(f"Dry run: relevant files would be copied into {dest}.")
     else:
         copied = copy_game_files(game_folder, dest)
         summary["copied"] = len(copied)
-        success(f"Copied {len(copied)} file(s) into {dest}")
+        success(f"Copied {counted(len(copied), 'file')} into {dest}.")
         game_folder = dest  # operate on the consolidated copy from here on
 
     if dry_run:
-        info("[dry-run] would extract .rpa archives and decompile .rpyc files")
+        info("Dry run: archives would be extracted and .rpyc files decompiled.")
     else:
         extracted = extract_all_rpa(game_folder)
         summary["extracted_archives"] = extracted
@@ -130,45 +132,47 @@ def process_game(
     )
 
     console.print()
-    console.print(
-        Panel(
-            Group(
-                Text("Next step: compose photoreal composites", style="bold blue"),
-                Text.from_markup("  [cyan]mise run compose[/cyan]"),
-                Text.from_markup(
-                    "[dim]Checks exclusions first, then offers clean, compose, "
-                    "clean+compose, review, and apply.[/dim]"
-                ),
-                Text(""),
-                Text("Manual exclusion edit (optional)", style="bold blue"),
-                grid,
+    print_panel(
+        Group(
+            Text("Next step: compose photoreal composites", style="bold blue"),
+            Text.from_markup("  [cyan]mise run compose[/cyan]"),
+            Text.from_markup(
+                "[dim]Offers clean, compose, clean+compose, review, and apply. "
+                "Selecting compose or clean+compose checks exclusions first.[/dim]"
             ),
-            title="Decompile flow complete",
-            border_style="magenta",
-            expand=False,
-        )
+            Text(""),
+            Text("Manual exclusion edit (optional)", style="bold blue"),
+            grid,
+        ),
+        title="Decompile flow complete",
+        style=MAUVE,
     )
     console.print()
 
     if not is_interactive():
-        info("No interactive terminal: run 'mise run compose' when ready.")
+        info("No interactive terminal detected. Run 'mise run compose' when ready.")
         return summary
 
     choice = select(
-        "Continue to compose?",
+        "Continue to the compose menu?",
         choices=[
             Choice(
-                title="Yes, open the compose menu (clean, compose, review, apply)",
+                title="Yes, open the compose menu",
                 value="compose",
+                shortcut_key="y",
             ),
-            Choice(title="Quit (run 'mise run compose' later)", value="quit"),
+            Choice(
+                title="Exit (run 'mise run compose' later)",
+                value="quit",
+                shortcut_key="x",
+            ),
         ],
         default="compose",
         use_shortcuts=True,
     )
 
     if choice is None:
-        info("Aborted.")
+        info("Cancelled. The compose step was not started.")
         return summary
 
     if choice == "compose":
