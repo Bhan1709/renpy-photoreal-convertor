@@ -23,7 +23,6 @@ Run from the repo root::
     uv run python -m converter.pipeline --compose-only                 # compose only (skip decompile)
     uv run python -m converter.pipeline --apply-only                   # apply only (needs manifest)
     uv run python -m converter.pipeline --dry-run                      # compose without writing
-    uv run python -m converter.pipeline --restore-compose              # undo compose/apply (.rpy from archive)
 """
 
 from __future__ import annotations
@@ -33,20 +32,19 @@ from pathlib import Path
 
 import typer
 
-from cli import console, create_app, error, info, note, rule, step
+from cli import create_app, error, rule, step
 
 from .compose.cli import (
     apply_game,
     compose_game,
     print_review_instructions,
 )
-from .compose.config import GameConfig, load_config
+from .compose.config import load_config
 from .decompile.constants import CONFIG_PATH
 from .decompile.decompile_files import decompile_rpyc_files
 from .decompile.discovery import find_game_folders
 from .decompile.exclusions import prompt_exclusion_patterns, sync_exclusions
 from .decompile.extract import extract_rpa_file
-from .restore import restore_from_manifest, restore_rpy_files
 
 app = create_app("Decompile a Ren'Py game, then compose photoreal composites.")
 
@@ -63,70 +61,35 @@ def _decompile_and_extract(target_folder: Path) -> None:
         extract_rpa_file(rpa_file)
 
 
-def _restore_compose_game(config: GameConfig, dry_run: bool) -> None:
-    """Undo compose/apply for a single game: restore .rpy files from archive.rpa."""
-    rule(f"Restore: {config.name}")
-    # Prefer the manifest to scope the restore to touched scripts, falling back
-    # to restoring every .rpy stored in the archive.
-    manifest_path = config.resolved_paths()["manifest_path"]
-    game_root = config.game_root
-    try:
-        if manifest_path.is_file():
-            results = restore_from_manifest(game_root, manifest_path, dry_run=dry_run)
-        else:
-            note(
-                f"(no manifest at {manifest_path}; restoring all .rpy from archive.rpa)"
-            )
-            results = restore_rpy_files(game_root, dry_run=dry_run)
-    except Exception:  # noqa: BLE001
-        error(f"restore-compose failed for {config.name}")
-        return
-
-    if not results:
-        info("(nothing to restore)")
-        return
-    for path, status in sorted(results.items()):
-        console.print(f"  [{status}] {path}")
-
-
 def run_pipeline(
     dry_run: bool = False,
     compose_only: bool = False,
     apply_only: bool = False,
-    restore_compose: bool = False,
     clean_output: bool = False,
 ) -> int:
-    """Run the decompile -> compose -> apply pipeline, or a restore mode.
+    """Run the decompile -> compose -> apply pipeline.
 
-    The default flow (no restore flag) always decompiles first, then prompts
-    the user for exclusion patterns, then runs compose.  The apply step is
-    deliberately not run by default so the user can verify compose output.
+    The default flow always decompiles first, then prompts the user for
+    exclusion patterns, then runs compose.  The apply step is deliberately not
+    run by default so the user can verify compose output.
 
     All modes are config-driven via ``src/converter/config.json``; no
     ``--game`` lookup is needed.
 
+    Restore-compose is handled by the compose CLI (``python -m converter.compose restore``),
+    not by the pipeline.
+
     Args:
-        dry_run: Compose/restore without writing; skips the apply pass.
+        dry_run: Compose without writing; skips the apply pass.
         compose_only: Compose + write manifest, then stop (skip apply).
             Assumes the game has already been decompiled.
         apply_only: Run the apply pass only (requires an existing manifest).
-        restore_compose: Undo compose/apply (restore .rpy files from
-            archive.rpa).
         clean_output: Remove prior generated PNGs and manifest before
             composing (only applies to compose modes).
 
     Returns:
         0 on success, 1 if no matching games were found.
     """
-    # --- Restore-compose mode (config-driven, no decompile) ---
-    if restore_compose:
-        sync_exclusions(CONFIG_PATH)
-        config = load_config(CONFIG_PATH)
-        rule(f"Pipeline: {config.name}")
-        _restore_compose_game(config, dry_run)
-        rule("Pipeline complete")
-        return 0
-
     # --- Compose-only / apply-only modes (config-driven, no decompile) ---
     if compose_only or apply_only:
         sync_exclusions(CONFIG_PATH)
@@ -205,18 +168,12 @@ def main(
         "--apply-only",
         help="Run the apply pass only (requires an existing manifest).",
     ),
-    restore_compose: bool = typer.Option(
-        False,
-        "--restore-compose",
-        help="Undo compose/apply (restore .rpy files from archive.rpa).",
-    ),
 ) -> int:
     """Run the decompile -> compose -> apply pipeline."""
     return run_pipeline(
         dry_run=dry_run,
         compose_only=compose_only,
         apply_only=apply_only,
-        restore_compose=restore_compose,
         clean_output=clean_output,
     )
 

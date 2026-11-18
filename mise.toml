@@ -19,9 +19,5 @@ description = "Decompile a Ren'Py game (interactive: clean, decompile, clean+dec
 run = "python -m converter.decompile"
 
 [tasks.compose]
-description = "Compose a Ren'Py game (interactive: exclusion check, clean, compose, clean+compose, review, apply)"
+description = "Compose a Ren'Py game (interactive: exclusion check, clean, compose, clean+compose, review, apply/restore)"
 run = "python -m converter.compose"
-
-[tasks.restore-compose]
-description = "Undo compose/apply: restore .rpy files from archive.rpa"
-run = "python -m converter.pipeline --restore-compose"

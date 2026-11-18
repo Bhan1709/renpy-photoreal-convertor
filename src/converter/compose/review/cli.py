@@ -2,12 +2,13 @@
 
 Invoked from::
 
-    mise run compose          # menu -> Review composites
-    python -m converter.compose review
+    python -m converter.compose review        # compose CLI action: review scenes/speakers
+    mise run compose                          # interactive menu -> Review composites
 
-Character names (source of truth)::
+Standalone commands::
 
-    python -m converter.compose.review chars-list
+    python -m converter.compose.review compose-review <config>   # review scenes needing character association + unmapped speakers
+    python -m converter.compose.review chars-list <config>         # print all known character folder names (source of truth)
 
 Run from the repository root.
 """

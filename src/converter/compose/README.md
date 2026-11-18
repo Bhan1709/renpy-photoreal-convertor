@@ -160,8 +160,9 @@ python -m converter.compose
 python -m converter.compose clean            # remove previous compose output
 python -m converter.compose compose          # compose only (no apply)
 python -m converter.compose clean-compose    # clean output, then compose
-python -m converter.compose review           # review scenes/speakers
-python -m converter.compose apply            # adopt composites into scripts
+python -m converter.compose review           # review scene character associations + unmapped speakers
+python -m converter.compose apply            # adopt composites into live .rpy scripts
+python -m converter.compose restore          # recover the live game folder from source, keep composites
 
 # Options
 --config PATH   # defaults to src/converter/config.json
@@ -179,15 +180,21 @@ uv run python -m converter.pipeline                  # decompile -> exclusions -
 uv run python -m converter.pipeline --compose-only   # compose only (skip decompile)
 uv run python -m converter.pipeline --apply-only     # apply only (needs manifest)
 uv run python -m converter.pipeline --dry-run        # compose without writing
-uv run python -m converter.pipeline --restore-compose # undo compose/apply (.rpy from archive)
+```
+
+Restore-compose is a compose CLI action (single point of entry):
+
+```bash
+uv run python -m converter.compose restore           # restore game folder from source, keep composites
+uv run python -m converter.compose restore --dry-run # preview without writing
 ```
 
 Or via mise tasks:
 
 ```bash
 mise run decompile        # decompile + extract, write config.json
-mise run compose          # interactive compose (exclusions -> menu -> review/apply)
-mise run restore-compose  # undo compose/apply (.rpy from archive)
+mise run compose          # interactive compose (exclusions -> menu -> review/apply/restore)
+python -m converter.compose restore  # restore game folder from source, keep composites
 ```
 
 ### Via Python import
@@ -214,16 +221,13 @@ manifest, report = applier.apply()
 ### Via Python import (restore)
 
 ```python
-from converter.restore import restore_rpy_files, restore_from_manifest
+from converter.restore import restore_compose_from_source
 
-# Restore every .rpy stored in archive.rpa back into game_root
-results = restore_rpy_files(config.game_root)
+# Restore the live game folder from the original source, keeping composites.
+results = restore_compose_from_source("src/converter/config.json")
 
-# Restore only the scripts the apply pass touched (per manifest)
-results = restore_from_manifest(
-    config.game_root,
-    config.resolved_paths()["manifest_path"].parent / "manifest_index.json",
-)
+# Dry run: preview what would be done without writing.
+results = restore_compose_from_source("src/converter/config.json", dry_run=True)
 ```
 
 ---

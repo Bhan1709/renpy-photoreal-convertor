@@ -32,7 +32,7 @@
   - Agent: `ConfigError` raised for missing/invalid profiles or project config; CLI logs errors and returns non-zero exit codes (`src/agent/config.py`, `cli.py`).
   - Compose: `ConfigError`, `ApplyError`, `ManifestError` in `src/converter/compose/errors.py`; apply pass skips unusable records rather than crashing, and records skips in the adoption report (`applier.py`).
   - Restore: `RestoreError` in `src/converter/restore/errors.py`; restore functions return `dict[str, str]` status per file (`"restored"`, `"would_restore"`, `"skipped: ..."`) instead of raising for individual file failures (`restore.py`).
-  - Broad `except Exception` (noqa BLE001) is used in several places for defensive per-item continuation (`pipeline.py` `_restore_compose_game`, `restore.py`).
+  - Broad `except Exception` (noqa BLE001) is used in several places for defensive per-item continuation (`restore.py`).
 - Logging style and required context fields: `logging.getLogger(__name__)` module loggers; CLI uses `logging.basicConfig(level=logging.INFO, format="%(message)s")`; httpx logger suppressed to WARNING (`src/agent/cli.py` `main()`).
 - Sensitive-data redaction rules: no explicit redaction rule found; `NVIDIA_API_KEY` is never written to `opencode.json` (proxy uses `apiKey: "local-proxy"`; the real key stays in the environment) — `src/agent/cli.py` `_write_project_config`.
 
