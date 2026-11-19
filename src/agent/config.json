@@ -1,57 +1,12 @@
 {
-    "qwen-3-vl-128k": {
-        "provider": "ollama",
-        "model_name": "qwen3-vl-128k",
-        "context_limit": 131072
-    },
-    "qwen-3-vl-64k": {
-        "provider": "ollama",
-        "model_name": "qwen3-vl-64k",
-        "context_limit": 65536
-    },
-    "qwen-3-vl-32k": {
-        "provider": "ollama",
-        "model_name": "qwen3-vl-32k",
-        "context_limit": 32768
-    },
-    "qwen-3-vl-16k": {
-        "provider": "ollama",
-        "model_name": "qwen3-vl-16k",
-        "context_limit": 16384
-    },
-    "nvidia-glm": {
-        "provider": "nvidia",
-        "model_name": "z-ai/glm-5.3-flash",
-        "context_limit": 1048576
-    },
-    "nvidia-nemotron-3.5-super-vl": {
-        "provider": "nvidia",
-        "model_name": "nvidia/nemotron-3.5-super-vl-120b-a12b",
-        "context_limit": 262144
-    },
-    "nvidia-nemotron-3-nano-omni": {
-        "provider": "nvidia",
-        "model_name": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
-        "context_limit": 262144
-    },
     "deepseek-v4.1-flash": {
         "provider": "nvidia",
         "model_name": "deepseek-ai/deepseek-v4.1-flash",
         "context_limit": 1048576
     },
-    "mistral-large-4": {
+    "gemma-4-31b-it": {
         "provider": "nvidia",
-        "model_name": "mistralai/mistral-large-4-1t-a52b",
-        "context_limit": 262144
-    },
-    "nvidia-nemotron-3.5-lightning": {
-        "provider": "nvidia",
-        "model_name": "nvidia/nemotron-3.5-lightning-30b-a3b",
-        "context_limit": 1048576
-    },
-    "minimax-m3.1-flash": {
-        "provider": "nvidia",
-        "model_name": "minimaxai/minimax-m3.1-flash",
+        "model_name": "google/gemma-4-31b-it",
         "context_limit": 262144
     },
     "gpt-oss-20b": {
@@ -59,9 +14,59 @@
         "model_name": "openai/gpt-oss-20b",
         "context_limit": 131072
     },
-    "gemma-4-31b-it": {
+    "kimi-k3.1-pro": {
         "provider": "nvidia",
-        "model_name": "google/gemma-4-31b-it",
+        "model_name": "moonshotai/kimi-k3.1-pro",
+        "context_limit": 1048576
+    },
+    "minimax-m3.1-flash": {
+        "provider": "nvidia",
+        "model_name": "minimaxai/minimax-m3.1-flash",
         "context_limit": 262144
+    },
+    "mistral-large-4": {
+        "provider": "nvidia",
+        "model_name": "mistralai/mistral-large-4-1t-a52b",
+        "context_limit": 262144
+    },
+    "nvidia-glm": {
+        "provider": "nvidia",
+        "model_name": "z-ai/glm-5.3-flash",
+        "context_limit": 1048576
+    },
+    "nvidia-nemotron-3-nano-omni": {
+        "provider": "nvidia",
+        "model_name": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
+        "context_limit": 262144
+    },
+    "nvidia-nemotron-3.5-lightning": {
+        "provider": "nvidia",
+        "model_name": "nvidia/nemotron-3.5-lightning-30b-a3b",
+        "context_limit": 1048576
+    },
+    "nvidia-nemotron-3.5-super-vl": {
+        "provider": "nvidia",
+        "model_name": "nvidia/nemotron-3.5-super-vl-120b-a12b",
+        "context_limit": 262144
+    },
+    "qwen-3-vl-128k": {
+        "provider": "ollama",
+        "model_name": "qwen3-vl-128k",
+        "context_limit": 131072
+    },
+    "qwen-3-vl-16k": {
+        "provider": "ollama",
+        "model_name": "qwen3-vl-16k",
+        "context_limit": 16384
+    },
+    "qwen-3-vl-32k": {
+        "provider": "ollama",
+        "model_name": "qwen3-vl-32k",
+        "context_limit": 32768
+    },
+    "qwen-3-vl-64k": {
+        "provider": "ollama",
+        "model_name": "qwen3-vl-64k",
+        "context_limit": 65536
     }
 }

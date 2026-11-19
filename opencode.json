@@ -1,6 +1,6 @@
 {
   "$schema": "https://opencode.ai/config.json",
-  "model": "nvidia/nvidia/nemotron-3.5-super-vl-120b-a12b",
+  "model": "nvidia/mistralai/mistral-large-4-1t-a52b",
   "providers": {
     "nvidia": {
       "name": "NVIDIA NIM (Proxy)",
@@ -43,6 +43,36 @@
         },
         "nvidia/nemotron-3.5-super-vl-120b-a12b": {
           "name": "nvidia/nemotron-3.5-super-vl-120b-a12b",
+          "capabilities": {
+            "tools": true
+          },
+          "limit": {
+            "context": 262144,
+            "output": 32768
+          }
+        },
+        "minimaxai/minimax-m3.1-flash": {
+          "name": "minimaxai/minimax-m3.1-flash",
+          "capabilities": {
+            "tools": true
+          },
+          "limit": {
+            "context": 262144,
+            "output": 32768
+          }
+        },
+        "moonshotai/kimi-k3.1-pro": {
+          "name": "moonshotai/kimi-k3.1-pro",
+          "capabilities": {
+            "tools": true
+          },
+          "limit": {
+            "context": 1048576,
+            "output": 32768
+          }
+        },
+        "mistralai/mistral-large-4-1t-a52b": {
+          "name": "mistralai/mistral-large-4-1t-a52b",
           "capabilities": {
             "tools": true
           },
