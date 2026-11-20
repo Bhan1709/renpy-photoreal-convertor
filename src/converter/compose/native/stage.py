@@ -18,8 +18,10 @@ from __future__ import annotations
 import json
 import re
 import shutil
+from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from cli import counted, info, loading, progress_bar
 
@@ -637,9 +639,11 @@ def _run_batches(
     memory pressure) is retried from the same offset with a halved sub-batch,
     so pagination always makes forward progress.
 
-    Rendering progress is streamed from the child's progress log into a
-    host-side progress bar so the UI advances in real time instead of waiting
-    for each batch to finish.
+    Rendering uses a single host-side progress bar for all batches. The child
+    reports the overall state total in its batch-start line; until then a
+    spinner shows that states are being enumerated. The bar is created as soon
+    as the total arrives so it always shows the real total instead of ``?``,
+    and its count accumulates across batches instead of restarting.
     """
     candidates: list[dict] = []
     batch_index = 0
@@ -647,60 +651,100 @@ def _run_batches(
     batch_size = MAX_RENDER_STATES_PER_BATCH
     last: dict = {}
     attempt = 0
+    total_states: int | None = None
+    rendered_total = 0
+    bar: Any = None
+    batch_rendered = 0
+    spinner_stack: ExitStack | None = None
 
-    while True:
-        attempt += 1
-        render_dir = workspace.root / "renders"
-        workspace.config_path.write_text(
-            _engine_config(
-                game_root=workspace.game_dir,
-                render_dir=render_dir,
-                modes=modes,
-                defaults=defaults,
-                batch_index=batch_index,
-                state_offset=state_offset,
-                progress_path=workspace.root / "progress.log",
-                max_render_states=batch_size,
-            ),
-            encoding="utf-8",
-        )
+    with ExitStack() as stack:
 
-        # Truncate the progress log so this batch only reports its own
-        # progress (the child appends to it, so old lines would otherwise be
-        # re-read on every batch).
-        progress_log = workspace.root / "progress.log"
-        try:
-            progress_log.write_text("", encoding="utf-8")
-        except OSError:
-            pass
+        def _start_spinner() -> None:
+            nonlocal spinner_stack
+            if bar is not None or spinner_stack is not None:
+                return
+            spinner_stack = ExitStack()
+            stack.enter_context(spinner_stack)
+            spinner_stack.enter_context(
+                loading("Enumerating native render states...")
+            )
 
-        batch_rendered = [0]
-        total_known = [False]
+        def _stop_spinner() -> None:
+            nonlocal spinner_stack
+            if spinner_stack is None:
+                return
+            spinner_stack.close()
+            spinner_stack = None
 
-        try:
-            with progress_bar(
-                total=None,
-                desc=f"Native batch {batch_index} rendering",
-                unit="states",
-            ) as bar:
-                batch_rendered[0] = 0
+        def _ensure_bar(total: int) -> None:
+            nonlocal bar, total_states
+            if bar is not None:
+                return
+            _stop_spinner()
+            total_states = total
+            bar = stack.enter_context(
+                progress_bar(
+                    total=total,
+                    desc="Native states rendering",
+                    unit="states",
+                )
+            )
 
-                def _cb(done: int, _br: list[int] = batch_rendered) -> None:
-                    delta = done - _br[0]
-                    _br[0] = done
-                    bar.update(delta)
+        def _set_progress(absolute: int) -> None:
+            nonlocal rendered_total
+            if bar is None:
+                return
+            if absolute < rendered_total:
+                # A failed batch retries from the same offset; do not keep its
+                # partial progress or the bar would over-count.
+                bar.n = absolute
+                bar.display()
+            elif absolute > rendered_total:
+                bar.update(absolute - rendered_total)
+            rendered_total = absolute
 
-                def _total_cb(
-                    total: int,
-                    _tk: list[bool] = total_known,
-                ) -> None:
-                    if not _tk[0]:
-                        _tk[0] = True
-                        bar.total = total
-                        # Directly update the underlying rich progress task so
-                        # the percentage picks up the new total immediately.
-                        bar._prog.update(bar._task_id, total=total, completed=bar.n)
+        def _cb(done: int) -> None:
+            nonlocal batch_rendered
+            batch_rendered = done
+            _set_progress(state_offset + done)
 
+        def _total_cb(total: int) -> None:
+            if total_states is not None:
+                return
+            _ensure_bar(total)
+            _set_progress(state_offset + batch_rendered)
+
+        while True:
+            attempt += 1
+            batch_rendered = 0
+            _set_progress(state_offset)
+
+            render_dir = workspace.root / "renders"
+            workspace.config_path.write_text(
+                _engine_config(
+                    game_root=workspace.game_dir,
+                    render_dir=render_dir,
+                    modes=modes,
+                    defaults=defaults,
+                    batch_index=batch_index,
+                    state_offset=state_offset,
+                    progress_path=workspace.root / "progress.log",
+                    max_render_states=batch_size,
+                ),
+                encoding="utf-8",
+            )
+
+            # Truncate the progress log so this batch only reports its own
+            # progress (the child appends to it, so old lines would otherwise
+            # be re-read on every batch).
+            progress_log = workspace.root / "progress.log"
+            try:
+                progress_log.write_text("", encoding="utf-8")
+            except OSError:
+                pass
+
+            _start_spinner()
+            try:
                 run_native_batch(
                     layout=layout,
                     basedir=workspace.root,
@@ -713,36 +757,42 @@ def _run_batches(
                     progress_cb=_cb,
                     total_cb=_total_cb,
                 )
-        except NativeExecutionError:
-            if batch_size <= MIN_RENDER_STATES_PER_BATCH:
-                raise
-            batch_size = max(MIN_RENDER_STATES_PER_BATCH, batch_size // 2)
-            info(
-                f"Native batch {batch_index} failed (attempt {attempt}); "
-                f"retrying with {batch_size} states per batch."
-            )
-            continue
+            except NativeExecutionError:
+                _stop_spinner()
+                if batch_size <= MIN_RENDER_STATES_PER_BATCH:
+                    raise
+                batch_size = max(MIN_RENDER_STATES_PER_BATCH, batch_size // 2)
+                info(
+                    f"Native batch {batch_index} failed (attempt {attempt}); "
+                    f"retrying with {batch_size} states per batch."
+                )
+                continue
 
-        data = read_result(workspace.result_path)
-        if data["status"] == "error":
-            raise NativeProtocolError(
-                "Native Ren'Py compose stage failed: "
-                + str(data["error"].get("message", "")).strip()
+            _stop_spinner()
+            data = read_result(workspace.result_path)
+            if data["status"] == "error":
+                raise NativeProtocolError(
+                    "Native Ren'Py compose stage failed: "
+                    + str(data["error"].get("message", "")).strip()
+                )
+            last = data
+            candidates.extend(data["candidates"])
+            batch = data["batch"]
+            total = int(batch.get("total_states") or 0)
+            if bar is None and total:
+                _ensure_bar(total)
+            _set_progress(state_offset + int(batch.get("rendered", 0)))
+            info(
+                "Native batch {}: rendered {} of {} states.".format(
+                    batch_index, batch.get("rendered", 0), total
+                )
             )
-        last = data
-        candidates.extend(data["candidates"])
-        batch = data["batch"]
-        info(
-            "Native batch {}: rendered {} of {} states.".format(
-                batch_index, batch.get("rendered", 0), batch.get("total_states", 0)
-            )
-        )
-        next_offset = batch.get("next_offset")
-        if next_offset is None:
-            return candidates, last
-        state_offset = int(next_offset)
-        batch_index += 1
-        attempt = 0
+            next_offset = batch.get("next_offset")
+            if next_offset is None:
+                return candidates, last
+            state_offset = int(next_offset)
+            batch_index += 1
+            attempt = 0
 
 
 def _run_native_stage(
