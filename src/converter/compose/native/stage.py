@@ -652,7 +652,9 @@ def _run_batches(
     as the total arrives so it always shows the real total instead of ``?``,
     and its count accumulates across batches instead of restarting. Per-batch
     status is written into the bar description so the same line is updated in
-    place instead of adding a new log line for every batch.
+    place instead of adding a new log line for every batch. The bar clears
+    itself on close (so an interrupt cannot leave a duplicate line), and one
+    summary line is printed on success.
     """
     candidates: list[dict] = []
     batch_index = 0
@@ -705,6 +707,9 @@ def _run_batches(
                     total=total,
                     desc=f"Native batch {batch_index}: rendering",
                     unit="states",
+                    # Clearing on close avoids a stale duplicate bar when an
+                    # interrupt message lands in the middle of the live line.
+                    leave=False,
                 )
             )
 
@@ -809,6 +814,11 @@ def _run_batches(
             )
             next_offset = batch.get("next_offset")
             if next_offset is None:
+                # The live bar is transient, so leave one permanent summary.
+                info(
+                    f"Native render complete: {rendered_total} of {total} "
+                    f"states rendered."
+                )
                 return candidates, last
             state_offset = int(next_offset)
             batch_index += 1
