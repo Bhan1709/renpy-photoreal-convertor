@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ctypes
 import json
 import logging
 import os
@@ -54,6 +55,15 @@ PROJECT_CONFIG_SCHEMA = "https://opencode.ai/config.json"
 OPENAI_COMPATIBLE_PACKAGE = "@opencode/ai/providers/openai-compatible"
 MAX_OUTPUT_TOKENS = 32768
 OLLAMA_BASE_URL = "http://127.0.0.1:11434/v1"
+
+# How often (seconds) the launcher checks on OpenCode. Waiting in short slices
+# keeps Ctrl+C responsive while a full-screen TUI is running.
+CHILD_POLL_INTERVAL_SECONDS = 0.25
+# How long OpenCode gets to exit on its own after Ctrl+C before it is stopped.
+CHILD_SHUTDOWN_GRACE_SECONDS = 5.0
+CHILD_KILL_TIMEOUT_SECONDS = 5.0
+# (DWORD) -10, the STD_INPUT_HANDLE pseudo-handle.
+STD_INPUT_HANDLE = 0xFFFFFFF6
 
 app = create_app(
     "Launch OpenCode with a configured model profile and back up its conversation."
@@ -182,13 +192,164 @@ def _stop_proxy() -> int:
     return 1
 
 
-def _run_command(command: Sequence[str]) -> int:
-    """Run a subprocess and return its exit code."""
+def _console_api() -> tuple[Any, Any] | None:
+    """Return ``(kernel32, ctypes.wintypes)`` for console calls on Windows."""
+    if os.name != "nt":
+        return None
     try:
-        return subprocess.run(list(command), check=False).returncode
+        from ctypes import wintypes
+    except ImportError:  # pragma: no cover - wintypes ships with CPython
+        return None
+
+    windll = getattr(ctypes, "windll", None)
+    if windll is None:  # pragma: no cover - only reachable off Windows
+        return None
+
+    kernel32 = windll.kernel32
+    kernel32.GetStdHandle.argtypes = [wintypes.DWORD]
+    kernel32.GetStdHandle.restype = wintypes.HANDLE
+    kernel32.GetConsoleMode.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+    kernel32.GetConsoleMode.restype = wintypes.BOOL
+    kernel32.SetConsoleMode.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    kernel32.SetConsoleMode.restype = wintypes.BOOL
+    return kernel32, wintypes
+
+
+def _console_input_mode() -> int | None:
+    """Return the console input mode, or ``None`` when stdin is not a console."""
+    api = _console_api()
+    if api is None:
+        return None
+    kernel32, wintypes = api
+    handle = kernel32.GetStdHandle(wintypes.DWORD(STD_INPUT_HANDLE))
+    mode = wintypes.DWORD()
+    if not kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+        return None
+    return int(mode.value)
+
+
+def _restore_console_input_mode(mode: int | None) -> None:
+    """Restore a console input mode captured before OpenCode was launched.
+
+    OpenCode's TUI switches the console to raw input, which also turns off
+    ``ENABLE_PROCESSED_INPUT``: Ctrl+C stops producing a console control event
+    and becomes a plain byte. If the TUI dies without undoing that (crash,
+    forced kill), the shell left behind looks frozen -- no echo, and Ctrl+C is
+    ignored. Restoring the saved mode makes the terminal usable again.
+    """
+    if mode is None:
+        return
+    api = _console_api()
+    if api is None:
+        return
+    kernel32, wintypes = api
+    handle = kernel32.GetStdHandle(wintypes.DWORD(STD_INPUT_HANDLE))
+    kernel32.SetConsoleMode(handle, wintypes.DWORD(mode))
+
+
+def _poll_child(process: subprocess.Popen[bytes], timeout: float) -> int | None:
+    """Wait up to ``timeout`` seconds for the child, polling in short slices."""
+    deadline = time.monotonic() + timeout
+    while True:
+        remaining = max(deadline - time.monotonic(), 0.0)
+        try:
+            return process.wait(timeout=min(CHILD_POLL_INTERVAL_SECONDS, remaining))
+        except subprocess.TimeoutExpired:
+            if time.monotonic() >= deadline:
+                return None
+
+
+def _terminate_process_tree(process: subprocess.Popen[bytes]) -> None:
+    """Stop the child and every process it spawned.
+
+    ``opencode`` on Windows is a small launcher shim that starts the real TUI as
+    a child, so killing only ``process`` can orphan the TUI in raw console mode.
+    """
+    if process.poll() is not None:
+        return
+    if os.name == "nt":
+        try:
+            subprocess.run(
+                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                check=False,
+            )
+        except OSError:
+            process.kill()
+    else:
+        process.terminate()
+    try:
+        process.wait(timeout=CHILD_KILL_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait()
+
+
+def _wait_for_child(process: subprocess.Popen[bytes]) -> int:
+    """Wait for the child while keeping Ctrl+C responsive.
+
+    ``subprocess.run`` waits through ``Popen.wait()``, which blocks in
+    ``WaitForSingleObject(INFINITE)`` on Windows. A pending Ctrl+C is then only
+    delivered once the child exits, so a full-screen TUI that ignores Ctrl+C
+    leaves the launcher stuck and the terminal in raw mode. Polling in short
+    slices lets ``KeyboardInterrupt`` be raised while the child still runs.
+    """
+    try:
+        while True:
+            code = _poll_child(process, CHILD_POLL_INTERVAL_SECONDS)
+            if code is not None:
+                return code
+    except KeyboardInterrupt:
+        pass
+
+    if process.poll() is not None:
+        raise KeyboardInterrupt
+
+    warning(
+        "Ctrl+C received; waiting for OpenCode to exit "
+        "(press Ctrl+C again to force quit)..."
+    )
+    try:
+        code = _poll_child(process, CHILD_SHUTDOWN_GRACE_SECONDS)
+    except KeyboardInterrupt:
+        code = None
+
+    if code is None:
+        warning("OpenCode did not exit; stopping it.")
+        _terminate_process_tree(process)
+    raise KeyboardInterrupt
+
+
+def _install_interrupt_handlers() -> None:
+    """Make Ctrl+Break abort the launcher even while a TUI owns the console.
+
+    OpenCode turns off ``ENABLE_PROCESSED_INPUT``, so Ctrl+C reaches the TUI as
+    a byte and never becomes a console control event for the launcher.
+    Ctrl+Break is always delivered, which gives the launcher a way out of a
+    wedged TUI.
+    """
+    sigbreak = getattr(signal, "SIGBREAK", None)
+    if sigbreak is None:  # pragma: no cover - SIGBREAK is Windows-only
+        return
+    signal.signal(sigbreak, signal.default_int_handler)
+
+
+def _run_command(command: Sequence[str]) -> int:
+    """Run OpenCode in the foreground, restoring the console on the way out."""
+    console_mode = _console_input_mode()
+    try:
+        process = subprocess.Popen(list(command))
     except OSError as exc:
         error(f"Could not run {command[0]!r}: {exc}")
         return 1
+
+    try:
+        return _wait_for_child(process)
+    finally:
+        _restore_console_input_mode(console_mode)
 
 
 def _model_selector(profile: Profile) -> str:
@@ -489,6 +650,7 @@ def run(
     monitor.start()
 
     try:
+        _install_interrupt_handlers()
         if profile_obj.provider == "nvidia":
             code = _run_with_nvidia_proxy(profile_obj)
         else:

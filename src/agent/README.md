@@ -79,6 +79,25 @@ mise run agent list-profiles      # or: mise run agent --list-profiles
 mise run agent stop-proxy         # or: mise run agent --stop-proxy
 ```
 
+### Stopping a session
+
+Press `Ctrl+C` to close OpenCode. The launcher waits for the TUI to exit and then
+restores the terminal's console input mode, so a crashed or force-closed TUI
+cannot leave the shell with echo and `Ctrl+C` disabled.
+
+OpenCode's TUI switches the console to raw input, which means `Ctrl+C` is
+delivered to the TUI as a key rather than as a console signal. Two consequences:
+
+- The first `Ctrl+C` may be swallowed while the TUI is still starting. If
+  nothing happens, press it again.
+- If the TUI is unresponsive, press `Ctrl+Break`. The launcher always receives
+  that signal, waits a few seconds for a clean exit, then stops the OpenCode
+  process tree (including the child behind the launcher shim) and restores the
+  console.
+
+The NVIDIA proxy intentionally keeps running after OpenCode exits; stop it with
+`mise run agent stop-proxy` when you no longer need it.
+
 The CLI does the following on startup:
 
 1. Loads the requested profile from `config.json`.
@@ -313,6 +332,7 @@ If you ever need to manually adjust `opencode.json`, the structure follows the [
 | Ollama model not found | Model not pulled/built | Run `ollama pull <name>` or `ollama create <tag> -f Modelfiles/<name>`. |
 | Backup not saved | Context never reaches threshold | The monitor saves at `context_limit - 4096` tokens by default. Chat longer or adjust `backup_threshold` in the monitor code. |
 | `opencode.json` not updated | CLI error earlier in startup | Check the error output; the profile may be unknown or missing required fields. |
+| Terminal stops responding after `Ctrl+C` | OpenCode's TUI left the console in raw mode | Press `Ctrl+Break`; the launcher stops OpenCode and restores the console. |
 
 ---
 

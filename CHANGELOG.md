@@ -15,3 +15,7 @@ to [Semantic Versioning](https://semver.org/).
 - `.github/workflows/ci.yml` — ruff + mypy checks on pull requests and pushes
 - `.github/ISSUE_TEMPLATE/` — bug report and feature request forms
 - `.github/PULL_REQUEST_TEMPLATE.md` — pull request template
+
+### Fixed
+
+- Agent launcher: `Ctrl+C` no longer leaves the terminal (or VS Code) unresponsive when OpenCode's TUI ignores it or dies in raw console mode. The launcher now waits interruptibly, stops the whole OpenCode process tree, restores the console input mode, and handles `Ctrl+Break` as a forced interrupt.
