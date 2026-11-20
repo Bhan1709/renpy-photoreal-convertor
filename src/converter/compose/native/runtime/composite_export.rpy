@@ -91,6 +91,7 @@ init -999 python in _composite_export:
     def _states_signature(config):
         """Hash the inputs that affect state enumeration, not batching."""
         payload = {
+            "format": 2,
             "game_root": config.get("game_root") or "",
             "modes": config.get("modes") or [],
             "defaults": config.get("defaults") or {},
@@ -106,21 +107,39 @@ init -999 python in _composite_export:
         ).hexdigest()
 
     def _save_states(path, signature, states, walk_stats):
-        """Freeze the enumerated states so every batch slices the same list."""
-        payload = {
-            "signature": signature,
-            "walk": walk_stats,
-            "states": [
+        """Freeze the enumerated states so every batch slices the same list.
+
+        Usage lists are interned: the states share the same usage dict objects,
+        so a cheap ``id()`` tuple identifies each distinct list and only one
+        copy is written to disk. Embedding them per state produced multi-GB
+        caches that took minutes to parse on every batch.
+        """
+        usage_lists = []
+        usage_refs = {}
+        compact = []
+        for entry in states:
+            usages = _dedupe_usages(entry.get("usages") or [])
+            key = tuple(id(usage) for usage in usages)
+            ref = usage_refs.get(key)
+            if ref is None:
+                ref = len(usage_lists)
+                usage_refs[key] = ref
+                usage_lists.append(usages)
+            compact.append(
                 {
                     "kind": entry["kind"],
                     "tag": entry["tag"],
                     "attributes": list(entry["attributes"]),
                     "condition_assignments": dict(entry["condition_assignments"]),
                     "synthetic": bool(entry.get("synthetic")),
-                    "usages": list(entry.get("usages") or []),
+                    "usage_ref": ref,
                 }
-                for entry in states
-            ],
+            )
+        payload = {
+            "signature": signature,
+            "walk": walk_stats,
+            "usage_lists": usage_lists,
+            "states": compact,
         }
         temp_path = path + ".tmp"
         with open(temp_path, "wb") as handle:
@@ -136,8 +155,13 @@ init -999 python in _composite_export:
                 payload = json.loads(handle.read().decode("utf-8"))
             if payload.get("signature") != signature:
                 return None
+            usage_lists = payload.get("usage_lists") or []
             states = []
             for entry in payload["states"]:
+                ref = int(entry.get("usage_ref") or 0)
+                usages = (
+                    usage_lists[ref] if 0 <= ref < len(usage_lists) else []
+                )
                 states.append(
                     {
                         "kind": entry["kind"],
@@ -147,7 +171,7 @@ init -999 python in _composite_export:
                             entry["condition_assignments"]
                         ),
                         "synthetic": bool(entry.get("synthetic")),
-                        "usages": list(entry.get("usages") or []),
+                        "usages": list(usages),
                     }
                 )
             return states, dict(payload.get("walk") or {})
