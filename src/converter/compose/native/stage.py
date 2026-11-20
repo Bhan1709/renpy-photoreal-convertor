@@ -533,6 +533,7 @@ def _engine_config(
     batch_index: int,
     state_offset: int,
     progress_path: Path,
+    states_path: Path,
     max_render_states: int = MAX_RENDER_STATES_PER_BATCH,
 ) -> str:
     """Serialise one native batch's engine configuration."""
@@ -540,6 +541,7 @@ def _engine_config(
         {
             "game_root": str(game_root),
             "render_dir": str(render_dir),
+            "states_path": str(states_path),
             "modes": list(modes),
             "defaults": dict(defaults),
             "max_synthetic_states": MAX_SYNTHETIC_ATTRIBUTE_STATES,
@@ -639,11 +641,20 @@ def _run_batches(
     memory pressure) is retried from the same offset with a halved sub-batch,
     so pagination always makes forward progress.
 
+    The child enumerates the state list once and freezes it in the workspace;
+    every later batch renders a slice of that same list. This keeps the total
+    and the offsets stable, so a state cannot be skipped or duplicated because
+    a fresh Ren'Py process resolved its image states slightly differently.
+
     Rendering uses a single host-side progress bar for all batches. The child
     reports the overall state total in its batch-start line; until then a
     spinner shows that states are being enumerated. The bar is created as soon
     as the total arrives so it always shows the real total instead of ``?``,
-    and its count accumulates across batches instead of restarting.
+    and its count accumulates across batches instead of restarting. Per-batch
+    status is written into the bar description so the same line is updated in
+    place instead of adding a new log line for every batch. The bar clears
+    itself on close (so an interrupt cannot leave a duplicate line), and one
+    summary line is printed on success.
     """
     candidates: list[dict] = []
     batch_index = 0
@@ -656,6 +667,7 @@ def _run_batches(
     bar: Any = None
     batch_rendered = 0
     spinner_stack: ExitStack | None = None
+    states_path = workspace.root / "states.json"
 
     with ExitStack() as stack:
 
@@ -666,7 +678,7 @@ def _run_batches(
             spinner_stack = ExitStack()
             stack.enter_context(spinner_stack)
             spinner_stack.enter_context(
-                loading("Enumerating native render states...")
+                loading(f"Native batch {batch_index}: enumerating states...")
             )
 
         def _stop_spinner() -> None:
@@ -675,6 +687,14 @@ def _run_batches(
                 return
             spinner_stack.close()
             spinner_stack = None
+
+        def _set_status(message: str) -> None:
+            if bar is None:
+                return
+            # tqdm_rich.set_description() appends a stray ': ', so update the
+            # description the same way display() reads it.
+            bar.desc = message
+            bar.display()
 
         def _ensure_bar(total: int) -> None:
             nonlocal bar, total_states
@@ -685,8 +705,11 @@ def _run_batches(
             bar = stack.enter_context(
                 progress_bar(
                     total=total,
-                    desc="Native states rendering",
+                    desc=f"Native batch {batch_index}: rendering",
                     unit="states",
+                    # Clearing on close avoids a stale duplicate bar when an
+                    # interrupt message lands in the middle of the live line.
+                    leave=False,
                 )
             )
 
@@ -718,6 +741,7 @@ def _run_batches(
             attempt += 1
             batch_rendered = 0
             _set_progress(state_offset)
+            _set_status(f"Native batch {batch_index}: rendering")
 
             render_dir = workspace.root / "renders"
             workspace.config_path.write_text(
@@ -729,6 +753,7 @@ def _run_batches(
                     batch_index=batch_index,
                     state_offset=state_offset,
                     progress_path=workspace.root / "progress.log",
+                    states_path=states_path,
                     max_render_states=batch_size,
                 ),
                 encoding="utf-8",
@@ -782,13 +807,18 @@ def _run_batches(
             if bar is None and total:
                 _ensure_bar(total)
             _set_progress(state_offset + int(batch.get("rendered", 0)))
-            info(
+            _set_status(
                 "Native batch {}: rendered {} of {} states.".format(
                     batch_index, batch.get("rendered", 0), total
                 )
             )
             next_offset = batch.get("next_offset")
             if next_offset is None:
+                # The live bar is transient, so leave one permanent summary.
+                info(
+                    f"Native render complete: {rendered_total} of {total} "
+                    f"states rendered."
+                )
                 return candidates, last
             state_offset = int(next_offset)
             batch_index += 1

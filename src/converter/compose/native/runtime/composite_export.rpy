@@ -88,6 +88,96 @@ init -999 python in _composite_export:
         except Exception:
             pass
 
+    def _states_signature(config):
+        """Hash the inputs that affect state enumeration, not batching."""
+        payload = {
+            "format": 2,
+            "game_root": config.get("game_root") or "",
+            "modes": config.get("modes") or [],
+            "defaults": config.get("defaults") or {},
+            "max_synthetic_states": int(config.get("max_synthetic_states") or 1024),
+            "max_condition_assignments": int(
+                config.get("max_condition_assignments") or 64
+            ),
+            "max_cfg_states": int(config.get("max_cfg_states") or 1000000),
+            "max_cfg_depth": int(config.get("max_cfg_depth") or 6),
+        }
+        return hashlib.sha256(
+            json.dumps(payload, sort_keys=True).encode("utf-8")
+        ).hexdigest()
+
+    def _save_states(path, signature, states, walk_stats):
+        """Freeze the enumerated states so every batch slices the same list.
+
+        Usage lists are interned: the states share the same usage dict objects,
+        so a cheap ``id()`` tuple identifies each distinct list and only one
+        copy is written to disk. Embedding them per state produced multi-GB
+        caches that took minutes to parse on every batch.
+        """
+        usage_lists = []
+        usage_refs = {}
+        compact = []
+        for entry in states:
+            usages = _dedupe_usages(entry.get("usages") or [])
+            key = tuple(id(usage) for usage in usages)
+            ref = usage_refs.get(key)
+            if ref is None:
+                ref = len(usage_lists)
+                usage_refs[key] = ref
+                usage_lists.append(usages)
+            compact.append(
+                {
+                    "kind": entry["kind"],
+                    "tag": entry["tag"],
+                    "attributes": list(entry["attributes"]),
+                    "condition_assignments": dict(entry["condition_assignments"]),
+                    "synthetic": bool(entry.get("synthetic")),
+                    "usage_ref": ref,
+                }
+            )
+        payload = {
+            "signature": signature,
+            "walk": walk_stats,
+            "usage_lists": usage_lists,
+            "states": compact,
+        }
+        temp_path = path + ".tmp"
+        with open(temp_path, "wb") as handle:
+            handle.write(json.dumps(payload, sort_keys=True).encode("utf-8"))
+        os.replace(temp_path, path)
+
+    def _load_states(path, signature):
+        """Return the frozen ``(states, walk_stats)``, or None if unusable."""
+        if not path or not os.path.isfile(path):
+            return None
+        try:
+            with open(path, "rb") as handle:
+                payload = json.loads(handle.read().decode("utf-8"))
+            if payload.get("signature") != signature:
+                return None
+            usage_lists = payload.get("usage_lists") or []
+            states = []
+            for entry in payload["states"]:
+                ref = int(entry.get("usage_ref") or 0)
+                usages = (
+                    usage_lists[ref] if 0 <= ref < len(usage_lists) else []
+                )
+                states.append(
+                    {
+                        "kind": entry["kind"],
+                        "tag": entry["tag"],
+                        "attributes": tuple(entry["attributes"]),
+                        "condition_assignments": dict(
+                            entry["condition_assignments"]
+                        ),
+                        "synthetic": bool(entry.get("synthetic")),
+                        "usages": list(usages),
+                    }
+                )
+            return states, dict(payload.get("walk") or {})
+        except Exception:
+            return None
+
     def _pygame():
         import pygame_sdl2
 
@@ -1200,16 +1290,24 @@ init -999 python in _composite_export:
 
         screen_width, screen_height = _setup_display(config)
 
-        roots = _roots()
-        usages, walk_stats = _walk(
-            roots,
-            game_root,
-            int(config.get("max_cfg_states") or 1000000),
-            int(config.get("max_cfg_depth") or 6),
-        )
-        layered = _layered_registry()
         defaults = config.get("defaults") or {}
-        states = _build_states(config, usages, layered, defaults)
+        layered = _layered_registry()
+        states_path = config.get("states_path") or None
+        signature = _states_signature(config)
+        cached = _load_states(states_path, signature)
+        if cached is None:
+            roots = _roots()
+            usages, walk_stats = _walk(
+                roots,
+                game_root,
+                int(config.get("max_cfg_states") or 1000000),
+                int(config.get("max_cfg_depth") or 6),
+            )
+            states = _build_states(config, usages, layered, defaults)
+            if states_path:
+                _save_states(states_path, signature, states, walk_stats)
+        else:
+            states, walk_stats = cached
 
         state_counts = {}
         for state in states:

@@ -252,10 +252,28 @@ def loading(message: str) -> Iterator[Status]:
         yield status
 
 
+class _RepaintOnUpdateBar(tqdm_rich):  # type: ignore[misc,valid-type]
+    """Repaint the Rich bar only when its data changes.
+
+    tqdm_rich leaves Rich's background auto-refresh enabled, which repaints the
+    bar even while nothing is happening. If another process writes to the same
+    terminal (for example mise's interrupt notice), that repaint draws a second
+    copy of the bar below the corrupted line. Refreshing explicitly on update
+    keeps the bar on one line and stops repainting as soon as work stops.
+    """
+
+    def display(self, *args: Any, **kwargs: Any) -> None:
+        super().display(*args, **kwargs)
+        progress = getattr(self, "_prog", None)
+        if progress is not None:
+            progress.refresh()
+
+
 def progress_bar(*args: Any, **kwargs: Any) -> tqdm_rich:
     """Create a compact ``tqdm.rich`` bar using the shared themed console."""
     options = dict(kwargs.pop("options", {}) or {})
     options.setdefault("console", console)
+    options.setdefault("auto_refresh", False)
     kwargs.setdefault("progress", RICH_PROGRESS_COLUMNS)
     if kwargs.get("total") == 0:
         kwargs.setdefault("disable", True)
@@ -263,7 +281,7 @@ def progress_bar(*args: Any, **kwargs: Any) -> tqdm_rich:
         # tqdm labels its Rich integration experimental even though this project
         # intentionally uses it. Suppress only that known warning.
         warnings.simplefilter("ignore", TqdmExperimentalWarning)
-        return tqdm_rich(*args, options=options, **kwargs)
+        return _RepaintOnUpdateBar(*args, options=options, **kwargs)
 
 
 def counted(count: int, singular: str, plural: str | None = None) -> str:
