@@ -76,14 +76,16 @@ Before raising a pull request, an agent **must** run the following checks and
 confirm they pass:
 
 ```bash
+mise run test
 uv run ruff
 uv run mypy src/
 ```
 
+- `mise run test` — runs the pytest suite. All tests must pass.
 - `uv run ruff` — lints the codebase. Must pass with zero errors.
 - `uv run mypy src/` — type-checks the source tree. Must pass with zero issues.
 
-If either check fails, fix the issues before opening the PR.
+If any check fails, fix the issues before opening the PR.
 
 ## Pull request requirements
 

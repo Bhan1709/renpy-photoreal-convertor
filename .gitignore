@@ -6,9 +6,10 @@ dist/
 wheels/
 *.egg-info
 
-# Linter / type checker caches
+# Linter / type checker / test caches
 .ruff_cache/
 .mypy_cache/
+.pytest_cache/
 
 # Virtual environments
 .venv

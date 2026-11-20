@@ -4,51 +4,55 @@
 
 ### 1) Test Stack and Commands
 
-- Primary test framework: none detected ([TODO] — no test runner, test config, or test files found).
-- Assertion/mocking tools: none detected ([TODO]).
+- Primary test framework: pytest (`pyproject.toml`).
+- Assertion/mocking tools: pytest assertions, `tmp_path`, `monkeypatch`, and
+  Typer's `CliRunner`.
 - Commands:
 
 ```bash
-[run all tests]      [TODO] — no test command defined
-[run unit tests]     [TODO]
-[run integration/e2e tests]  [TODO]
-[run coverage]       [TODO]
+mise run test          # run the complete suite
+uv run pytest          # equivalent direct command
+uv run pytest tests/test_characterization.py
 ```
+
+CI runs the same suite after Ruff and mypy.
 
 ### 2) Test Layout
 
-- Test file placement pattern: none — no `tests/`, `__tests__/`, `spec/`, or co-located `test_*.py` files detected in the scan (production TODOs excluded; scan searched source extensions only).
-- Naming convention: [TODO].
-- Setup files and where they run: [TODO].
+- Tests live under `tests/`.
+- Files are named `test_<area>.py`.
+- Shared helpers live in `tests/conftest.py`.
+- Production code remains under `src/`.
+
+| Test file | Coverage |
+|-----------|----------|
+| `tests/test_characterization.py` | Baseline discovery, staging, config, flow, and compose-only behavior |
 
 ### 3) Test Scope Matrix
 
 | Scope | Covered? | Typical target | Notes |
 |-------|----------|----------------|-------|
-| Unit | [TODO] | [modules/services] | No test files detected |
-| Integration | [TODO] | [API/data boundaries] | No test files detected |
-| E2E | [TODO] | [user flows] | No test files detected |
+| Unit | Partial | Discovery, staging, and configuration boundaries | Fast, isolated tests |
+| Integration | No | Full decompile/compose workflows | Added in the next implementation phase |
+| E2E | No | Full native Ren'Py compose/apply flow | A tiny synthetic Ren'Py fixture remains to be added |
 
 ### 4) Mocking and Isolation Strategy
 
-- Main mocking approach: [TODO] — no mocking library or pattern detected.
-- Isolation guarantees: [TODO].
-- Common failure mode in tests: [TODO].
+- `tmp_path` provides isolated game and config directories.
+- `monkeypatch` replaces discovery and compose boundaries without touching real
+  game assets.
+- Tests must not read or write `src/renpy_game/` game assets.
 
 ### 5) Coverage and Quality Signals
 
-- Coverage tool + threshold: [TODO] — no coverage config detected.
-- Current reported coverage: [TODO].
-- Known gaps/flaky areas: entire test suite is absent — every module (`decompile`, `compose`, `restore`, `agent`, `pipeline`) is untested by automated tests.
+- Coverage tooling and thresholds are not configured yet.
+- CI quality gates: pytest, Ruff, and mypy.
+- Known gaps: native Ren'Py rendering, review, apply, restore, and real archive
+  integration still need dedicated regression coverage.
 
 ### 6) Evidence
 
-- Scan output: `PERFORMANCE & TESTING` — "No performance testing configs detected."; `CI/CD PIPELINES` — "No CI/CD pipelines detected."
-- `CONTRIBUTING.md` §7: required pre-PR checks are `uv run ruff` and `uv run mypy src/` (lint + type check only; no test command).
-- `README.md` 🚧 Roadmap: "Document CI/CD and testing setup" is listed as unchecked — confirms testing/CI is intentionally deferred.
-- `pyproject.toml`: dev dependency group contains only `mypy` and `ruff`; no test framework (e.g. pytest) is listed.
-
-## Extended Sections (Optional)
-
-Add only when needed:
-- Historical flaky test catalog: [TODO] — no tests exist yet.
+- `pyproject.toml`: pytest dependency and pytest configuration.
+- `mise.toml`: `mise run test` task.
+- `.github/workflows/ci.yml`: test step in CI.
+- `tests/test_characterization.py`: baseline characterization suite.
