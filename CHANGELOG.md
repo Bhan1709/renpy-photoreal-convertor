@@ -19,4 +19,4 @@ to [Semantic Versioning](https://semver.org/).
 ### Fixed
 
 - Agent launcher: `Ctrl+C` no longer leaves the terminal (or VS Code) unresponsive when OpenCode's TUI ignores it or dies in raw console mode. The launcher now waits interruptibly, stops the whole OpenCode process tree, restores the console input mode, and handles `Ctrl+Break` as a forced interrupt.
-- Compose: native rendering now shows one progress bar for all batches, using the actual total reported by the Ren'Py runtime instead of `?`.
+- Compose: native rendering now shows one progress bar for all batches, using the actual total reported by the Ren'Py runtime instead of `?`, with a spinner while the runtime enumerates states.

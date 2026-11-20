@@ -640,9 +640,10 @@ def _run_batches(
     so pagination always makes forward progress.
 
     Rendering uses a single host-side progress bar for all batches. The child
-    reports the overall state total in its batch-start line; the bar is created
-    as soon as that line arrives so it always shows the real total instead of
-    ``?``, and its count accumulates across batches instead of restarting.
+    reports the overall state total in its batch-start line; until then a
+    spinner shows that states are being enumerated. The bar is created as soon
+    as the total arrives so it always shows the real total instead of ``?``,
+    and its count accumulates across batches instead of restarting.
     """
     candidates: list[dict] = []
     batch_index = 0
@@ -654,13 +655,32 @@ def _run_batches(
     rendered_total = 0
     bar: Any = None
     batch_rendered = 0
+    spinner_stack: ExitStack | None = None
 
     with ExitStack() as stack:
+
+        def _start_spinner() -> None:
+            nonlocal spinner_stack
+            if bar is not None or spinner_stack is not None:
+                return
+            spinner_stack = ExitStack()
+            stack.enter_context(spinner_stack)
+            spinner_stack.enter_context(
+                loading("Enumerating native render states...")
+            )
+
+        def _stop_spinner() -> None:
+            nonlocal spinner_stack
+            if spinner_stack is None:
+                return
+            spinner_stack.close()
+            spinner_stack = None
 
         def _ensure_bar(total: int) -> None:
             nonlocal bar, total_states
             if bar is not None:
                 return
+            _stop_spinner()
             total_states = total
             bar = stack.enter_context(
                 progress_bar(
@@ -723,6 +743,7 @@ def _run_batches(
             except OSError:
                 pass
 
+            _start_spinner()
             try:
                 run_native_batch(
                     layout=layout,
@@ -737,6 +758,7 @@ def _run_batches(
                     total_cb=_total_cb,
                 )
             except NativeExecutionError:
+                _stop_spinner()
                 if batch_size <= MIN_RENDER_STATES_PER_BATCH:
                     raise
                 batch_size = max(MIN_RENDER_STATES_PER_BATCH, batch_size // 2)
@@ -746,6 +768,7 @@ def _run_batches(
                 )
                 continue
 
+            _stop_spinner()
             data = read_result(workspace.result_path)
             if data["status"] == "error":
                 raise NativeProtocolError(
