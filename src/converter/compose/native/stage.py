@@ -7,9 +7,10 @@ native protocol results into the existing
 :class:`~converter.compose.models.CompositeManifest` objects so the review,
 apply, and manifest contracts stay unchanged.
 
-Screen-stack composites (Pass 3 of the static pipeline) are still produced by
-:mod:`converter.compose.compose_pass.passes` and merged into the same manifest,
-so ``show screen`` adoption keeps working.
+The native stage's CFG walk handles every ``show``/``scene`` statement —
+including ``show screen`` — so screen-stack composites are produced natively by
+the runtime.  No static Pass 1/2/3 logic is needed; compose v2 is the only
+compose path.
 """
 
 from __future__ import annotations
@@ -623,28 +624,6 @@ def _dynamic_declarations(index: ScriptIndex, config: GameConfig) -> list[dict]:
     return records
 
 
-def _add_screen_composites(
-    sink: _RecordSink, index: ScriptIndex, config: GameConfig, defaults: dict
-) -> None:
-    """Emit screen-stack composites with the static Pass 3 logic."""
-    from ..compose_pass.passes import _process_screen_stacks_from_index
-    from ..conditions import compute_interprocedural_label_states
-
-    file_lines = {
-        file_index.path: file_index.lines for file_index in index.per_file.values()
-    }
-    label_entry_states = compute_interprocedural_label_states(defaults, file_lines)
-    _process_screen_stacks_from_index(
-        index,
-        index.screens,
-        index.layeredimage_defs,
-        defaults,
-        sink,
-        config,
-        label_entry_states,
-    )
-
-
 def _run_batches(
     workspace: NativeWorkspace,
     modes: list[str],
@@ -839,8 +818,6 @@ def _run_native_stage(
                     continue
                 sink.add_native_candidate(candidate, layered_meta, image_meta)
                 bar.update(1)
-
-        _add_screen_composites(sink, index, game_config, dict(index.all_defaults))
 
         failed = sum(1 for candidate in candidates if candidate.get("error"))
         empty = sum(

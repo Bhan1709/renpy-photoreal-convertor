@@ -1,15 +1,13 @@
 """Compose pass orchestration.
 
-Responsibility: tie together parsing, resolution, condition evaluation, and
-compositing to produce a :class:`~converter.compose.models.CompositeManifest`.
+Responsibility: run the native Ren'Py compose stage
+(:mod:`converter.compose.native.stage`) to produce a
+:class:`~converter.compose.models.CompositeManifest`.
 
 This is the main entry point for the compose pass: :class:`Composer` and its
-:meth:`Composer.compose` method.
-
-Compose v2 delegates extraction and rendering to the native Ren'Py stage
-(:mod:`converter.compose.native.stage`), which renders through the game's own
-displayables.  Screen-stack composites are still produced by the static Pass 3
-logic, which the native stage runs for us.
+:meth:`Composer.compose` method.  Compose v2 delegates extraction and rendering
+to the native Ren'Py stage, which renders through the game's own displayables.
+There is no separate v1 static pipeline; compose v2 is the only compose path.
 """
 
 from __future__ import annotations
