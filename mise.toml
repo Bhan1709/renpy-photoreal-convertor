@@ -14,6 +14,10 @@ run = "python -m agent"
 
 ############## CONVERTER ##############
 
+[tasks.test]
+description = "Run the automated test suite"
+run = "uv run pytest"
+
 [tasks.decompile]
 description = "Decompile a Ren'Py game (interactive: clean, decompile, clean and decompile, or exit)"
 run = "python -m converter.decompile"

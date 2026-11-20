@@ -314,6 +314,18 @@ ManifestWriter(config).write(manifest, dry_run=False)
 manifest, report = Applier(config).apply()
 ```
 
+## Testing
+
+Run the automated suite with:
+
+```bash
+mise run test
+```
+
+CI runs the same pytest suite together with Ruff and mypy. The current tests
+cover decompile/config/pipeline boundaries; native rendering, review, apply,
+and restore remain follow-up integration-test work.
+
 ## 🚧 Roadmap
 
 - [x] **Add decompilation utilities** for `.rpyc`/`.rpa` extraction ✅
@@ -321,10 +333,10 @@ manifest, report = Applier(config).apply()
 - [ ] Integrate ComfyUI local API driver
 - [ ] Provide example workflow JSON for ComfyUI
 - [ ] Expand Modelfiles for additional context sizes and models
-- [ ] Document CI/CD and testing setup
+- [x] **Document CI/CD and testing setup** ✅
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for how to raise contributions and open pull requests. All changes must be made on a dedicated branch (Conventional Branch naming) and use Conventional Commits. Before opening a PR, run `uv run ruff` and `uv run mypy src/` and confirm both pass.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for how to raise contributions and open pull requests. All changes must be made on a dedicated branch (Conventional Branch naming) and use Conventional Commits. Before opening a PR, run `mise run test`, `uv run ruff`, and `uv run mypy src/` and confirm all checks pass.
 
 Feel free to open issues or contribute new profiles, Modelfiles, or pipeline steps.

@@ -36,8 +36,14 @@ module-name = ["agent", "cli", "converter"]
 [tool.mypy]
 exclude = 'src/renpy_game/'
 
+[tool.pytest.ini_options]
+addopts = "-ra"
+pythonpath = ["src"]
+testpaths = ["tests"]
+
 [dependency-groups]
 dev = [
     "mypy>=2.4.1",
+    "pytest>=9.2.0",
     "ruff>=0.17.5",
 ]
