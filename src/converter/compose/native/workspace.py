@@ -58,6 +58,7 @@ def create_workspace(
     engine_config: dict,
     result_path: Path,
     workspace_parent: Path | None = None,
+    archive_dirs: list[Path] | None = None,
 ) -> NativeWorkspace:
     """Create an isolated copy of the live game scripts and referenced assets.
 
@@ -69,6 +70,9 @@ def create_workspace(
     ``workspace_parent`` should be on the same filesystem as ``game_root`` when
     possible: that keeps the hardlink mirror fast.  When it is omitted the
     system temporary directory is used.
+
+    ``archive_dirs`` lists the extracted asset roots that should be mirrored.
+    When omitted, ``game_root / "archive"`` is used for compatibility.
     """
     source_game = Path(game_root).resolve()
     if not source_game.is_dir():
@@ -85,7 +89,7 @@ def create_workspace(
 
     try:
         _copy_scripts(source_game, game_dir, script_files)
-        _mirror_runtime_assets(source_game, game_dir)
+        _mirror_runtime_assets(source_game, game_dir, archive_dirs)
         _copy_runtime_script(game_dir)
     except Exception:
         shutil.rmtree(root, ignore_errors=True)
@@ -132,7 +136,11 @@ def _copy_scripts(
         shutil.copy2(resolved, target)
 
 
-def _mirror_runtime_assets(source_game: Path, target_game: Path) -> None:
+def _mirror_runtime_assets(
+    source_game: Path,
+    target_game: Path,
+    archive_dirs: list[Path] | None = None,
+) -> None:
     """Mirror runtime assets into paths Ren'Py can resolve without an RPA.
 
     Extracted archives often contain a copy of the game scripts alongside the
@@ -140,8 +148,10 @@ def _mirror_runtime_assets(source_game: Path, target_game: Path) -> None:
     separately, so mirroring them here would register duplicate labels and
     stale bytecode.
     """
-    archive = source_game / "archive"
-    if archive.is_dir():
+    roots = archive_dirs or [source_game / "archive"]
+    for archive in roots:
+        if not archive.is_dir():
+            continue
         for child in sorted(archive.iterdir()):
             if child.suffix.lower() in _SCRIPT_SUFFIXES:
                 continue

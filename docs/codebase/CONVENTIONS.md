@@ -18,7 +18,7 @@
 - Formatter: ruff (configured via `pyproject.toml` `[dependency-groups] dev`; no `.ruff.toml`/`ruff.toml` found at root — ruff defaults / pyproject config).
 - Linter: ruff (same); type checker: mypy (`mypy>=2.4.1` dev dependency).
 - Most relevant enforced rules: `uv run ruff` and `uv run mypy src/` are the required pre-PR checks (`CONTRIBUTING.md` §7); both must pass with zero errors/issues.
-- Run commands: `uv run ruff`; `uv run mypy src/` (also `mise` tasks exist for agent/qwen/pipeline/etc., but no dedicated lint/type task is defined in `mise.toml`).
+- Run commands: `mise run test`; `uv run ruff check`; `uv run mypy src/` (a dedicated pytest task is defined in `mise.toml`; lint/type checks remain direct commands).
 
 ### 3) Import and Module Conventions
 
@@ -38,9 +38,10 @@
 
 ### 5) Testing Conventions
 
-- Test file naming/location rule: none — no test files, test directory, or test config detected (see `TESTING.md`).
-- Mocking strategy norm: none established.
-- Coverage expectation: none established.
+- Test files live under `tests/` and use `test_<area>.py` naming.
+- Tests use pytest assertions with `tmp_path`, `monkeypatch`, and Typer's `CliRunner`.
+- Tests must remain isolated from real game assets under `src/renpy_game/`.
+- Coverage thresholds are not configured; pytest, Ruff, and mypy are CI gates.
 
 ### 6) Evidence
 
@@ -49,7 +50,8 @@
 - `src/agent/nvidia_proxy.py`, `src/agent/constants.py` (naming)
 - `src/converter/compose/errors.py`, `src/converter/restore/errors.py`, `src/agent/config.py` (exceptions)
 - `src/agent/cli.py` (logging setup, `opencode.json` handling)
-- `CONTRIBUTING.md` §7 (required ruff + mypy checks)
+- `CONTRIBUTING.md` §7 (required pytest + ruff + mypy checks)
+- `tests/` and `docs/codebase/TESTING.md` (test layout and isolation rules)
 - `.gitignore` (caches excluded from conventions evidence)
 
 ## Extended Sections (Optional)

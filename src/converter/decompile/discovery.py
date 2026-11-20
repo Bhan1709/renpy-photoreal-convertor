@@ -24,7 +24,11 @@ def get_game_folder_rel_path() -> Path | None:
     return _game_folder_rel_path
 
 
-def find_game_folder(renpy_games: Path = RENPY_GAMES) -> Path | None:
+def find_game_folder(
+    renpy_games: Path = RENPY_GAMES,
+    *,
+    exclude: Path | None = None,
+) -> Path | None:
     r"""Return the first directory named ``game`` found under ``renpy_games``.
 
     Ren'Py games come in all shapes, but they all ship a ``\game`` folder.
@@ -32,16 +36,17 @@ def find_game_folder(renpy_games: Path = RENPY_GAMES) -> Path | None:
     rest of the flow operates on a single, well-known location.
 
     The consolidated output folder (``src/renpy_game/game``) is deliberately
-    excluded so re-runs do not treat their own output as a source game.
+    excluded so re-runs do not treat their own output as a source game.  A
+    caller using a custom staging destination can exclude that path explicitly.
     """
     if not renpy_games.exists():
         error(f"No {renpy_games} directory found")
         return None
 
     try:
-        dest = GAME_FOLDER.resolve()
+        excluded = (exclude or GAME_FOLDER).resolve()
     except Exception:  # pragma: no cover - defensive  # noqa: BLE001
-        dest = GAME_FOLDER
+        excluded = exclude or GAME_FOLDER
 
     matches: list[Path] = []
     for item in renpy_games.rglob("*"):
@@ -51,8 +56,9 @@ def find_game_folder(renpy_games: Path = RENPY_GAMES) -> Path | None:
             resolved = item.resolve()
         except Exception:  # pragma: no cover - defensive  # noqa: BLE001
             resolved = item
-        if resolved == dest:
-            # Skip our own consolidated output folder on re-runs.
+        if resolved == excluded or resolved.is_relative_to(excluded):
+            # Skip our own consolidated output folder (and anything nested
+            # below a custom staging destination) on re-runs.
             continue
         matches.append(item)
 

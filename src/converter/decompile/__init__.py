@@ -14,6 +14,7 @@ Public API::
         scan_image_categories,
         write_config,
         load_config,
+        prepare_game,
         process_game,
         process_all_games,
         restore_decompile,
@@ -35,15 +36,26 @@ from .constants import (
     RENPY_GAMES,
     ROOT,
 )
-from .decompile_files import decompile_rpyc_files
+from .decompile_files import (
+    DecompileFileResult,
+    DecompileFilesResult,
+    decompile_rpyc_files,
+    decompile_rpyc_files_detailed,
+)
 from .discovery import (
     find_game_folder,
     find_game_folders,
     get_game_folder_rel_path,
     set_game_folder_rel_path,
 )
-from .extract import extract_all_rpa, extract_rpa_file
-from .flow import process_all_games, process_game
+from .extract import (
+    ArchiveExtraction,
+    extract_all_rpa,
+    extract_all_rpa_detailed,
+    extract_rpa_file,
+    extract_rpa_file_detailed,
+)
+from .flow import DecompileRun, prepare_game, process_all_games, process_game
 from .restore import restore_decompile
 from .scan import (
     scan_extracted_archives,
@@ -61,14 +73,22 @@ __all__ = [
     "IMAGE_EXTENSIONS",
     "RENPY_GAMES",
     "ROOT",
+    "ArchiveExtraction",
+    "DecompileFileResult",
+    "DecompileFilesResult",
+    "DecompileRun",
     "copy_game_files",
     "decompile_rpyc_files",
+    "decompile_rpyc_files_detailed",
     "extract_all_rpa",
+    "extract_all_rpa_detailed",
     "extract_rpa_file",
+    "extract_rpa_file_detailed",
     "find_game_folder",
     "find_game_folders",
     "get_game_folder_rel_path",
     "load_config",
+    "prepare_game",
     "process_all_games",
     "process_game",
     "restore_decompile",
