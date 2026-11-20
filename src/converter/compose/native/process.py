@@ -83,7 +83,7 @@ def run_native_batch(
 
     creation_flags = 0
     if os.name == "nt":
-        creation_flags = subprocess.CREATE_NEW_PROCESS_GROUP
+        creation_flags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
 
     stdout_path = basedir / "batch_stdout.log"
     stderr_path = basedir / "batch_stderr.log"
