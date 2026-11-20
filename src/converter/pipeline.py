@@ -9,9 +9,7 @@ modified ``.rpy`` files from the archive).
 The default flow is interactive::
 
     1. Decompile every ``.rpyc`` and extract every ``.rpa`` under the game folder.
-    2. Prompt the user for exclusion patterns to persist in
-       ``src/converter/config.json``.
-    3. Run compose (manifest + PNGs).  The apply step is deliberately deferred
+    2. Run compose (manifest + PNGs).  The apply step is deliberately deferred
        so the user can verify the compose output first.
 
 All modes are config-driven via ``src/converter/config.json`` (produced by
@@ -43,7 +41,6 @@ from .compose.config import load_config
 from .decompile.constants import CONFIG_PATH
 from .decompile.decompile_files import decompile_rpyc_files
 from .decompile.discovery import find_game_folders
-from .decompile.exclusions import prompt_exclusion_patterns, sync_exclusions
 from .decompile.extract import extract_rpa_file
 
 app = create_app(
@@ -71,9 +68,9 @@ def run_pipeline(
 ) -> int:
     """Run the decompile -> compose -> apply pipeline.
 
-    The default flow always decompiles first, then prompts the user for
-    exclusion patterns, then runs compose.  The apply step is deliberately not
-    run by default so the user can verify compose output.
+    The default flow always decompiles first, then runs compose.  The apply
+    step is deliberately not run by default so the user can verify compose
+    output.
 
     All modes are config-driven via ``src/converter/config.json``; no
     ``--game`` lookup is needed.
@@ -94,14 +91,10 @@ def run_pipeline(
     """
     # --- Compose-only / apply-only modes (config-driven, no decompile) ---
     if compose_only or apply_only:
-        sync_exclusions(CONFIG_PATH)
         config = load_config(CONFIG_PATH)
         rule(f"Conversion pipeline: {config.name}")
 
         if compose_only:
-            prompt_exclusion_patterns(CONFIG_PATH)
-            sync_exclusions(CONFIG_PATH)
-            config = load_config(CONFIG_PATH)
             compose_game(config, dry_run=dry_run, clean=clean_output)
             rule("Composites ready for review")
             print_review_instructions(config, CONFIG_PATH)
@@ -110,7 +103,7 @@ def run_pipeline(
         if apply_only:
             return apply_game(config)
 
-    # --- Default flow: decompile -> exclusions prompt -> compose (no apply) ---
+    # --- Default flow: decompile -> compose (no apply) ---
     # Auto-discover the first game folder under src/renpy_game (no --game needed).
     folders = find_game_folders()
     if not folders:
@@ -125,18 +118,10 @@ def run_pipeline(
     step(1, f"Decompile scripts and extract archives under {target_folder}")
     _decompile_and_extract(target_folder)
 
-    # --- Stage 2: prompt user for exclusion patterns ---
-    step(2, "Review exclusion patterns")
-    prompt_exclusion_patterns(CONFIG_PATH)
-
-    # --- Stage 3: sync exclusions + load decompile config ---
-    step(3, "Sync exclusions and load the game configuration")
-    sync_exclusions(CONFIG_PATH)
-    config = load_config(CONFIG_PATH)
-
-    # --- Stage 4: compose (manifest + PNGs) only ---
+    # --- Stage 2: compose (manifest + PNGs) only ---
     # Apply is intentionally deferred so the user can verify compose output.
-    step(4, "Create composites and manifests (apply after review)")
+    config = load_config(CONFIG_PATH)
+    step(2, "Create composites and manifests (apply after review)")
     compose_game(config, dry_run=dry_run, clean=clean_output)
     rule("Composites ready for review")
     print_review_instructions(config, CONFIG_PATH)

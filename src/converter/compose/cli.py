@@ -4,15 +4,12 @@ Flow:
 
 1. **Menu** — clean previous output, compose, clean and compose, review
    composites, apply composites, or restore the original game files.
-2. **Exclusion check** — runs only after selecting ``compose`` or
-   ``clean-compose``; it asks whether to add script/image exclusion patterns
-   and syncs them into ``src/converter/config.json``.
-3. **After composing** — choose to review now or exit, with the manual review
+2. **After composing** — choose to review now or exit, with the manual review
    steps printed either way.
 
 Usage::
 
-    python -m converter.compose                  # interactive menu (exclusions only for compose actions)
+    python -m converter.compose                  # interactive menu
     python -m converter.compose clean            # remove previous compose output
     python -m converter.compose compose          # compose only (no apply)
     python -m converter.compose clean-compose    # clean output, then compose
@@ -57,7 +54,6 @@ from cli import (
 )
 
 from ..decompile.constants import CONFIG_PATH
-from ..decompile.sync_exclusions_cli import run_exclusion_sync
 from ..restore import restore_compose_from_source
 from .apply_pass import Applier
 from .compose_pass import Composer
@@ -141,18 +137,13 @@ def compose_game(
         success(f"Created {composite_count}.")
 
 
-def _compose_with_exclusions(
+def _compose_action(
     config_path: Path,
     *,
     dry_run: bool,
     clean: bool,
 ) -> int:
-    """Sync exclusions, reload the config, compose, and offer review."""
-    if run_exclusion_sync(config_path, prompt=True) != 0:
-        return 1
-
-    # Exclusion sync rewrites config.json, so reload before composing to pick up
-    # the updated script lists.
+    """Load the config, compose, and offer review."""
     config = load_game_config(config_path)
     if config is None:
         return 1
@@ -425,14 +416,14 @@ def interactive(config_path: Path, *, dry_run: bool) -> int:
         return 0
 
     if choice == ACTION_COMPOSE:
-        return _compose_with_exclusions(
+        return _compose_action(
             config_path,
             dry_run=dry_run,
             clean=False,
         )
 
     if choice == ACTION_CLEAN_COMPOSE:
-        return _compose_with_exclusions(
+        return _compose_action(
             config_path,
             dry_run=dry_run,
             clean=True,
@@ -487,7 +478,7 @@ def run_action(action: str, config_path: Path, *, dry_run: bool) -> int:
         return 0
 
     if action in (ACTION_COMPOSE, ACTION_CLEAN_COMPOSE):
-        return _compose_with_exclusions(
+        return _compose_action(
             config_path,
             dry_run=dry_run,
             clean=action == ACTION_CLEAN_COMPOSE,

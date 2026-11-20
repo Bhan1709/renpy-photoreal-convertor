@@ -38,14 +38,14 @@ List only meaningful top-level directories and files.
 |----------|-------------------|------------------------|
 | `src/agent/` | OpenCode orchestration: profile loading/validation (`config.py`), CLI launcher (`cli.py`), NVIDIA rate-limit proxy (`nvidia_proxy.py`), context-window monitor (`monitor.py`), constants, bundled Modelfiles | Ren'Py asset processing, `.rpy`/`.rpa` handling, image compositing |
 | `src/converter/` | Ren'Py conversion toolkit shared utilities (`utility/tqdm`) plus `decompile`, `compose`, `restore` subpackages | OpenCode/profile/proxy logic |
-| `src/converter/decompile/` | Discover game folders, copy/stage files, extract `.rpa`, decompile `.rpyc`, scan image categories, write/load `config.json`, exclusions, restore decompile outputs | Compositing, script rewriting, OpenCode launching |
+| `src/converter/decompile/` | Discover game folders, copy/stage files, extract `.rpa`, decompile `.rpyc`, scan image categories, write/load `config.json`, restore decompile outputs | Compositing, script rewriting, OpenCode launching |
 | `src/converter/compose/` | Parse Ren'Py scripts, resolve asset paths, static condition eval, composite PNGs (PIL), per-category manifests, apply composites into live `.rpy` scripts, `composite_images.rpy` declarations | Game-folder discovery, `.rpa` extraction, `.rpyc` decompilation, OpenCode orchestration |
 | `src/converter/restore/` | Revert modified `.rpy` files from `archive.rpa`; undo a full decompile (remove extracted folder + `config.json`) | Composing new composites, decompiling |
 | `src/renpy_game/` | User-placed Ren'Py game folders (e.g. `CampMourningWood-0.25.0.1-pc/`) | Committed game assets (`.gitignore` excludes `src/renpy_game/*`) |
 
 ### 4) Naming and Organization Rules
 
-- File naming pattern: snake_case (e.g. `character_associator.py`, `nvidia_proxy.py`, `interactive_review.py`, `sync_exclusions_cli.py`).
+- File naming pattern: snake_case (e.g. `character_associator.py`, `nvidia_proxy.py`, `interactive_review.py`, `composite_export.rpy`).
 - Directory organization pattern: lowercase, module/layer-based (`agent/`, `converter/decompile/`, `converter/compose/`, `converter/restore/`, `converter/utility/`).
 - Import aliasing or path conventions: relative imports within a package (`from .config import GameConfig`); absolute package imports from the repo root (`from converter.compose.config import load_config`). No TypeScript-style path aliases (Python project).
 

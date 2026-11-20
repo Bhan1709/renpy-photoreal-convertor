@@ -16,6 +16,10 @@ to [Semantic Versioning](https://semver.org/).
 - `.github/ISSUE_TEMPLATE/` — bug report and feature request forms
 - `.github/PULL_REQUEST_TEMPLATE.md` — pull request template
 
+### Changed
+
+- Compose: removed the exclusion-pattern workflow. Script/image exclusion prompts, syncing, and filtering are gone; compose stages and scans every live script in the game folder, so deleting a script from that folder is all that is needed. Generated `config.json` no longer contains an `exclusion` block.
+
 ### Fixed
 
 - Agent launcher: `Ctrl+C` no longer leaves the terminal (or VS Code) unresponsive when OpenCode's TUI ignores it or dies in raw console mode. The launcher now waits interruptibly, stops the whole OpenCode process tree, restores the console input mode, and handles `Ctrl+Break` as a forced interrupt.

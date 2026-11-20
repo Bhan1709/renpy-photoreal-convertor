@@ -93,17 +93,7 @@ it is loaded from the decompile-generated ``src/converter/config.json`` via
       "scene": "archive/xxx"
     }
   },
-  "compose_modes": ["cfg", "layered_all", "conditions"],
-  "exclusion": {
-    "script": {
-      "patterns": ["archive/"],
-      "note": "Patterns matched against rpy_files/ren_py_files entries"
-    },
-    "image": {
-      "patterns": [],
-      "note": "Patterns matched against image source paths"
-    }
-  }
+  "compose_modes": ["cfg", "layered_all", "conditions"]
 }
 ```
 
@@ -126,13 +116,13 @@ stored in the JSON; they default to ``<game_root>/composites/...`` via
 - ``path_aliases`` — asset-path redirects applied when resolving sources.
 - ``game_defaults`` — default Ren'Py variable values for static condition eval
   (e.g. ``{"month": 6, "day": 1}``).
-- ``rpy_files`` / ``ren_py_files`` — scripts to scan during compose (from config.json).
+- ``rpy_files`` / ``ren_py_files`` — scripts recorded by decompile for reference.
+  Compose scans every live script in the game folder, so deleting a script from
+  that folder is enough to drop it from the pass.
 - ``compose_modes`` — optional subset of the native compose modes (``cfg``,
   ``layered_all``, ``conditions``) read from config.json.  Omitted (or empty)
   runs every mode; large games can set ``"compose_modes": ["cfg"]`` to keep a
   compose pass fast.
-- ``script_exclusion_patterns`` / ``image_exclusion_patterns`` — compiled regex
-  filters from the ``exclusion`` block of config.json.
 - ``output_dir`` — where composite PNGs are written (default:
   ``<game_root>/composites``).
 - ``manifest_path`` / ``declaration_path`` / ``report_path`` — output locations
@@ -148,10 +138,9 @@ Use :meth:`GameConfig.resolved_paths` to get all resolved absolute output paths.
 
 `python -m converter.compose` is a single interactive entry point. It opens
 an action menu first. Choosing **Compose new composites** or **Clean output,
-then compose** then runs the **exclusion check** (asks whether to add
-script/image exclusion patterns and syncs them into
-`src/converter/config.json`). Clean, review, apply, and restore do not run the
-exclusion check.
+then compose** runs compose immediately. Every script present in the game
+folder is staged into the native Ren'Py child, so remove unwanted scripts from
+that folder before composing.
 
 | Choice | Effect |
 |--------|--------|
@@ -193,7 +182,7 @@ characters already toggled. Each scene offers three explicit outcomes:
   then removed from `review_pending.json`.
 
 ```bash
-# Interactive menu (exclusion check only after selecting a compose action)
+# Interactive menu
 python -m converter.compose
 
 # Skip the menu with an explicit action
@@ -210,15 +199,14 @@ python -m converter.compose restore          # recover the live game folder from
 ```
 
 Non-interactive terminals (scripts, CI) skip prompts. The explicit `compose`
-and `clean-compose` actions still sync exclusions without asking; clean,
-review, apply, and restore do not sync exclusions, and no post-compose review
-prompt is shown.
+and `clean-compose` actions run the compose pass directly; no post-compose
+review prompt is shown.
 
 The full pipeline is also available through :mod:`converter.pipeline` (which
 adds the decompile stage):
 
 ```bash
-uv run python -m converter.pipeline                  # decompile -> exclusions -> compose (apply deferred)
+uv run python -m converter.pipeline                  # decompile -> compose (apply deferred)
 uv run python -m converter.pipeline --compose-only   # compose only (skip decompile)
 uv run python -m converter.pipeline --apply-only     # apply only (needs manifest)
 uv run python -m converter.pipeline --dry-run        # compose without writing
@@ -235,7 +223,7 @@ Or via mise tasks:
 
 ```bash
 mise run decompile        # decompile + extract, write config.json
-mise run compose          # interactive compose (exclusions only for compose actions)
+mise run compose          # interactive compose
 python -m converter.compose restore  # restore game folder from source, keep composites
 ```
 
@@ -425,7 +413,7 @@ driven by :class:`GameConfig` instead of hard-coded constants:
 - Speaker-to-folder mapping (``player_folder`` / ``player_aliases``) — no
   hard-coded player defaults; driven entirely by ``config.json`` or
   ``Character()`` declarations.
-- Script and image exclusion patterns (persisted in ``config.json``).
+- The set of live scripts in the game folder (compose scans that folder directly).
 
 Supporting multiple folders per category (rather than one-to-one) is a natural
 extension: ``categories`` can map a category to a list of folders, and

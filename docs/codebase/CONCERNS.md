@@ -39,7 +39,7 @@
 
 | Area | Why fragile | Churn signal | Safe change strategy |
 |------|-------------|-------------|----------------------|
-| `src/converter/compose/config.py` | GameConfig schema drives compose/apply; parsing of `config.json` exclusions and categories is complex | 14 changes in last 90 days (scan HIGH-CHURN) | Change with tests; validate `config.json` round-trip |
+| `src/converter/compose/config.py` | GameConfig schema drives compose/apply; parsing of `config.json` categories and path aliases is complex | 14 changes in last 90 days (scan HIGH-CHURN) | Change with tests; validate `config.json` round-trip |
 | `src/converter/compose/composer.py` | Core compose orchestration with condition-variant enumeration | 11 changes | Small PRs; review condition logic carefully |
 | `src/converter/compose/applier.py` | Rewrites live `.rpy` scripts; idempotency depends on exact statement text match | 10 changes | Verify on a copy; use `--dry-run` / restore first |
 | `src/converter/compose/cli.py` / `character_associator.py` / `interactive_review.py` | Interactive CLI paths with user input | 12 / 11 / 8 changes | Keep interactive flows optional; cover with tests |
