@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections import Counter
 from pathlib import Path
+from typing import Final
 
 from PIL import Image
 
@@ -30,6 +32,10 @@ from ..parsing import (
 )
 from ..resolution import Resolver
 
+# Character composites gather in one folder per character, however deep their
+# sprite asset folders nest (``chars/emma/ArmL/`` -> ``static/char/emma/``).
+_CHARACTER_FOLDER_DEPTH: Final = 1
+
 
 def _loc_to_usage(loc: dict) -> UsageLocation:
     """Convert a location dict to a :class:`UsageLocation`."""
@@ -48,10 +54,10 @@ def _resolve_speaker_name(
 ) -> str:
     """Resolve a speaker to its canonical character folder name for display.
 
-    Player aliases (``you``, ``y``) map to ``player_folder`` when configured
-    (takes priority since they are also in special_speakers).  Other special
-    speakers (e.g. ``narrator``) are kept as-is.  Remaining speakers are
-    resolved via the ``Character()`` alias map (e.g. ``"h"`` -> ``"hazel"``).
+    Player aliases map to ``player_folder`` when both are configured in
+    ``config.json`` (no hard-coded defaults).  Other special speakers
+    (e.g. ``narrator``) are kept as-is.  Remaining speakers are resolved via
+    the ``Character()`` alias map (e.g. ``"h"`` -> ``"hazel"``).
     Speakers that cannot be resolved are returned unchanged.
     """
     special_speakers = config.special_speakers
@@ -160,6 +166,38 @@ def _record_key(kind: str, name: str, normalized: list[Layer]) -> tuple[str, str
     return (kind, name, digest)
 
 
+def _composite_directory(layers: list[Layer], kind: str) -> list[str]:
+    """Return the asset directory chain a composite belongs under.
+
+    The chain starts at the most common category folder among the layers, so a
+    couple of shared prop layers (``chars/clothes/...``) cannot hijack a
+    character's folder, and extends deeper while a majority of the layers keep
+    sharing the same folder.  Layers spread across category folders (a scene
+    composite that also pulls in a sprite) resolve to their dominant category.
+    """
+    chains = [x.source.split("/")[:-1] for x in layers if "/" in x.source]
+    if not chains:
+        return [kind]
+
+    head_counts = Counter(chain[0] for chain in chains)
+    head = max(head_counts.items(), key=lambda item: (item[1], item[0]))[0]
+    members = [chain for chain in chains if chain[0] == head]
+
+    chain = [head]
+    deepest = max(len(member) for member in members)
+    for depth in range(1, deepest):
+        counts = Counter(
+            member[depth] for member in members if len(member) > depth
+        )
+        if not counts:
+            break
+        part, count = max(counts.items(), key=lambda item: (item[1], item[0]))
+        if count * 2 < len(members):
+            break
+        chain.append(part)
+    return chain
+
+
 def _determine_family_and_path(
     normalized: list[Layer],
     kind: str,
@@ -169,29 +207,33 @@ def _determine_family_and_path(
 ) -> tuple[Path, str, Path, str, str]:
     """Determine output family, sub-path, status, and target PNG path for a composite.
 
+    Composites are grouped so the output tree stays navigable: the folder chain
+    mirrors the game's own asset tree (``bgs/home/`` -> ``static/bg/home/``),
+    except that character composites always gather in one folder per character
+    instead of body-part subfolders (``chars/emma/ArmL/`` -> ``static/char/emma/``).
+
     Returns ``(target, family, sub, status, family2)``.
     """
     dynamic = any(x.unresolved_conditions for x in normalized)
-
-    folder = next(
-        (x.source.split("/")[:-1] for x in normalized if "/" in x.source), [kind]
-    )
-    family = config.category_for_folder(folder[0]) if folder and folder[0] else kind
-    if family is None:
-        family = folder[0] if folder else kind
-    sub = Path(*folder[1:]) if len(folder) > 1 else Path()
     status = "dynamic_review" if dynamic else "static"
+
+    folder = _composite_directory(normalized, kind)
+    head = folder[0].lower() if folder else ""
+    family = config.category_for_folder(head) if head else kind
+    if family is None:
+        family = head or kind
+
+    sub_parts = list(folder[1:])
+    if family == "char":
+        sub_parts = sub_parts[:_CHARACTER_FOLDER_DEPTH]
+    sub = Path(*sub_parts) if sub_parts else Path()
+
     paths = config.resolved_paths()
     target = paths["output_dir"] / status / family / sub / f"{name}__{digest}.png"
 
-    family2 = ""
-    for x in normalized:
-        if "/" in x.source:
-            f2 = config.category_for_folder(x.source.split("/", 1)[0].lower())
-            if f2 is None:
-                f2 = x.source.split("/", 1)[0].lower()
-            family2 = f2
-            break
+    # Enrichment follows the same category as the output folder so a record can
+    # never land in a family manifest without that family's enrichment.
+    family2 = family
 
     return target, family, sub, status, family2
 
@@ -218,7 +260,7 @@ def _render_or_reuse_png(
             try:
                 with Image.open(target) as _im:
                     dimensions = _im.size
-            except OSError, ValueError:
+            except (OSError, ValueError):
                 dimensions = None
         else:
             image = compositor.composite(normalized, canvas_size=None)

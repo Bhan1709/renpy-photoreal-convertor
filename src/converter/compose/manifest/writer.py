@@ -61,7 +61,7 @@ def _load_characters(reports_dir: Path) -> dict[str, dict]:
 
     try:
         characters = json.loads(characters_path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError, OSError:
+    except (json.JSONDecodeError, OSError):
         return {}
 
     if not isinstance(characters, dict):
@@ -140,6 +140,7 @@ def _seed_characters(
     config: GameConfig,
     reports_dir: Path,
     manifest: CompositeManifest | None = None,
+    extra: dict[str, CharacterDeclaration] | None = None,
 ) -> dict[str, dict]:
     """Build characters.json from Ren'Py Character() declarations.
 
@@ -147,8 +148,16 @@ def _seed_characters(
     declaration. Characters found only by scanning source directories are
     omitted, and every ``folder`` value points to the generated static
     character-composite directory.
+
+    ``extra`` merges characters that only the native compose stage could
+    discover (its runtime ``ADVCharacter`` registry); they are added after the
+    statically-parsed declarations and never replace an existing entry.
     """
-    declarations = CharacterAssociator(config).character_declarations()
+    declarations = dict(CharacterAssociator(config).character_declarations())
+    for name, declaration in sorted((extra or {}).items()):
+        if name not in declarations:
+            declarations[name] = declaration
+
     existing = _load_characters(reports_dir)
     generated_folders = _generated_character_folders(manifest)
 
@@ -199,11 +208,15 @@ class ManifestWriter:
         self,
         manifest: CompositeManifest,
         dry_run: bool = False,
+        extra_characters: dict[str, CharacterDeclaration] | None = None,
     ) -> CompositeManifest:
         """Write per-category manifests + index to disk (unless ``dry_run``).
 
         Does *not* write a monolithic manifest.json.  Each category gets its
         own file; global data lives in manifest_index.json.
+
+        ``extra_characters`` merges native-stage character discoveries into
+        characters.json without overriding statically-parsed declarations.
         """
         paths = self.config.resolved_paths()
         reports_dir = paths["manifest_path"].parent
@@ -264,7 +277,7 @@ class ManifestWriter:
             # dialog that could not be mapped to any char folder).
             # Seed characters.json from Character() declarations before
             # generating the pending review.
-            _seed_characters(self.config, reports_dir, manifest)
+            _seed_characters(self.config, reports_dir, manifest, extra_characters)
 
             scene_without_chars = [
                 {

@@ -26,6 +26,9 @@
     "xxx.rpy"
   ],
   "ren_py_files": [],
+  "compose_modes": [
+    "cfg"
+  ],
   "extracted_archives": [
     {
       "archive": "archive.rpa",

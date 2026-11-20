@@ -93,9 +93,9 @@ def eval_cond(expr: str, env: dict[str, object]) -> bool | None | object:
     try:
         # Ren'Py conditions are standard Python comparison/boolean expressions.
         result: bool | None | object = bool(eval(expr, {"__builtins__": {}}, dict(env)))
-    except NameError, TypeError, KeyError:
+    except (NameError, TypeError, KeyError):
         result = UNKNOWN
-    except ValueError, SyntaxError, AttributeError:
+    except (ValueError, SyntaxError, AttributeError):
         result = UNKNOWN
     _eval_cond_cache[cache_key] = result
     return result

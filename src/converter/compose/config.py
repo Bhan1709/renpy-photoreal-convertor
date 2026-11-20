@@ -61,11 +61,12 @@ DEFAULT_GAME_DEFAULTS: dict[str, object] = {
 # a character folder under ``chars/`` (e.g. narrator, player).
 DEFAULT_SPECIAL_SPEAKERS: frozenset[str] = frozenset({"narrator", "you", "y"})
 
-# Default folder name for the player character under ``chars/``.  The player
-# is typically referred to as "you" or "y" in dialog, so those aliases map to
-# this folder.
-DEFAULT_PLAYER_FOLDER: str | None = "player"
-DEFAULT_PLAYER_ALIASES: tuple[str, ...] = ("you", "y")
+# No hard-coded player folder or player aliases by default.  Speaker-to-folder
+# mapping is driven entirely by Ren'Py ``Character()`` declarations and the
+# game's own ``config.json`` (``player_folder`` / ``player_aliases``), so the
+# compose pipeline stays generalized across VN games.
+DEFAULT_PLAYER_FOLDER: str | None = None
+DEFAULT_PLAYER_ALIASES: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -78,6 +79,9 @@ class GameConfig:
             ``.rpy`` scripts and, typically, an ``archive/`` subdirectory).
         archive_dir: Absolute path to the extracted asset archive.  Always
             ``game_root / "archive"``.
+        source_path: Absolute path to the bundled Ren'Py project/runtime used
+            by the native compose stage.  ``None`` keeps legacy callers
+            source-compatible, but native compose requires this value.
         categories: Mapping of canonical category -> asset folder name under
             ``archive_dir``.  Must cover all of :data:`CANONICAL_CATEGORIES`.
         non_character_folders: Subfolder names under the character directory
@@ -103,6 +107,7 @@ class GameConfig:
     name: str
     game_root: Path
     archive_dir: Path
+    source_path: Path | None = None
     categories: dict[str, str] = field(
         default_factory=lambda: dict(DEFAULT_CATEGORY_FOLDERS)
     )
@@ -112,10 +117,8 @@ class GameConfig:
     special_speakers: frozenset[str] = field(
         default_factory=lambda: frozenset(DEFAULT_SPECIAL_SPEAKERS)
     )
-    player_folder: str | None = DEFAULT_PLAYER_FOLDER
-    player_aliases: tuple[str, ...] = field(
-        default_factory=lambda: tuple(DEFAULT_PLAYER_ALIASES)
-    )
+    player_folder: str | None = None
+    player_aliases: tuple[str, ...] = field(default_factory=tuple)
     path_aliases: dict[str, str] = field(
         default_factory=lambda: dict(DEFAULT_PATH_ALIASES)
     )
@@ -124,6 +127,10 @@ class GameConfig:
     )
     rpy_files: list[str] | None = None
     ren_py_files: list[str] | None = None
+    # Optional subset of native compose modes ("cfg", "layered_all",
+    # "conditions") to run.  ``None`` runs every mode; large games can set
+    # ``["cfg"]`` in config.json to keep a compose pass fast.
+    compose_modes: tuple[str, ...] | None = None
     script_exclusion_patterns: list[re.Pattern[str]] = field(
         default_factory=list, compare=False
     )
@@ -242,6 +249,7 @@ class GameConfig:
             "name": self.name,
             "game_root": str(self.game_root),
             "archive_dir": str(self.archive_dir),
+            "source_path": str(self.source_path) if self.source_path else None,
             "categories": dict(self.categories),
             "non_character_folders": sorted(self.non_character_folders),
             "path_aliases": dict(self.path_aliases),
@@ -350,14 +358,20 @@ def load_config(config_path: str | Path) -> GameConfig:
         name=str(data.get("source_game") or config_path.stem),
         game_root=game_folder,
         archive_dir=archive_dir,
+        source_path=(
+            _resolve_project(str(data["source_path"]))
+            if data.get("source_path")
+            else None
+        ),
         categories=categories,
         rpy_files=rpy_files,
         ren_py_files=ren_py_files,
+        compose_modes=tuple(data.get("compose_modes") or ()) or None,
         script_exclusion_patterns=script_exclusion_patterns,
         image_exclusion_patterns=image_exclusion_patterns,
         special_speakers=frozenset(
             data.get("special_speakers") or DEFAULT_SPECIAL_SPEAKERS
         ),
-        player_folder=str(data.get("player_folder") or DEFAULT_PLAYER_FOLDER),
-        player_aliases=tuple(data.get("player_aliases") or DEFAULT_PLAYER_ALIASES),
+        player_folder=str(data.get("player_folder")) if data.get("player_folder") else None,
+        player_aliases=tuple(data.get("player_aliases") or ()),
     )

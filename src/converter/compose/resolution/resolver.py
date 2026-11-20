@@ -59,7 +59,7 @@ class Resolver:
                 # Two files cannot share one relative path; first occurrence wins.
                 self._archive_index.setdefault(relative, path)
                 self._name_index[path.name.lower()].append(path)
-        except OSError, ValueError:
+        except (OSError, ValueError):
             # An unreadable archive directory falls back to direct-join only.
             pass
 

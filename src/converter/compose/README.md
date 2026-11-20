@@ -20,11 +20,14 @@ in the compose or apply logic.
 
 The flow is:
 
-1. **Compose** (`composer.py`): statically scans the game's indexed ``.rpy``
-   scripts for ``layeredimage`` blocks, ``screen`` blocks, and ``image``
-   declarations that reference asset folders.  Resolves literal paths and
-   conditions, composites the referenced PNGs into a single image per unique
-   stack, and writes per-category manifests under ``<output_dir>/reports/``.
+1. **Compose** (v2, native): extraction and rendering run **inside the game's
+   own Ren'Py runtime** (see ``native/README.md``).  The bundled runtime is
+   launched headlessly, the compiled labels are walked for ``show``/``scene``
+   states, layered images and image declarations are resolved by the real
+   displayables, and every state is rendered natively.  Screen stacks are still
+   resolved statically.  Results are adapted into the same
+   ``CompositeRecord``/``CompositeManifest`` objects and written as per-category
+   manifests under ``<output_dir>/reports/``.
 2. **Apply** (`applier.py`): reads the manifest, rewrites ``show``/``scene``
    statements in live scripts to point at generated composite tags (or emits
    runtime ``ConditionSwitch`` wrappers when state is dynamic), declares every
@@ -49,7 +52,8 @@ decompile subpackage).  No ``--game`` lookup is needed.
 | ``conditions/`` | Static condition evaluation, call-state reconstruction, interprocedural label states |
 | ``compositing/`` | Image compositing (CPU via PIL, strategy pattern) |
 | ``association/`` | Character inference for XXX (scene/adult) composites |
-| ``compose_pass/`` | Compose pass orchestration (3 passes: layeredimage, image declarations, screen stacks) |
+| ``compose_pass/`` | Compose pass orchestration (delegates extraction to the native stage) |
+| ``native/`` | Native Ren'Py compose stage: runtime discovery, disposable workspace, headless batches, record adaptation (see ``native/README.md``) |
 | ``records/`` | Composite record construction, enrichment, and deduplication |
 | ``apply_pass/`` | Apply pass orchestration (script rewriting, declarations, report) |
 | ``manifest/`` | Manifest read/write (per-category + index) |
@@ -113,6 +117,7 @@ stored in the JSON; they default to ``<game_root>/composites/...`` via
 - ``name`` — human-readable game identifier (from ``source_game`` in config.json).
 - ``game_root`` — the Ren'Py ``\game`` folder (contains the ``.rpy`` scripts).
 - ``archive_dir`` — extracted asset archive (always ``game_root / archive``).
+- ``source_path`` — bundled Ren'Py runtime used by the native compose stage.
 - ``categories`` — canonical category -> asset folder name (``bg``, ``char``,
   ``scene``, ``gui``).  Defaults: ``{"bg": "bgs", "char": "chars",
   "scene": "xxx", "gui": "gui"}``.
@@ -121,6 +126,10 @@ stored in the JSON; they default to ``<game_root>/composites/...`` via
 - ``game_defaults`` — default Ren'Py variable values for static condition eval
   (e.g. ``{"month": 6, "day": 1}``).
 - ``rpy_files`` / ``ren_py_files`` — scripts to scan during compose (from config.json).
+- ``compose_modes`` — optional subset of the native compose modes (``cfg``,
+  ``layered_all``, ``conditions``) read from config.json.  Omitted (or empty)
+  runs every mode; large games can set ``"compose_modes": ["cfg"]`` to keep a
+  compose pass fast.
 - ``script_exclusion_patterns`` / ``image_exclusion_patterns`` — compiled regex
   filters from the ``exclusion`` block of config.json.
 - ``output_dir`` — where composite PNGs are written (default:
@@ -293,6 +302,14 @@ compose/
 │   ├── __init__.py
 │   ├── strategy.py  # CompositorStrategy protocol
 │   └── cpu.py       # CPUCompositor, Compositor
+├── native/          # Native Ren'Py compose stage (see native/README.md)
+│   ├── constants.py # Protocol + safety limits
+│   ├── discovery.py # Bundled runtime discovery
+│   ├── workspace.py # Disposable game workspace
+│   ├── process.py   # Headless subprocess batches
+│   ├── protocol.py  # Native result validation
+│   ├── stage.py     # run_composite_stage + record adaptation
+│   └── runtime/     # Injected composite_export.rpy
 ├── association/     # Character inference for XXX composites
 │   ├── __init__.py
 │   └── associator.py  # CharacterAssociator
@@ -346,15 +363,50 @@ Under ``<output_dir>/reports/``:
 
 The apply pass loads the index and merges all category manifests in memory.
 
+### Composite output layout
+
+Generated PNGs keep a navigable folder structure under
+``<output_dir>/<status>/<family>/``. The folder chain mirrors the game's own
+asset tree, with two rules that keep the tree browsable:
+
+- **Character composites gather in one folder per character.** Sprite asset
+  folders nest by body part (``chars/emma/ArmL/``, ``chars/hazel/face/``), so
+  grouping by those would scatter a character's composites. Every composite of
+  a character lands in ``static/char/<character>/`` regardless of which sprite
+  subfolders its layers came from, and shared prop layers
+  (``chars/clothes/...``) never hijack the folder.
+- **Other categories mirror the asset tree** below their category folder, as
+  deep as a majority of the composite's layers share it:
+  ``bgs/home/alchemy/`` -> ``static/bg/home/alchemy/``.
+
+Filenames stay ``<tag>__<digest>.png`` so the apply pass can derive a unique
+script tag per composite.
+
+```
+composites/
+├── reports/            # split manifests + characters.json + review_pending.json
+└── static/
+    ├── bg/             # backgrounds (mirrors bgs/)
+    │   ├── bgCandyMountain__9f2c….png
+    │   └── home/bgHome__5a78….png
+    ├── char/           # one folder per character
+    │   ├── amber/am__6b7c….png
+    │   └── player/you__f1d4….png
+    ├── scene/          # scenes/CGs (mirrors xxx/)
+    │   └── hazel/bed/sex/haXS1__8013….png
+    └── gui/            # interface elements (mirrors gui/)
+```
+
 ### Character catalog
 
 ``characters.json`` is seeded during a non-dry-run compose pass. Its entries
-come only from Ren'Py ``Character(...)`` declarations in the configured scripts;
-source asset directories are not catalog entries on their own. The existing
-canonicalization and alias rules are retained, and manually added aliases are
-preserved for characters that still have a matching declaration. Each
-``folder`` value points to the generated static character-composite directory
-relative to the game root, for example
+come from Ren'Py ``Character(...)`` declarations in the configured scripts plus
+characters that only the native stage could discover in the runtime's
+``ADVCharacter`` registry; statically-parsed declarations always win. The
+existing canonicalization and alias rules are retained, and manually added
+aliases are preserved for characters that still have a matching declaration.
+Each ``folder`` value points to the generated static character-composite
+directory relative to the game root, for example
 ``composites/static/char/amber``. When a declaration's image tag identifies an
 emitted composite, the catalog uses that composite's generated folder; otherwise
 it uses the canonical generated character path.
