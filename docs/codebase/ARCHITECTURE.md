@@ -5,7 +5,7 @@
 ### 1) Architectural Style
 
 - Primary style: modular, config-driven pipeline with two top-level modules (`agent` and `converter`).
-- Why this classification: source tree is split into `src/agent/` (OpenCode orchestration) and `src/converter/` (Ren'Py conversion toolkit with `decompile`/`compose`/`restore` subpackages); the converter stages run sequentially through `src/converter/pipeline.py` and share state via the decompile-generated `src/converter/config.json` (game config).
+- Why this classification: source tree is split into `src/agent/` (OpenCode orchestration) and `src/converter/` (Ren'Py conversion toolkit with `decompile`/`compose`/`restore` subpackages); the canonical converter stages run through `src/converter/decompile/flow.py` and `src/converter/pipeline.py`, sharing the newly generated `src/converter/config.json` (game config).
 - Primary constraints:
   - No `--game` argument: all stages are config-driven via `src/converter/config.json` (produced by decompile).
   - Game assets live under `src/renpy_game/` (gitignored); the consolidated work folder `src/renpy_game/game/` is regenerated on each decompile run.
@@ -18,13 +18,14 @@ user places game under src/renpy_game/<game>/
         |
         v
 decompile (src/converter/decompile/):
-  find_game_folder() -> copy/stage .rpa/.rpyc/.rpy -> extract .rpa alongside ->
-  decompile .rpyc -> .rpy -> scan image categories -> write src/converter/config.json
+  find_game_folder() -> stage .rpa/.rpyc/.rpy -> extract .rpa alongside ->
+  decompile compiled scripts -> scan image categories ->
+  write src/converter/config.json
         |
         v
 compose (src/converter/compose/):
-  index_scripts() (layeredimage/screen/image declarations) ->
-  enumerate condition variants -> composite PNGs (PIL) ->
+  index_scripts() -> create isolated native workspace ->
+  enumerate/render states with the bundled Ren'Py runtime ->
   write per-category manifests + manifest_index.json under <game>/composites/reports/
         |
         v
@@ -39,12 +40,12 @@ restore (src/converter/restore/):
 ```
 
 Describe the flow in 4-6 steps using file-backed evidence:
-1. `src/converter/decompile/discovery.py` `find_game_folder()` locates the first `game` folder under `src/renpy_game` (excludes the consolidated `src/renpy_game/game` output on re-runs).
-2. `src/converter/decompile/flow.py` `process_game()` runs find → copy → extract → decompile → detect categories → write `config.json`; `src/converter/decompile/config.py` `write_config` persists game folder, rpy files, extracted archives, and image categories.
-3. `src/converter/pipeline.py` `run_pipeline()` decompiles/extracts, then runs `Composer` (compose only; apply deferred so user can verify output first).
-4. `src/converter/compose/composer.py` `Composer.compose()` indexes scripts (`parser.index_scripts`), computes interprocedural label states (`conditions.compute_interprocedural_label_states`), enumerates consistent condition variants, and composites PNGs via `compositor.Compositor` (CPU/PIL); `manifest.ManifestWriter` writes per-category manifests + index.
-5. `src/converter/compose/applier.py` `Applier.apply()` loads manifests, rewrites `show`/`scene` statements to composite tags, emits `ConditionSwitch` wrappers for dynamic state, writes `game/composite_images.rpy` declarations and an adoption report; idempotent (refuses to touch a line whose text no longer matches the recorded statement).
-6. `src/converter/restore/restore.py` `restore_from_manifest()` / `restore_rpy_files()` re-extract `.rpy` from `archive.rpa` using `rpa-toolkit` to undo compose/apply; `restore_decompile()` removes the extracted game folder and `config.json`.
+1. `src/converter/decompile/discovery.py` `find_game_folder()` locates the first `game` folder under `src/renpy_game` (excluding the consolidated `src/renpy_game/game` output).
+2. `src/converter/decompile/flow.py` `prepare_game()` runs find → stage → extract → decompile → detect categories → write `config.json` without modifying the source game; `process_game()` adds the optional interactive compose follow-up.
+3. `src/converter/pipeline.py` `run_pipeline()` delegates to `prepare_game()`, loads the config written by that same run, and invokes compose (apply remains deferred for review).
+4. `src/converter/compose/compose_pass/orchestrate.py` `Composer.compose()` delegates to the native Ren'Py stage, which indexes scripts, creates an isolated workspace, enumerates runtime states, renders through the bundled Ren'Py runtime, and writes the split manifests.
+5. `src/converter/compose/apply_pass/applier.py` `Applier.apply()` loads manifests, rewrites `show`/`scene` statements to composite tags, emits `ConditionSwitch` wrappers for dynamic state, writes `game/composite_images.rpy` declarations and an adoption report; idempotent (refuses to touch a line whose text no longer matches the recorded statement).
+6. `src/converter/restore/restore.py` provides archive-scoped and source-tree restoration paths; the compose CLI currently uses source-tree restoration.
 
 ### 3) Layer/Module Responsibilities
 
@@ -54,7 +55,7 @@ Describe the flow in 4-6 steps using file-backed evidence:
 | `src/agent/config.py` | Load/validate bundled model profiles from `src/agent/config.json` (provider, model_name, context_limit) | Network I/O, OpenCode launch | `src/agent/config.py` |
 | `src/agent/nvidia_proxy.py` | FastAPI reverse proxy to `integrate.api.nvidia.com`, ~36 RPM rate limiter, retry on 429 | Profile selection, Ollama, conversation monitoring | `src/agent/nvidia_proxy.py` |
 | `src/agent/monitor.py` | Context-window monitor; saves Markdown backups to `logs/conversations/` near context limit | Proxy, profile loading | `AGENTS.md` §5; `src/agent/cli.py` (`ConversationMonitor`) |
-| `src/converter/pipeline.py` | End-to-end decompile → compose orchestration | Image compositing internals, proxy | `src/converter/pipeline.py` |
+| `src/converter/pipeline.py` | End-to-end staged decompile → compose orchestration | Image compositing internals, proxy | `src/converter/pipeline.py` |
 | `src/converter/decompile/` | Game-folder discovery, `.rpa` extraction, `.rpyc` decompilation, image-category scan, `config.json` generation | Compositing, script rewriting | `src/converter/decompile/README.md` |
 | `src/converter/compose/` | Script parsing, path resolution, condition evaluation, compositing, manifests, apply, declarations | Game discovery, `.rpa` extraction, OpenCode | `src/converter/compose/README.md` |
 | `src/converter/restore/` | Revert `.rpy` from `archive.rpa`; undo decompile | Creating composites | `src/converter/restore/restore.py` |
@@ -74,7 +75,7 @@ Describe the flow in 4-6 steps using file-backed evidence:
 
 ### 5) Known Architectural Risks
 
-- No test suite or CI/CD detected: architectural changes have no automated safety net (see `CONCERNS.md`).
+- Automated tests and CI now cover orchestration/config boundaries, but native rendering, review, apply, and restore still lack end-to-end coverage (see `TESTING.md`).
 - `rpa-toolkit` is a git dependency pinned to a commit SHA (`pyproject.toml`); if the git reference becomes unavailable, installs break.
 - `opencode.json` is auto-generated and overwritten by the agent CLI on each profile launch; manual edits are not durable (`AGENTS.md` §3; `src/agent/cli.py`).
 - Modelfile `PARAMETER num_ctx` must match `context_limit` in `src/agent/config.json` profile entries, or context-window monitoring may be inaccurate (`AGENTS.md` §5).

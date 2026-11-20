@@ -124,7 +124,9 @@ def compose_game(
 ) -> None:
     """Run the compose pass and write the split category manifests."""
     rule("Creating composites")
-    if clean:
+    if clean and dry_run:
+        info("Dry run: previous composite output was not removed.")
+    elif clean:
         substep("Removing previous composite output", last=True)
         clean_output(config)
 

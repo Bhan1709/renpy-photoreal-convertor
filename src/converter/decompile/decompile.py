@@ -53,10 +53,18 @@ def _default(
     ),
 ) -> None:
     """Run the interactive menu when no subcommand is given."""
+    state = ctx.ensure_object(dict)
+    state["dry_run"] = dry_run
     if ctx.invoked_subcommand is not None:
         return
     code = _interactive(dry_run=dry_run)
     raise typer.Exit(code)
+
+
+def _effective_dry_run(ctx: typer.Context, command_dry_run: bool) -> bool:
+    """Combine root-level and subcommand dry-run options."""
+    state = ctx.ensure_object(dict)
+    return bool(command_dry_run or state.get("dry_run", False))
 
 
 def _run_pipeline(dry_run: bool = False) -> int:
@@ -67,23 +75,26 @@ def _run_pipeline(dry_run: bool = False) -> int:
         error(f"Decompile failed: {exc}")
         return 1
 
-    if isinstance(result, dict):
-        print_summary(
-            "Decompile summary",
-            [
-                ("Game folder", str(result.get("game_folder"))),
-                ("Source game", str(result.get("source_game"))),
-                ("Files copied", str(result.get("copied", 0))),
-                (
-                    "Archives extracted",
-                    str(len(result.get("extracted_archives", []))),
-                ),
-                (".rpyc decompiled", str(result.get("decompiled", 0))),
-                ("Config written", str(result.get("config"))),
-            ],
-        )
-        return 0
-    return 1
+    if not result.get("success"):
+        error("Decompile did not complete successfully.")
+        return 1
+
+    print_summary(
+        "Decompile summary",
+        [
+            ("Game folder", str(result.get("game_folder"))),
+            ("Source game", str(result.get("source_game"))),
+            ("Files copied", str(result.get("copied", 0))),
+            (
+                "Archives extracted",
+                str(len(result.get("extracted_archives", []))),
+            ),
+            (".rpyc decompiled", str(result.get("decompiled", 0))),
+            ("Config written", str(result.get("config"))),
+        ],
+    )
+    compose_exit_code = result.get("compose_exit_code")
+    return int(compose_exit_code) if isinstance(compose_exit_code, int) else 0
 
 
 def _clean_decompile(dry_run: bool = False) -> int:
@@ -119,39 +130,43 @@ def _clean_decompile(dry_run: bool = False) -> int:
 
 @app.command()
 def clean(
+    ctx: typer.Context,
     dry_run: bool = typer.Option(
         False, "--dry-run", help="Show what would be removed without doing it"
     ),
-) -> int:
+) -> None:
     """Remove generated .rpy files and extracted archive folders."""
-    return _clean_decompile(dry_run=dry_run)
+    raise typer.Exit(_clean_decompile(dry_run=_effective_dry_run(ctx, dry_run)))
 
 
 @app.command()
 def decompile(
+    ctx: typer.Context,
     dry_run: bool = typer.Option(
         False,
         "--dry-run",
         help="Preview the decompile steps without changing any files.",
     ),
-) -> int:
+) -> None:
     """Extract archives, restore readable scripts, and write config.json."""
-    return _run_pipeline(dry_run=dry_run)
+    raise typer.Exit(_run_pipeline(dry_run=_effective_dry_run(ctx, dry_run)))
 
 
 @app.command()
 def clean_decompile(
+    ctx: typer.Context,
     dry_run: bool = typer.Option(
         False,
         "--dry-run",
         help="Preview the decompile steps without changing any files.",
     ),
-) -> int:
+) -> None:
     """Remove previous decompile output, then decompile the game."""
-    clean_code = _clean_decompile(dry_run=dry_run)
-    if clean_code != 0 and not dry_run:
-        return clean_code
-    return _run_pipeline(dry_run=dry_run)
+    effective_dry_run = _effective_dry_run(ctx, dry_run)
+    clean_code = _clean_decompile(dry_run=effective_dry_run)
+    if clean_code != 0 and not effective_dry_run:
+        raise typer.Exit(clean_code)
+    raise typer.Exit(_run_pipeline(dry_run=effective_dry_run))
 
 
 def _interactive(dry_run: bool = False) -> int:

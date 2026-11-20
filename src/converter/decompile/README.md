@@ -55,7 +55,7 @@ src/
 │   │   ├── decompile_files.py  # decompile_rpyc_files (via rpa-toolkit)
 │   │   ├── discovery.py     # find_game_folder, find_game_folders
 │   │   ├── extract.py       # extract_rpa_file, extract_all_rpa
-│   │   ├── flow.py          # process_game, process_all_games (end-to-end flow)
+│   │   ├── flow.py          # prepare_game, process_game, process_all_games
 │   │   ├── restore.py       # restore_decompile (undo decompile outputs)
 │   │   ├── scan.py          # scan_source_files, scan_extracted_archives, scan_image_categories
 │   │   ├── staging.py       # copy_game_files
@@ -100,13 +100,13 @@ To drop a script from the pass, delete it from the game folder.
 ### Via Python Import
 
 ```python
-from src.converter.decompile import process_game, process_all_games
+from converter.decompile import prepare_game, process_game
 
-# Process the first game found under src/renpy_game
+# Process the first game found under src/renpy_game without prompting
+prepare_game()
+
+# Run the same core flow with the optional interactive compose follow-up
 process_game()
-
-# Or process every game found
-process_all_games()
 ```
 
 ### Via mise tasks
@@ -122,9 +122,10 @@ mise run compose                      # Next step: compose menu
 
 ### Discovery
 
-#### `find_game_folder(renpy_games=Path("src/renpy_game"))`
+#### `find_game_folder(renpy_games=Path("src/renpy_game"), *, exclude=None)`
 Returns the first directory named `game` found under `src/renpy_game`. Skips
-the consolidated output folder (`src/renpy_game/game`) on re-runs.
+the consolidated output folder (`src/renpy_game/game`) on re-runs, or a custom
+staging path supplied through `exclude`.
 
 **Returns:** `Path | None`
 
@@ -141,7 +142,7 @@ subpackages.
 ### Staging
 
 #### `copy_game_files(game_folder, dest=Path("src/renpy_game/game"))`
-Copies `.rpa`, `.rpyc`, `.rpy`, and `_ren.py` files from `game_folder` into
+Copies `.rpa`, `.rpyc`, `.rpymc`, `.rpy`, and `_ren.py` files from `game_folder` into
 `dest`, preserving relative directory structure. `dest` is recreated cleanly.
 
 **Returns:** `list[Path]` of copied destination paths.
@@ -187,16 +188,24 @@ known Ren'Py folder names. Falls back to Pillow color mode (`RGBA → char`,
 
 #### `write_config(game_folder, source_game, source_path, extracted_archives=None, image_categories=None, config_path=...)`
 Writes `src/converter/config.json` with the discovered scripts, extracted
-archives, and image categories.
+archives, and image categories. Existing user-controlled compose settings are
+preserved, and the file is replaced atomically.
 
 #### `load_config(config_path=...)`
 Loads `config.json`; returns `{}` if missing or invalid.
 
 ### Flow
 
+#### `prepare_game(renpy_games=..., dest=..., config_path=..., *, dry_run=False)`
+Runs the non-interactive core of the canonical flow (find → copy → extract →
+decompile → detect categories → write config). The source game is never
+modified; all work happens in the staged destination. The destination must not
+overlap the source game's folder.
+
+**Returns:** typed `DecompileRun` result.
+
 #### `process_game(renpy_games=..., dest=..., config_path=..., *, dry_run=False)`
-Runs the full generalized decompile flow for one game (find → copy → extract
-→ decompile → detect categories → write config).
+Runs `prepare_game()` and then offers the interactive compose follow-up.
 
 **Returns:** summary dict.
 
@@ -265,7 +274,9 @@ needed.
 **Mode-based fallback**: when no category folders exist, each image is
 classified by its Pillow color mode (lazy header read, no pixel decode):
 `RGBA → char`, `RGB → scene`. Stored with
-`classification_method: "mode_based"`.
+`classification_method: "mode_based"`. This diagnostic classification does not
+define folder names, so compose requires a manual folder-based mapping before
+it can use that config.
 
 Image extensions handled: `.png`, `.webp`, `.avif`, `.jpeg`, `.jpg`.
 
@@ -290,6 +301,10 @@ Example config output:
 ### `.mise.toml`
 
 ```toml
+[tasks.test]
+description = "Run the automated test suite"
+run = "uv run pytest"
+
 [tasks.decompile]
 description = "Decompile a Ren'Py game (interactive: clean, decompile, clean+decompile, or quit)"
 run = "python -m converter.decompile"
@@ -318,16 +333,16 @@ dependencies = [
 
 ### Pattern 1: Run the full flow
 ```python
-from src.converter.decompile import process_game
+from converter.decompile import prepare_game
 
-summary = process_game()
-print(summary["config"])          # Path to written config.json
-print(summary["image_categories"])  # Detected category naming map
+result = prepare_game()
+print(result.config)               # Path to written config.json
+print(result.image_categories)     # Detected category naming map
 ```
 
 ### Pattern 2: Decompile specific files only
 ```python
-from src.converter.decompile.decompile_files import decompile_rpyc_files
+from converter.decompile import decompile_rpyc_files
 from pathlib import Path
 
 count = decompile_rpyc_files(Path("src/renpy_game/my_game/game"))
@@ -336,7 +351,7 @@ print(f"{count} files decompiled")
 
 ### Pattern 3: Extract a specific .rpa only
 ```python
-from src.converter.decompile.extract import extract_rpa_file
+from converter.decompile import extract_rpa_file
 from pathlib import Path
 
 extract_rpa_file(Path("src/renpy_game/my_game/archive.rpa"))
@@ -345,9 +360,9 @@ extract_rpa_file(Path("src/renpy_game/my_game/archive.rpa"))
 
 ### Pattern 4: Use cached path in other modules
 ```python
-from src.converter.decompile import find_game_folder, get_game_folder_rel_path
+from converter.decompile import get_game_folder_rel_path, prepare_game
 
-game_folder = find_game_folder()
+result = prepare_game()
 cached = get_game_folder_rel_path()
 ```
 
@@ -361,7 +376,7 @@ cached = get_game_folder_rel_path()
 |---|---|
 | `No game folders found` | Ensure games are placed in `src\renpy_game\` with `\game` subfolder |
 | `Error: The given file is not a valid Ren'Py archive` | Verify the `.rpa` file is a valid Ren'Py RPA v2/v3 format |
-| `Failed to decompile: ...` | Some `.rpyc` files may use obfuscation; try with `--try-harder` flag via CLI |
+| `Failed to decompile: ...` | Inspect the reported file error; unsupported or obfuscated scripts are treated as a failed preparation run |
 | `ModuleNotFoundError: rpatool` | Run `uv add git+https://github.com/regiellis/rpa-toolkit.git@435f202e7cb9aeeaf6c006cf928d9661f8830e6e` |
 | `ModuleNotFoundError: PIL` | Pillow is required for image mode-based classification |
 

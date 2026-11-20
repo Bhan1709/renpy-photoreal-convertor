@@ -10,7 +10,7 @@ GAME_FOLDER = RENPY_GAMES / "game"
 CONFIG_PATH = ROOT / "converter" / "config.json"
 
 # File kinds we consolidate when staging a game.
-COPY_EXTENSIONS = {".rpa", ".rpyc", ".rpy"}
+COPY_EXTENSIONS = {".rpa", ".rpyc", ".rpymc", ".rpy"}
 COPY_FILENAMES = {"_ren.py"}
 
 # Image file extensions we care about for category classification.

@@ -98,16 +98,23 @@ it is loaded from the decompile-generated ``src/converter/config.json`` via
 ```
 
 Paths in ``config.json`` are relative to the project root (the directory
-containing ``src/``).  ``game_folder`` is resolved against the project root, and
-``archive_dir`` is always ``game_folder / archive``.  Output locations are not
-stored in the JSON; they default to ``<game_root>/composites/...`` via
-:meth:`GameConfig.resolved_paths`.
+containing ``src/``). ``game_folder`` is resolved against the project root,
+and ``archive_dir`` is derived from the ``extracted_archives`` recorded by
+decompile (falling back to ``game_folder / archive``). Output locations may be
+stored in the JSON; otherwise they default to
+``<game_root>/composites/...`` via :meth:`GameConfig.resolved_paths`.
+Category folders and path-alias sources/targets must remain relative to their
+intended asset roots; absolute, drive-qualified, or parent-traversing values
+are rejected before compose starts.
 
 ### :class:`GameConfig` fields
 
 - ``name`` — human-readable game identifier (from ``source_game`` in config.json).
 - ``game_root`` — the Ren'Py ``\game`` folder (contains the ``.rpy`` scripts).
-- ``archive_dir`` — extracted asset archive (always ``game_root / archive``).
+- ``archive_dir`` — primary extracted asset archive, derived from the
+  decompile config's ``extracted_archives`` metadata.
+- ``archive_dirs`` — every extracted asset archive; the first is the primary
+  archive represented by ``archive_dir``.
 - ``source_path`` — bundled Ren'Py runtime used by the native compose stage.
 - ``categories`` — canonical category -> asset folder name (``bg``, ``char``,
   ``scene``, ``gui``).  Defaults: ``{"bg": "bgs", "char": "chars",
@@ -206,10 +213,10 @@ The full pipeline is also available through :mod:`converter.pipeline` (which
 adds the decompile stage):
 
 ```bash
-uv run python -m converter.pipeline                  # decompile -> compose (apply deferred)
+uv run python -m converter.pipeline                  # stage -> decompile -> compose (apply deferred)
 uv run python -m converter.pipeline --compose-only   # compose only (skip decompile)
 uv run python -m converter.pipeline --apply-only     # apply only (needs manifest)
-uv run python -m converter.pipeline --dry-run        # compose without writing
+uv run python -m converter.pipeline --dry-run        # plan only; no staging or writes
 ```
 
 Restore-compose is a compose CLI action (single point of entry):
@@ -222,6 +229,7 @@ uv run python -m converter.compose restore --dry-run # preview without writing
 Or via mise tasks:
 
 ```bash
+mise run test             # automated test suite
 mise run decompile        # decompile + extract, write config.json
 mise run compose          # interactive compose
 python -m converter.compose restore  # restore game folder from source, keep composites
