@@ -68,8 +68,7 @@ def index_scripts(config: GameConfig) -> ScriptIndex:
     walks).  Each file is opened and read exactly once here; every downstream
     pass consumes the in-memory index instead of re-reading from disk.
     """
-    include = set(config.rpy_files) if config.rpy_files else None
-    script_files = files(config, include=include)
+    script_files = files(config)
     per_file: dict[Path, FileIndex] = {}
     layeredimage_defs: dict[str, tuple[ScriptBlock, list[Layer]]] = {}
     screens: dict[str, ScriptBlock] = {}

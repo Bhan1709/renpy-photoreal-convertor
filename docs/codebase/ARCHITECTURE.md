@@ -40,8 +40,8 @@ restore (src/converter/restore/):
 
 Describe the flow in 4-6 steps using file-backed evidence:
 1. `src/converter/decompile/discovery.py` `find_game_folder()` locates the first `game` folder under `src/renpy_game` (excludes the consolidated `src/renpy_game/game` output on re-runs).
-2. `src/converter/decompile/flow.py` `process_game()` runs find → copy → extract → decompile → detect categories → write `config.json`; `src/converter/decompile/config.py` `write_config` persists game folder, rpy files, extracted archives, image categories, and exclusion patterns.
-3. `src/converter/pipeline.py` `run_pipeline()` decompiles/extracts, prompts for exclusion patterns, then runs `Composer` (compose only; apply deferred so user can verify output first).
+2. `src/converter/decompile/flow.py` `process_game()` runs find → copy → extract → decompile → detect categories → write `config.json`; `src/converter/decompile/config.py` `write_config` persists game folder, rpy files, extracted archives, and image categories.
+3. `src/converter/pipeline.py` `run_pipeline()` decompiles/extracts, then runs `Composer` (compose only; apply deferred so user can verify output first).
 4. `src/converter/compose/composer.py` `Composer.compose()` indexes scripts (`parser.index_scripts`), computes interprocedural label states (`conditions.compute_interprocedural_label_states`), enumerates consistent condition variants, and composites PNGs via `compositor.Compositor` (CPU/PIL); `manifest.ManifestWriter` writes per-category manifests + index.
 5. `src/converter/compose/applier.py` `Applier.apply()` loads manifests, rewrites `show`/`scene` statements to composite tags, emits `ConditionSwitch` wrappers for dynamic state, writes `game/composite_images.rpy` declarations and an adoption report; idempotent (refuses to touch a line whose text no longer matches the recorded statement).
 6. `src/converter/restore/restore.py` `restore_from_manifest()` / `restore_rpy_files()` re-extract `.rpy` from `archive.rpa` using `rpa-toolkit` to undo compose/apply; `restore_decompile()` removes the extracted game folder and `config.json`.
@@ -54,11 +54,11 @@ Describe the flow in 4-6 steps using file-backed evidence:
 | `src/agent/config.py` | Load/validate bundled model profiles from `src/agent/config.json` (provider, model_name, context_limit) | Network I/O, OpenCode launch | `src/agent/config.py` |
 | `src/agent/nvidia_proxy.py` | FastAPI reverse proxy to `integrate.api.nvidia.com`, ~36 RPM rate limiter, retry on 429 | Profile selection, Ollama, conversation monitoring | `src/agent/nvidia_proxy.py` |
 | `src/agent/monitor.py` | Context-window monitor; saves Markdown backups to `logs/conversations/` near context limit | Proxy, profile loading | `AGENTS.md` §5; `src/agent/cli.py` (`ConversationMonitor`) |
-| `src/converter/pipeline.py` | End-to-end decompile → exclusions prompt → compose orchestration | Image compositing internals, proxy | `src/converter/pipeline.py` |
+| `src/converter/pipeline.py` | End-to-end decompile → compose orchestration | Image compositing internals, proxy | `src/converter/pipeline.py` |
 | `src/converter/decompile/` | Game-folder discovery, `.rpa` extraction, `.rpyc` decompilation, image-category scan, `config.json` generation | Compositing, script rewriting | `src/converter/decompile/README.md` |
 | `src/converter/compose/` | Script parsing, path resolution, condition evaluation, compositing, manifests, apply, declarations | Game discovery, `.rpa` extraction, OpenCode | `src/converter/compose/README.md` |
 | `src/converter/restore/` | Revert `.rpy` from `archive.rpa`; undo decompile | Creating composites | `src/converter/restore/restore.py` |
-| `src/converter/config.json` (generated) | GameConfig: game folder, rpy_files, extracted archives, image categories, exclusions | Runtime state (written once by decompile) | `src/converter/config.json`; `src/converter/compose/config.py` |
+| `src/converter/config.json` (generated) | GameConfig: game folder, rpy_files, extracted archives, image categories | Runtime state (written once by decompile) | `src/converter/config.json`; `src/converter/compose/config.py` |
 
 ### 4) Reused Patterns
 

@@ -41,7 +41,7 @@ uv run ruff                      # lint (zero errors required before PR)
 uv run mypy src/                 # type check (zero issues required before PR)
 mise run agent <profile>         # launch OpenCode with a model profile
 mise run decompile               # decompile .rpyc + extract .rpa, write config.json
-mise run compose                 # interactive compose (exclusions only for compose actions)
+mise run compose                 # interactive compose
 python -m converter.compose restore  # restore game folder from source, keep composites
 python -m agent <profile>        # agent CLI entry point (src/agent/__main__.py)
 python -m converter.compose      # compose entry point (src/converter/compose/cli.py)

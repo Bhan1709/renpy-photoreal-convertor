@@ -90,10 +90,11 @@ class GameConfig:
             that should be redirected to an alternate path when resolving.
         game_defaults: Default Ren'Py variable values used for static condition
             evaluation (e.g. ``{"month": 6, "day": 1}``).
-        rpy_files: Scripts to scan during compose, relative to ``game_root``.
-            When set (from the decompile-generated config.json), compose only
-            parses these .rpy files instead of sweeping the whole game folder.
-        ren_py_files: ``_ren.py`` scripts to scan, relative to ``game_root``.
+        rpy_files: Scripts recorded by decompile, relative to ``game_root``.
+            Kept for configuration compatibility; compose now scans every live
+            script under ``game_root`` instead of trusting this list.
+        ren_py_files: ``_ren.py`` scripts recorded by decompile, relative to
+            ``game_root``. Kept for compatibility only.
         output_dir: Directory where generated composite PNGs are written.
             Defaults to ``<game_root>/composites``.
         manifest_path: Path to the manifest JSON produced by the compose pass.
@@ -131,12 +132,6 @@ class GameConfig:
     # "conditions") to run.  ``None`` runs every mode; large games can set
     # ``["cfg"]`` in config.json to keep a compose pass fast.
     compose_modes: tuple[str, ...] | None = None
-    script_exclusion_patterns: list[re.Pattern[str]] = field(
-        default_factory=list, compare=False
-    )
-    image_exclusion_patterns: list[re.Pattern[str]] = field(
-        default_factory=list, compare=False
-    )
     output_dir: Path | None = None
     manifest_path: Path | None = None
     declaration_path: Path | None = None
@@ -178,18 +173,6 @@ class GameConfig:
             if name == folder:
                 return category
         return None
-
-    def is_script_excluded(self, path: str) -> bool:
-        """Return True if ``path`` matches any script exclusion pattern."""
-        return any(p.search(path) for p in self.script_exclusion_patterns)
-
-    def is_image_excluded(self, source: str) -> bool:
-        """Return True if ``source`` matches any image exclusion pattern.
-
-        ``source`` is a forward-slash asset path relative to the archive
-        directory (e.g. ``bgs/bgHome.png``).
-        """
-        return any(p.search(source) for p in self.image_exclusion_patterns)
 
     def char_dir(self) -> Path:
         return self.archive_dir / self.folder_for("char")
@@ -323,37 +306,6 @@ def load_config(config_path: str | Path) -> GameConfig:
     rpy_files = [str(p) for p in (data.get("rpy_files") or [])]
     ren_py_files = [str(p) for p in (data.get("ren_py_files") or [])]
 
-    # --- Script exclusions -------------------------------------------------- #
-    # Remove any entry from rpy_files/ren_py_files that matches a script
-    # exclusion pattern.  The remaining list is used as the include set by
-    # parser.files() and character_associator.
-    exc = data.get("exclusion") or {}
-    script_exc = exc.get("script") or {}
-    image_exc = exc.get("image") or {}
-    script_patterns_raw = script_exc.get("patterns") or []
-    image_patterns_raw = image_exc.get("patterns") or []
-
-    script_exclusion_patterns = [re.compile(p) for p in script_patterns_raw]
-
-    if script_exclusion_patterns:
-        rpy_files = [
-            p
-            for p in rpy_files
-            if not any(x.search(p) for x in script_exclusion_patterns)
-        ]
-        ren_py_files = [
-            p
-            for p in ren_py_files
-            if not any(x.search(p) for x in script_exclusion_patterns)
-        ]
-
-    # --- Image exclusions --------------------------------------------------- #
-    # Patterns matched against image source paths downstream in the compose
-    # pass (record._normalize_layers).  Stored compiled on the config.
-    image_exc = exc.get("image") or {}
-    image_patterns_raw = image_exc.get("patterns") or []
-    image_exclusion_patterns = [re.compile(p) for p in image_patterns_raw]
-
     return GameConfig(
         name=str(data.get("source_game") or config_path.stem),
         game_root=game_folder,
@@ -367,8 +319,6 @@ def load_config(config_path: str | Path) -> GameConfig:
         rpy_files=rpy_files,
         ren_py_files=ren_py_files,
         compose_modes=tuple(data.get("compose_modes") or ()) or None,
-        script_exclusion_patterns=script_exclusion_patterns,
-        image_exclusion_patterns=image_exclusion_patterns,
         special_speakers=frozenset(
             data.get("special_speakers") or DEFAULT_SPECIAL_SPEAKERS
         ),

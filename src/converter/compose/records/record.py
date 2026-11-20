@@ -114,7 +114,6 @@ def _normalize_layers(layers: list[Layer], config: GameConfig) -> list[Layer]:
         )
         for x in layers
         if any(x.source.lower().startswith(p) for p in prefixes)
-        and not config.is_image_excluded(x.source.lower())
     ]
 
 

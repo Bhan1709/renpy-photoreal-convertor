@@ -136,9 +136,9 @@ def _mirror_runtime_assets(source_game: Path, target_game: Path) -> None:
     """Mirror runtime assets into paths Ren'Py can resolve without an RPA.
 
     Extracted archives often contain a copy of the game scripts alongside the
-    asset folders.  Those copies are skipped: the live scripts are copied
-    separately (and only the configured ones), so mirroring them here would
-    register duplicate labels and stale bytecode.
+    asset folders.  Those copies are skipped: the live scripts are staged
+    separately, so mirroring them here would register duplicate labels and
+    stale bytecode.
     """
     archive = source_game / "archive"
     if archive.is_dir():

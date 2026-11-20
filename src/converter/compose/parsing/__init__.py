@@ -11,7 +11,7 @@ Public API
 ----------
 
     from converter.compose.parsing import (
-        files, index_scripts, parse_screen_stack, parse_layered,
+        files, live_scripts, index_scripts, parse_screen_stack, parse_layered,
         ScriptBlock, ScriptIndex, FileIndex, ScriptUsage,
         ImageDeclaration, find_nearby_dialog, DialogueLine,
         SHOW_SCENE_RE, SHOW_SCREEN_RE,
@@ -34,7 +34,7 @@ from .blocks import (
 )
 from .declarations import ImageDeclaration, parse_image_declarations
 from .dialog import DialogueLine, find_nearby_dialog
-from .files import files
+from .files import files, live_scripts
 from .indexer import (
     FileIndex,
     ScriptIndex,
@@ -56,6 +56,7 @@ __all__ = [
     "files",
     "find_nearby_dialog",
     "index_scripts",
+    "live_scripts",
     "parse_image_declarations",
     "parse_layered",
     "parse_screen_stack",

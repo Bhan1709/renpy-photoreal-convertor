@@ -19,12 +19,12 @@ def write_config(
     image_categories: dict | None = None,
     config_path: Path = CONFIG_PATH,
 ) -> Path:
-    r"""Write ``config.json`` with matching patterns and an exclusion parameter.
+    r"""Write ``config.json`` with the discovered game files.
 
-    The config records every discovered ``.rpy`` and ``_ren.py`` file as a
-    matching pattern, the extracted ``.rpa`` archive folders, the image
-    category naming map, plus an ``exclusion`` block the user can populate
-    with glob/substring patterns to exclude from downstream processing.
+    The config records every discovered ``.rpy`` and ``_ren.py`` file, the
+    extracted ``.rpa`` archive folders, and the image category naming map.
+    Compose scans the live game folder directly, so no exclusion patterns are
+    generated; remove unwanted scripts from the game folder itself.
     """
     source_files = scan_source_files(game_folder)
 
@@ -37,16 +37,6 @@ def write_config(
         "ren_py_files": source_files["ren_py"],
         "extracted_archives": extracted_archives or [],
         "image_categories": image_categories or {},
-        "exclusion": {
-            "script": {
-                "patterns": [],
-                "note": "Patterns matched against rpy_files/ren_py_files entries; matching entries are removed from the scan list",
-            },
-            "image": {
-                "patterns": [],
-                "note": "Patterns matched against image source paths; layers whose source starts with a matching folder are excluded from compose scanning",
-            },
-        },
     }
 
     config_path.parent.mkdir(parents=True, exist_ok=True)
@@ -60,10 +50,6 @@ def load_config(config_path: Path = CONFIG_PATH) -> dict:
 
     Returns the parsed JSON dict, or an empty dict if the file is missing
     or invalid (so callers can degrade gracefully).
-
-    Expects ``exclusion`` to use the dual
-    ``exclusion.script.patterns`` / ``exclusion.image.patterns`` format
-    written by :func:`write_config`.
     """
     try:
         return json.loads(config_path.read_text(encoding="utf-8"))

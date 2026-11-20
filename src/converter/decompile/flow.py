@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import Any
 
 from rich.console import Group  # type: ignore[attr-defined]
-from rich.table import Table
 from rich.text import Text
 
 from cli import (
@@ -50,7 +49,7 @@ def process_game(
       2. Copy relevant files into ``dest`` (``src/renpy_game/game``).
       3. Extract every ``.rpa`` alongside itself.
       4. Decompile every ``.rpyc`` into a sibling ``.rpy``.
-      5. Write ``config.json`` with matching patterns + exclusion parameter.
+      5. Write ``config.json`` with discovered scripts, archives, and categories.
 
     Returns a summary dict.
     """
@@ -108,27 +107,9 @@ def process_game(
         except ValueError:
             set_game_folder_rel_path(game_folder)
 
-    grid = Table.grid(expand=False, padding=(0, 1))
-    grid.add_column(style="dim", width=1)
-    grid.add_column()
-    grid.add_row(
-        Text.from_markup("[dim]-[/dim]"),
-        Text.from_markup(
-            f"Script exclusions: [cyan]exclusion.script.patterns[/cyan] "
-            f"in {CONFIG_PATH}"
-        ),
-    )
-    grid.add_row(
-        Text.from_markup("[dim]-[/dim]"),
-        Text.from_markup(
-            "Image exclusions: [cyan]exclusion.image.patterns[/cyan] in the same file"
-        ),
-    )
-    grid.add_row(
-        Text.from_markup("[dim]-[/dim]"),
-        Text.from_markup(
-            "[dim]Compose syncs these automatically; no separate sync step.[/dim]"
-        ),
+    note = Text.from_markup(
+        "[dim]Compose scans every script in the game folder; remove unwanted "
+        "scripts there before composing.[/dim]"
     )
 
     console.print()
@@ -137,12 +118,10 @@ def process_game(
             Text("Next step: compose photoreal composites", style="bold blue"),
             Text.from_markup("  [cyan]mise run compose[/cyan]"),
             Text.from_markup(
-                "[dim]Offers clean, compose, clean+compose, review, and apply. "
-                "Selecting compose or clean+compose checks exclusions first.[/dim]"
+                "[dim]Offers clean, compose, clean+compose, review, and apply.[/dim]"
             ),
             Text(""),
-            Text("Manual exclusion edit (optional)", style="bold blue"),
-            grid,
+            note,
         ),
         title="Decompile flow complete",
         style=MAUVE,

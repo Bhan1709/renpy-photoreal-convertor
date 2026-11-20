@@ -6,7 +6,7 @@
 
 | Item | Rule | Example | Evidence |
 |------|------|---------|----------|
-| Files | snake_case, lowercase, `.py` | `character_associator.py`, `nvidia_proxy.py`, `interactive_review.py`, `sync_exclusions_cli.py` | `src/converter/compose/`, `src/converter/decompile/`, `src/agent/` file listing (scan DIRECTORY TREE) |
+| Files | snake_case, lowercase, `.py` | `character_associator.py`, `nvidia_proxy.py`, `interactive_review.py`, `composite_export.rpy` | `src/converter/compose/`, `src/converter/decompile/`, `src/agent/` file listing (scan DIRECTORY TREE) |
 | Directories | lowercase, module/layer-based | `compose/`, `decompile/`, `restore/`, `utility/`, `Modelfiles/` | `src/converter/` tree |
 | Functions/methods | snake_case | `find_game_folder`, `load_config`, `compose`, `apply`, `restore_rpy_files`, `_process_layeredimage_uses_from_index` | `src/converter/decompile/discovery.py`, `compose/applier.py` |
 | Types/interfaces/dataclasses | PascalCase, typically frozen dataclasses | `GameConfig`, `CompositeManifest`, `CompositeRecord`, `Layer`, `UsageLocation`, `DefinitionLocation`, `AdoptionReport`, `RateLimiter`, `Profile` | `src/converter/compose/models.py`, `config.py`; `src/agent/config.py` |

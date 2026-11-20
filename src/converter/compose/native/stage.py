@@ -30,7 +30,7 @@ from ..compositing import Compositor
 from ..config import DEFAULT_CATEGORY_FOLDERS, GameConfig
 from ..errors import ConfigError, NativeProtocolError, NativeStageError
 from ..models import CompositeManifest, CompositeRecord, Layer
-from ..parsing import ScriptBlock, ScriptIndex, index_scripts
+from ..parsing import ScriptBlock, ScriptIndex, index_scripts, live_scripts
 from ..records import (
     _build_base_record,
     _determine_family_and_path,
@@ -558,10 +558,14 @@ def _engine_config(
     )
 
 
-def _script_files(config: GameConfig) -> list[str] | None:
-    """Scripts to stage into the disposable workspace (relative to game root)."""
-    scripts = list(config.rpy_files or []) + list(config.ren_py_files or [])
-    return scripts or None
+def _script_files(config: GameConfig) -> list[str]:
+    """Scripts to stage into the disposable workspace (relative to game root).
+
+    Uses the scripts actually present in the game folder, not the list recorded
+    by decompile, so the child Ren'Py engine sees the real game.  Archive and
+    generated copies are excluded to avoid duplicate labels.
+    """
+    return live_scripts(config)
 
 
 def _previous_dynamic_states(config: GameConfig) -> list[dict]:

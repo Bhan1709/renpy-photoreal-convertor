@@ -45,17 +45,5 @@
       "gui": "archive/gui",
       "scene": "archive/xxx"
     }
-  },
-  "exclusion": {
-    "script": {
-      "patterns": [
-        "archive/"
-      ],
-      "note": "Patterns matched against rpy_files/ren_py_files entries; matching entries are removed from the scan list"
-    },
-    "image": {
-      "patterns": [],
-      "note": "Patterns matched against image source paths; layers whose source starts with a matching folder are excluded from compose scanning"
-    }
   }
 }

@@ -14,9 +14,6 @@ Public API::
         scan_image_categories,
         write_config,
         load_config,
-        matches_exclusion,
-        filter_source_files,
-        sync_exclusions,
         process_game,
         process_all_games,
         restore_decompile,
@@ -45,7 +42,6 @@ from .discovery import (
     get_game_folder_rel_path,
     set_game_folder_rel_path,
 )
-from .exclusions import filter_source_files, matches_exclusion, sync_exclusions
 from .extract import extract_all_rpa, extract_rpa_file
 from .flow import process_all_games, process_game
 from .restore import restore_decompile
@@ -69,12 +65,10 @@ __all__ = [
     "decompile_rpyc_files",
     "extract_all_rpa",
     "extract_rpa_file",
-    "filter_source_files",
     "find_game_folder",
     "find_game_folders",
     "get_game_folder_rel_path",
     "load_config",
-    "matches_exclusion",
     "process_all_games",
     "process_game",
     "restore_decompile",
@@ -82,6 +76,5 @@ __all__ = [
     "scan_image_categories",
     "scan_source_files",
     "set_game_folder_rel_path",
-    "sync_exclusions",
     "write_config",
 ]

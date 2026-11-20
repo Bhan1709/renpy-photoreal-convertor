@@ -15,6 +15,7 @@ from pathlib import Path
 
 from ..config import GameConfig
 from ..errors import ComposeError
+from ..parsing.files import files
 from .eval import UNKNOWN, parse_literal
 
 # Cache for call-state reconstruction: (path_str, line_number) -> CallState.
@@ -286,21 +287,7 @@ def get_label_assignments_map(
     if cached is not None:
         return cached
 
-    if config.rpy_files:
-        include = {rel.replace("\\", "/") for rel in config.rpy_files}
-        paths = [
-            p
-            for p in config.game_root.rglob("*.rpy")
-            if p.relative_to(config.game_root).as_posix() in include
-        ]
-    else:
-        paths = [
-            p
-            for p in config.game_root.rglob("*.rpy")
-            if p.name != "composite_images.rpy"
-            and "cache" not in p.parts
-            and "archive" not in p.parts
-        ]
+    paths = files(config)
 
     mapping: dict[str, list[tuple[str, str]]] = {}
     for path in sorted(paths, key=lambda p: p.as_posix().lower()):

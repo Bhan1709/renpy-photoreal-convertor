@@ -112,9 +112,9 @@ This project is intended to be a toolkit to convert Ren'Py based games and visua
    ```
 
    Compose is the single entry point: it offers clean, compose, clean+compose,
-   review, apply, and restore. Selecting compose or clean+compose runs the
-   exclusion-pattern check first; the other actions do not. Restore can be
-   run via the compose CLI: `python -m converter.compose restore` (equivalently
+   review, apply, and restore. Compose scans every script physically present in
+   the game folder; remove unwanted scripts from that folder to drop them from
+   the pass. Restore can be run via the compose CLI: `python -m converter.compose restore` (equivalently
    choose "Restore original game files (keep composites)" in the interactive menu),
    which recovers the live game folder from the original source while keeping the
    generated composites.
@@ -129,7 +129,7 @@ This project is intended to be a toolkit to convert Ren'Py based games and visua
    python -m converter.compose apply
    python -m converter.compose restore
 
-   # Full pipeline: decompile → exclusions → compose (apply deferred)
+   # Full pipeline: decompile → compose (apply deferred)
    python -m converter.pipeline
    ```
 
@@ -170,7 +170,6 @@ This project is intended to be a toolkit to convert Ren'Py based games and visua
 │   │   │   ├── config.py    # write_config, load_config
 │   │   │   ├── constants.py
 │   │   │   ├── discovery.py # find_game_folder, find_game_folders
-│   │   │   ├── exclusions.py
 │   │   │   ├── extract.py   # extract_rpa_file
 │   │   │   ├── flow.py      # process_game, process_all_games
 │   │   │   ├── restore.py   # restore_decompile

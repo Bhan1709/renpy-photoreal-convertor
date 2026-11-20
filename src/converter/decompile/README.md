@@ -16,8 +16,8 @@ folder. The generalized flow:
 4. **Decompile** every `.rpyc` into a sibling `.rpy`.
 5. **Detect image categories** (`bg`, `gui`, `char`, `scene`) by folder name or
    Pillow color mode, and store the naming map in `src/converter/config.json`.
-6. **Write config.json** with matching patterns, extracted archives, image
-   categories, plus an `exclusion` block for downstream filtering.
+6. **Write config.json** with the discovered scripts, extracted archives, and
+   image categories.
 
 It can be used both as a CLI tool and as importable Python functions.
 
@@ -54,7 +54,6 @@ src/
 │   │   ├── constants.py     # Paths, extensions, category folder patterns
 │   │   ├── decompile_files.py  # decompile_rpyc_files (via rpa-toolkit)
 │   │   ├── discovery.py     # find_game_folder, find_game_folders
-│   │   ├── exclusions.py    # matches_exclusion, filter_source_files, sync_exclusions, prompt_exclusion_patterns
 │   │   ├── extract.py       # extract_rpa_file, extract_all_rpa
 │   │   ├── flow.py          # process_game, process_all_games (end-to-end flow)
 │   │   ├── restore.py       # restore_decompile (undo decompile outputs)
@@ -94,18 +93,9 @@ mise run compose
 ```
 
 Compose is the single entry point for the photoreal pass: it offers clean,
-compose, clean+compose, review, and apply. Selecting compose or clean+compose
-runs the exclusion check (asking whether to add script/image exclusion
-patterns); the other actions skip it.
-
-To edit exclusions by hand instead, open `src/converter/config.json` and adjust:
-
-- `exclusion.script.patterns` — filters `rpy_files` / `ren_py_files`
-  (e.g. `"archive/"`).
-- `exclusion.image.patterns` — filters image folders/layers scanned by compose.
-
-The compose exclusion check syncs these automatically when compose or
-clean+compose is selected; no separate sync step is needed.
+compose, clean+compose, review, and apply. It scans the scripts actually
+present in the game folder; no exclusion-pattern prompt or sync step exists.
+To drop a script from the pass, delete it from the game folder.
 
 ### Via Python Import
 
@@ -196,36 +186,11 @@ known Ren'Py folder names. Falls back to Pillow color mode (`RGBA → char`,
 ### Config
 
 #### `write_config(game_folder, source_game, source_path, extracted_archives=None, image_categories=None, config_path=...)`
-Writes `src/converter/config.json` with matching patterns, extracted
-archives, image categories, and an `exclusion` block.
+Writes `src/converter/config.json` with the discovered scripts, extracted
+archives, and image categories.
 
 #### `load_config(config_path=...)`
 Loads `config.json`; returns `{}` if missing or invalid.
-
-### Exclusions
-
-#### `matches_exclusion(path, patterns)`
-Returns `True` if `path` matches any exclusion pattern (substring or glob).
-
-#### `filter_source_files(config_path=...)`
-Loads `config.json` and returns `rpy_files`/`ren_py_files` minus excluded
-entries.
-
-**Returns:** `{"rpy": [...], "ren_py": [...], "extracted_archives": [...]}`
-
-#### `sync_exclusions(config_path=...)`
-Removes any `rpy_files`/`ren_py_files` entry matching
-`exclusion.script.patterns` and rewrites `config.json`. Image exclusions
-(`exclusion.image.patterns`) are applied during compose rather than here.
-
-**Returns:** `{"rpy_before", "rpy_after", "ren_py_before", "ren_py_after"}`
-
-#### `prompt_exclusion_patterns(config_path=...)`
-Interactively shows the current script/image exclusion patterns, asks for
-comma-separated additions for each, and writes `config.json` when anything
-changed (pressing Enter keeps the current list).
-
-**Returns:** `True` if `config.json` was updated, `False` otherwise.
 
 ### Flow
 
@@ -378,16 +343,7 @@ extract_rpa_file(Path("src/renpy_game/my_game/archive.rpa"))
 # Extracted to: src/renpy_game/my_game/archive/
 ```
 
-### Pattern 4: Sync exclusions into config.json
-```python
-from src.converter.decompile.exclusions import sync_exclusions
-
-# Set exclusion.script.patterns in config.json first, e.g. ["archive/"]
-result = sync_exclusions()
-print(f"rpy_files: {result['rpy_before']} -> {result['rpy_after']}")
-```
-
-### Pattern 5: Use cached path in other modules
+### Pattern 4: Use cached path in other modules
 ```python
 from src.converter.decompile import find_game_folder, get_game_folder_rel_path
 
