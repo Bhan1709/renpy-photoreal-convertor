@@ -31,8 +31,9 @@ and restore workflows, and the split-manifest contract are unchanged.
    normalised layer semantics, rendered PNGs are copied out of the workspace,
    and everything is turned into the existing `CompositeRecord` /
    `CompositeManifest` objects before `ManifestWriter` writes the split
-   manifests. Screen-stack composites (Pass 3) are still produced statically and
-   merged into the same manifest.
+   manifests.  All composite types (CFG states, layered images, screen stacks)
+   are produced natively by the CFG walk inside the child process — there is no
+   separate static Pass 1/2/3 pipeline.
 
 The child always exits through `run_command()`, which writes an error result
 and terminates with a non-zero status on failure, so a half-finished batch is
@@ -55,7 +56,7 @@ entries (deterministic `const` states are omitted).
   image (`1_024`); CFG states are never capped away.
 - `MAX_CONDITION_ASSIGNMENTS_PER_CANDIDATE` — condition variants per layered
   image (`64`).
-- `MAX_RENDER_STATES_PER_BATCH` — render cap per subprocess (`4_096`) with
+- `MAX_RENDER_STATES_PER_BATCH` — render cap per subprocess (`512`) with
   sequential batch pagination and merged manifests. A child that dies mid-batch
   is retried from the same offset with a halved sub-batch
   (`MIN_RENDER_STATES_PER_BATCH`).
@@ -78,7 +79,7 @@ entries (deterministic `const` states are omitted).
 - Layer provenance comes from the `LayeredImage` layers that the selected
   attributes and the applied condition variables actually pick; conditions that
   fail to evaluate are reported as unresolved so the record is flagged
-  `dynamic_review`, exactly as the static pipeline did.
+  `dynamic_review`.
 
 ## Public API
 

@@ -22,10 +22,10 @@ The flow is:
 
 1. **Compose** (v2, native): extraction and rendering run **inside the game's
    own Ren'Py runtime** (see ``native/README.md``).  The bundled runtime is
-   launched headlessly, the compiled labels are walked for ``show``/``scene``
-   states, layered images and image declarations are resolved by the real
-   displayables, and every state is rendered natively.  Screen stacks are still
-   resolved statically.  Results are adapted into the same
+   launched headlessly, every compiled label is walked for ``show``/``scene``
+   states (including ``show screen``), layered images and image declarations
+   are resolved by the real displayables, and every state is rendered natively
+   through the software renderer.  Results are adapted into the same
    ``CompositeRecord``/``CompositeManifest`` objects and written as per-category
    manifests under ``<output_dir>/reports/``.
 2. **Apply** (`applier.py`): reads the manifest, rewrites ``show``/``scene``
@@ -93,6 +93,7 @@ it is loaded from the decompile-generated ``src/converter/config.json`` via
       "scene": "archive/xxx"
     }
   },
+  "compose_modes": ["cfg", "layered_all", "conditions"],
   "exclusion": {
     "script": {
       "patterns": ["archive/"],
@@ -421,6 +422,9 @@ driven by :class:`GameConfig` instead of hard-coded constants:
 - The ``characters.rpy`` location for ``*ResetDefault`` state tracking.
 - Output, manifest, declaration, and report paths.
 - Game-specific defaults (e.g. ``month``, ``day``).
+- Speaker-to-folder mapping (``player_folder`` / ``player_aliases``) — no
+  hard-coded player defaults; driven entirely by ``config.json`` or
+  ``Character()`` declarations.
 - Script and image exclusion patterns (persisted in ``config.json``).
 
 Supporting multiple folders per category (rather than one-to-one) is a natural
@@ -444,6 +448,12 @@ extension: ``categories`` can map a category to a list of folders, and
   :class:`CompositorStrategy` protocol.
 - **Idempotent apply**: the apply pass refuses to touch a line whose text no
   longer matches the recorded statement, so a second run is a no-op.
+- **Progress tracking**: the compose pass polls the child renderer's progress
+  log while batches run, so a real-time progress bar advances as states are
+  rendered instead of waiting for each batch to finish.
+- **Intermediate cleanup**: the per-batch result JSON (`.native-result.json`)
+  is removed from ``reports/`` after the native stage completes, so only the
+  final per-category manifests and index remain.
 
 ---
 
