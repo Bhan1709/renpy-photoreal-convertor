@@ -1,26 +1,9 @@
-"""End-to-end converter pipeline: decompile then compose Ren'Py games.
+"""Unified decompile-to-compose pipeline for Ren'Py games.
 
-Links :mod:`converter.decompile` (decompiles ``.rpyc -> .rpy`` and extracts
-``.rpa`` archives under ``src/renpy_game``) with :mod:`converter.compose`
-(builds photoreal composites from the resulting ``.rpy`` scripts and adopts
-them back into the live scripts) and :mod:`converter.restore` (reverts
-modified ``.rpy`` files from the archive).
-
-The default flow is interactive::
-
-    1. Decompile every ``.rpyc`` and extract every ``.rpa`` under the game folder.
-    2. Run compose (manifest + PNGs).  The apply step is deliberately deferred
-       so the user can verify the compose output first.
-
-All modes are config-driven via ``src/converter/config.json`` (produced by
-decompile); none require ``--game``.
-
-Run from the repo root::
-
-    uv run python -m converter.pipeline                                # default game
-    uv run python -m converter.pipeline --compose-only                 # compose only (skip decompile)
-    uv run python -m converter.pipeline --apply-only                   # apply only (needs manifest)
-    uv run python -m converter.pipeline --dry-run                      # compose without writing
+The pipeline uses the canonical staged decompile service.  The source game is
+never modified: relevant files are copied into ``src/renpy_game/game``, the
+staged copy is extracted and decompiled, and compose consumes the config
+written by that same run.
 """
 
 from __future__ import annotations
@@ -38,26 +21,22 @@ from .compose.cli import (
     print_review_instructions,
 )
 from .compose.config import load_config
-from .decompile.constants import CONFIG_PATH
-from .decompile.decompile_files import decompile_rpyc_files
-from .decompile.discovery import find_game_folders
-from .decompile.extract import extract_rpa_file
+from .compose.errors import ConfigError
+from .decompile.constants import CONFIG_PATH, GAME_FOLDER, RENPY_GAMES
+from .decompile.flow import prepare_game
 
 app = create_app(
     "Decompile a Ren'Py game, then create photoreal composites for review."
 )
 
 
-# --------------------------------------------------------------------------- #
-# Internal helpers (unchanged logic, rich output)                             #
-# --------------------------------------------------------------------------- #
-
-
-def _decompile_and_extract(target_folder: Path) -> None:
-    """Decompile every ``.rpyc`` and extract every ``.rpa`` under a game folder."""
-    decompile_rpyc_files(target_folder)
-    for rpa_file in sorted(target_folder.rglob("*.rpa")):
-        extract_rpa_file(rpa_file)
+def _load_config(config_path: Path):
+    """Load the compose config, reporting failures to the user."""
+    try:
+        return load_config(config_path)
+    except (OSError, ConfigError) as exc:
+        error(f"Could not load the game configuration from {config_path}:\n{exc}")
+        return None
 
 
 def run_pipeline(
@@ -65,72 +44,90 @@ def run_pipeline(
     compose_only: bool = False,
     apply_only: bool = False,
     clean_output: bool = False,
+    *,
+    renpy_games: Path = RENPY_GAMES,
+    dest: Path = GAME_FOLDER,
+    config_path: Path = CONFIG_PATH,
 ) -> int:
-    """Run the decompile -> compose -> apply pipeline.
+    """Run the canonical decompile -> compose pipeline.
 
     The default flow always decompiles first, then runs compose.  The apply
     step is deliberately not run by default so the user can verify compose
     output.
 
-    All modes are config-driven via ``src/converter/config.json``; no
-    ``--game`` lookup is needed.
-
-    Restore-compose is handled by the compose CLI (``python -m converter.compose restore``),
-    not by the pipeline.
-
-    Args:
-        dry_run: Compose without writing; skips the apply pass.
-        compose_only: Compose + write manifest, then stop (skip apply).
-            Assumes the game has already been decompiled.
-        apply_only: Run the apply pass only (requires an existing manifest).
-        clean_output: Remove prior generated PNGs and manifest before
-            composing (only applies to compose modes).
-
     Returns:
-        0 on success, 1 if no matching games were found.
+        0 on success, 1 for a failed or missing game/config, and 2 for an
+        invalid combination of options.
     """
-    # --- Compose-only / apply-only modes (config-driven, no decompile) ---
-    if compose_only or apply_only:
-        config = load_config(CONFIG_PATH)
+    if compose_only and apply_only:
+        error("--compose-only and --apply-only cannot be used together.")
+        return 2
+
+    if compose_only:
+        config = _load_config(config_path)
+        if config is None:
+            return 1
         rule(f"Conversion pipeline: {config.name}")
-
-        if compose_only:
+        try:
             compose_game(config, dry_run=dry_run, clean=clean_output)
-            rule("Composites ready for review")
-            print_review_instructions(config, CONFIG_PATH)
+        except Exception as exc:  # noqa: BLE001
+            error(f"Compose failed: {exc}")
+            return 1
+        if dry_run:
+            rule("Dry run complete: no files were written.")
             return 0
+        rule("Composites ready for review")
+        print_review_instructions(config, config_path)
+        return 0
 
-        if apply_only:
+    if apply_only:
+        config = _load_config(config_path)
+        if config is None:
+            return 1
+        if dry_run:
+            rule("Conversion pipeline: apply dry run")
+            rule("No live scripts were changed.")
+            return 0
+        try:
             return apply_game(config)
+        except Exception as exc:  # noqa: BLE001
+            error(f"Apply failed: {exc}")
+            return 1
 
-    # --- Default flow: decompile -> compose (no apply) ---
-    # Auto-discover the first game folder under src/renpy_game (no --game needed).
-    folders = find_game_folders()
-    if not folders:
-        error("No Ren'Py game folders were found under src/renpy_game.")
+    rule("Conversion pipeline: decompile -> compose")
+    step(1, "Stage, extract, and decompile the source game")
+    try:
+        result = prepare_game(
+            renpy_games=renpy_games,
+            dest=dest,
+            config_path=config_path,
+            dry_run=dry_run,
+        )
+    except Exception as exc:  # noqa: BLE001
+        error(f"Decompile preparation failed: {exc}")
+        return 1
+    if not result.success:
+        error("Decompile preparation failed; compose was not started.")
         return 1
 
-    game_dir, _rel_path, target_folder = folders[0]
-    name = game_dir.name
-    rule(f"Conversion pipeline: {name}")
+    if dry_run:
+        rule("Dry run complete: no files were written and compose was not started.")
+        return 0
 
-    # --- Stage 1: decompile (.rpyc -> .rpy) + extract (.rpa -> archive/) ---
-    step(1, f"Decompile scripts and extract archives under {target_folder}")
-    _decompile_and_extract(target_folder)
+    prepared_config_path = result.config or config_path
+    config = _load_config(prepared_config_path)
+    if config is None:
+        return 1
 
-    # --- Stage 2: compose (manifest + PNGs) only ---
-    # Apply is intentionally deferred so the user can verify compose output.
-    config = load_config(CONFIG_PATH)
     step(2, "Create composites and manifests (apply after review)")
-    compose_game(config, dry_run=dry_run, clean=clean_output)
+    try:
+        compose_game(config, dry_run=False, clean=clean_output)
+    except Exception as exc:  # noqa: BLE001
+        error(f"Compose failed: {exc}")
+        return 1
     rule("Composites ready for review")
-    print_review_instructions(config, CONFIG_PATH)
+    print_review_instructions(config, prepared_config_path)
     return 0
-
-
-# --------------------------------------------------------------------------- #
-# Typer command                                                               #
-# --------------------------------------------------------------------------- #
 
 
 @app.command()
@@ -138,7 +135,7 @@ def main(
     dry_run: bool = typer.Option(
         False,
         "--dry-run",
-        help="Preview the compose and apply steps without writing any files.",
+        help="Preview the pipeline without staging, extracting, or writing files.",
     ),
     clean_output: bool = typer.Option(
         False,
@@ -148,20 +145,22 @@ def main(
     compose_only: bool = typer.Option(
         False,
         "--compose-only",
-        help="Create composites and manifests without applying them.",
+        help="Create composites and manifests without decompiling first.",
     ),
     apply_only: bool = typer.Option(
         False,
         "--apply-only",
         help="Apply existing composites without running decompile again.",
     ),
-) -> int:
+) -> None:
     """Run the decompile and compose workflow; apply remains deferred for review."""
-    return run_pipeline(
-        dry_run=dry_run,
-        compose_only=compose_only,
-        apply_only=apply_only,
-        clean_output=clean_output,
+    raise typer.Exit(
+        run_pipeline(
+            dry_run=dry_run,
+            compose_only=compose_only,
+            apply_only=apply_only,
+            clean_output=clean_output,
+        )
     )
 
 

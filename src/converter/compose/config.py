@@ -7,8 +7,9 @@ folders, plus a single loader that reads the decompile-generated
 
 All paths in ``config.json`` are relative to the project root (the directory
 containing ``src/``).  ``game_folder`` is resolved against the project root,
-and ``archive_dir`` is always ``game_folder / archive``.  Output locations
-default to ``<game_folder>/composites/...`` via :meth:`resolved_paths`.
+and extracted archive roots are derived from ``extracted_archives`` in the
+config.  Output locations default to ``<game_folder>/composites/...`` via
+:meth:`resolved_paths`.
 """
 
 from __future__ import annotations
@@ -16,7 +17,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 from .errors import ConfigError
 
@@ -77,8 +78,9 @@ class GameConfig:
         name: Human-readable game identifier (used for reports/output naming).
         game_root: Absolute path to the Ren'Py ``game`` folder (containing the
             ``.rpy`` scripts and, typically, an ``archive/`` subdirectory).
-        archive_dir: Absolute path to the extracted asset archive.  Always
-            ``game_root / "archive"``.
+        archive_dir: Absolute path to the primary extracted asset archive.
+        archive_dirs: Absolute paths to every extracted asset archive.  The
+            first entry is the primary archive represented by ``archive_dir``.
         source_path: Absolute path to the bundled Ren'Py project/runtime used
             by the native compose stage.  ``None`` keeps legacy callers
             source-compatible, but native compose requires this value.
@@ -108,6 +110,7 @@ class GameConfig:
     name: str
     game_root: Path
     archive_dir: Path
+    archive_dirs: tuple[Path, ...] = ()
     source_path: Path | None = None
     categories: dict[str, str] = field(
         default_factory=lambda: dict(DEFAULT_CATEGORY_FOLDERS)
@@ -145,7 +148,15 @@ class GameConfig:
     )
 
     def __post_init__(self) -> None:
-        """Compile path regexes exactly once per config instance."""
+        """Compile path regexes and normalize archive roots."""
+        if not self.archive_dirs:
+            object.__setattr__(self, "archive_dirs", (self.archive_dir,))
+        elif self.archive_dir not in self.archive_dirs:
+            object.__setattr__(
+                self,
+                "archive_dirs",
+                (self.archive_dir, *[path for path in self.archive_dirs if path != self.archive_dir]),
+            )
         object.__setattr__(self, "_path_regex", self._compile_path_regex())
         object.__setattr__(
             self, "_category_folder_regex", self._compile_category_folder_regex()
@@ -232,13 +243,18 @@ class GameConfig:
             "name": self.name,
             "game_root": str(self.game_root),
             "archive_dir": str(self.archive_dir),
+            "archive_dirs": [str(path) for path in self.archive_dirs],
             "source_path": str(self.source_path) if self.source_path else None,
             "categories": dict(self.categories),
             "non_character_folders": sorted(self.non_character_folders),
+            "special_speakers": sorted(self.special_speakers),
+            "player_folder": self.player_folder,
+            "player_aliases": list(self.player_aliases),
             "path_aliases": dict(self.path_aliases),
             "game_defaults": self.game_defaults,
             "rpy_files": self.rpy_files,
             "ren_py_files": self.ren_py_files,
+            "compose_modes": list(self.compose_modes) if self.compose_modes else None,
             "output_dir": str(paths["output_dir"]),
             "manifest_path": str(paths["manifest_path"]),
             "declaration_path": str(paths["declaration_path"]),
@@ -256,6 +272,145 @@ def _resolve_project(value: str) -> Path:
     return p if p.is_absolute() else (PROJECT_ROOT / p).resolve()
 
 
+def _safe_relative_path(value: str, *, field_name: str) -> Path:
+    """Return a normalized relative path or reject an unsafe value.
+
+    Both native and Windows path syntax are checked so a config authored on
+    one platform cannot escape its intended root when consumed on another.
+    """
+    normalized = value.replace("\\", "/").strip()
+    if not normalized or "\x00" in normalized:
+        raise ConfigError(f"unsafe {field_name} in config: {value!r}")
+
+    native = Path(normalized)
+    windows = PureWindowsPath(normalized)
+    if (
+        native.is_absolute()
+        or native.anchor
+        or windows.is_absolute()
+        or windows.drive
+        or windows.root
+        or ".." in native.parts
+        or not native.parts
+    ):
+        raise ConfigError(f"unsafe {field_name} in config: {value!r}")
+    return native
+
+
+def _archive_dirs_from_data(
+    data: dict[str, object],
+    game_folder: Path,
+) -> tuple[Path, ...]:
+    """Resolve extracted archive roots recorded in the decompile config."""
+    raw_entries = data.get("extracted_archives") or []
+    if not isinstance(raw_entries, list):
+        raise ConfigError("'extracted_archives' must be a list")
+
+    game_root = game_folder.resolve()
+    roots: list[Path] = []
+    for entry in raw_entries:
+        if not isinstance(entry, dict):
+            raise ConfigError("each extracted archive entry must be an object")
+        folder_value = entry.get("extracted_folder")
+        if not isinstance(folder_value, str) or not folder_value.strip():
+            raise ConfigError("each extracted archive requires 'extracted_folder'")
+
+        relative = _safe_relative_path(
+            folder_value,
+            field_name="extracted archive folder",
+        )
+        resolved = (game_folder / relative).resolve()
+        if not resolved.is_relative_to(game_root):
+            raise ConfigError(
+                f"extracted archive folder escapes the game root: {folder_value!r}"
+            )
+        if resolved not in roots:
+            roots.append(resolved)
+
+    if not roots:
+        roots.append((game_folder / "archive").resolve())
+    return tuple(roots)
+
+
+def _category_folders(
+    data: dict[str, object],
+    game_folder: Path,
+    archive_dirs: tuple[Path, ...],
+) -> dict[str, str]:
+    """Normalize and validate canonical category-to-folder mappings."""
+    wrapper = data.get("image_categories") or {}
+    if not isinstance(wrapper, dict):
+        raise ConfigError("'image_categories' must be an object")
+
+    method = str(wrapper.get("classification_method") or "folder_based")
+    if method == "mode_based":
+        raise ConfigError(
+            "mode-based image classification cannot provide category folders; "
+            "configure a folder_based 'image_categories' mapping"
+        )
+
+    inner = wrapper.get("image_categories")
+    if inner is None:
+        inner = {}
+    if not isinstance(inner, dict):
+        raise ConfigError("'image_categories.image_categories' must be an object")
+
+    prefixes: list[str] = []
+    for archive_dir in archive_dirs:
+        try:
+            relative = archive_dir.relative_to(game_folder.resolve())
+        except ValueError:
+            continue
+        prefix = relative.as_posix()
+        if prefix not in (".", "") and prefix not in prefixes:
+            prefixes.append(prefix)
+    if "archive" not in prefixes:
+        prefixes.append("archive")
+
+    categories = dict(DEFAULT_CATEGORY_FOLDERS)
+    for category in CANONICAL_CATEGORIES:
+        if category not in inner:
+            continue
+        value = inner[category]
+        if not isinstance(value, str):
+            raise ConfigError(
+                f"category folder for {category!r} must be a string, not "
+                f"{type(value).__name__}"
+            )
+        folder = value.replace("\\", "/").strip()
+        for prefix in prefixes:
+            if folder.lower().startswith(f"{prefix.lower()}/"):
+                folder = folder[len(prefix) + 1 :]
+                break
+        relative = _safe_relative_path(
+            folder,
+            field_name=f"category folder for {category!r}",
+        )
+        categories[category] = relative.as_posix()
+    return categories
+
+
+def _string_tuple(value: object, *, field_name: str) -> tuple[str, ...]:
+    """Normalize a config value to a tuple of strings."""
+    if value is None:
+        return ()
+    if not isinstance(value, (list, tuple)):
+        raise ConfigError(f"'{field_name}' must be a list of strings")
+    if not all(isinstance(item, str) for item in value):
+        raise ConfigError(f"'{field_name}' must be a list of strings")
+    return tuple(str(item) for item in value)
+
+
+def _optional_project_path(data: dict[str, object], key: str) -> Path | None:
+    """Load an optional path relative to the project root."""
+    value = data.get(key)
+    if value is None or value == "":
+        return None
+    if not isinstance(value, str):
+        raise ConfigError(f"'{key}' must be a path string")
+    return _resolve_project(value)
+
+
 def load_config(config_path: str | Path) -> GameConfig:
     """Load a :class:`GameConfig` from the decompile-generated ``config.json``.
 
@@ -263,14 +418,20 @@ def load_config(config_path: str | Path) -> GameConfig:
     ``image_categories`` (as written by :mod:`converter.decompile.config`).
     Paths in the JSON are relative to the project root.
 
-    Output locations are not stored in the JSON; they default to
-    ``<game_folder>/composites/...`` via :meth:`GameConfig.resolved_paths`.
+    The loader normalizes category mappings, derives extracted archive roots,
+    and validates optional compose settings before an expensive compose run.
     """
     config_path = Path(config_path)
     if not config_path.is_absolute():
         config_path = PROJECT_ROOT / config_path
 
-    data = json.loads(config_path.read_text(encoding="utf-8"))
+    try:
+        raw_data = json.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ConfigError(f"could not load config.json at {config_path}: {exc}") from exc
+    if not isinstance(raw_data, dict):
+        raise ConfigError(f"config.json at {config_path} must contain an object")
+    data: dict[str, object] = raw_data
 
     if "game_folder" not in data:
         raise ConfigError(
@@ -279,49 +440,100 @@ def load_config(config_path: str | Path) -> GameConfig:
         )
 
     game_folder = _resolve_project(str(data["game_folder"]))
-    archive_dir = game_folder / "archive"
+    archive_dirs = _archive_dirs_from_data(data, game_folder)
+    archive_dir = archive_dirs[0]
+    categories = _category_folders(data, game_folder, archive_dirs)
 
-    # image_categories: {"classification_method": "...",
-    #                    "image_categories": {"bg": "bgs", "char": "chars", ...}}
-    cat_wrapper = data.get("image_categories") or {}
-    cat_map_raw: dict[str, str] = {}
-    if isinstance(cat_wrapper, dict):
-        inner = cat_wrapper.get("image_categories")
-        if isinstance(inner, dict):
-            cat_map_raw = {str(k): str(v) for k, v in inner.items()}
+    rpy_files = list(
+        _string_tuple(data.get("rpy_files"), field_name="rpy_files")
+    )
+    ren_py_files = list(
+        _string_tuple(data.get("ren_py_files"), field_name="ren_py_files")
+    )
 
-    categories: dict[str, str] = {}
-    for category in CANONICAL_CATEGORIES:
-        if category in cat_map_raw:
-            folder = cat_map_raw[category]
-            # Strip leading "archive/" prefix (decompile records paths relative
-            # to the game folder, but categories are relative to archive_dir).
-            if folder.lower().startswith("archive/"):
-                folder = folder[len("archive/") :]
-            categories[category] = folder
+    compose_modes = _string_tuple(data.get("compose_modes"), field_name="compose_modes")
+    valid_modes = {"cfg", "layered_all", "conditions"}
+    unknown_modes = sorted(set(compose_modes) - valid_modes)
+    if unknown_modes:
+        raise ConfigError(f"unknown compose mode(s): {', '.join(unknown_modes)}")
 
-    if not categories:
-        categories = dict(DEFAULT_CATEGORY_FOLDERS)
+    if "path_aliases" in data:
+        path_aliases_value = data.get("path_aliases") or {}
+        if not isinstance(path_aliases_value, dict):
+            raise ConfigError("'path_aliases' must be an object")
+        path_aliases: dict[str, str] = {}
+        for source, target in path_aliases_value.items():
+            if not isinstance(source, str) or not isinstance(target, str):
+                raise ConfigError("'path_aliases' keys and values must be strings")
+            source_path = _safe_relative_path(
+                source,
+                field_name="path_aliases source",
+            )
+            target_path = _safe_relative_path(
+                target,
+                field_name="path_aliases target",
+            )
+            path_aliases[source_path.as_posix()] = target_path.as_posix()
+    else:
+        path_aliases = dict(DEFAULT_PATH_ALIASES)
 
-    rpy_files = [str(p) for p in (data.get("rpy_files") or [])]
-    ren_py_files = [str(p) for p in (data.get("ren_py_files") or [])]
+    if "game_defaults" in data:
+        game_defaults_value = data.get("game_defaults") or {}
+        if not isinstance(game_defaults_value, dict):
+            raise ConfigError("'game_defaults' must be an object")
+        game_defaults = dict(game_defaults_value)
+    else:
+        game_defaults = dict(DEFAULT_GAME_DEFAULTS)
+
+    if "non_character_folders" in data:
+        non_character_folders = frozenset(
+            _string_tuple(
+                data.get("non_character_folders"),
+                field_name="non_character_folders",
+            )
+        )
+    else:
+        non_character_folders = DEFAULT_NON_CHARACTER_FOLDERS
+    if "special_speakers" in data:
+        special_speakers = frozenset(
+            _string_tuple(data.get("special_speakers"), field_name="special_speakers")
+        )
+    else:
+        special_speakers = DEFAULT_SPECIAL_SPEAKERS
+
+    player_folder_value = data.get("player_folder")
+    if player_folder_value is None:
+        player_folder = None
+    elif not isinstance(player_folder_value, str):
+        raise ConfigError("'player_folder' must be a string or null")
+    elif not player_folder_value.strip():
+        player_folder = None
+    else:
+        player_folder = _safe_relative_path(
+            player_folder_value,
+            field_name="player_folder",
+        ).as_posix()
 
     return GameConfig(
         name=str(data.get("source_game") or config_path.stem),
         game_root=game_folder,
         archive_dir=archive_dir,
-        source_path=(
-            _resolve_project(str(data["source_path"]))
-            if data.get("source_path")
-            else None
-        ),
+        archive_dirs=archive_dirs,
+        source_path=_optional_project_path(data, "source_path"),
         categories=categories,
+        non_character_folders=non_character_folders,
+        special_speakers=special_speakers,
+        player_folder=player_folder,
+        player_aliases=_string_tuple(
+            data.get("player_aliases"), field_name="player_aliases"
+        ),
+        path_aliases=path_aliases,
+        game_defaults=game_defaults,
         rpy_files=rpy_files,
         ren_py_files=ren_py_files,
-        compose_modes=tuple(data.get("compose_modes") or ()) or None,
-        special_speakers=frozenset(
-            data.get("special_speakers") or DEFAULT_SPECIAL_SPEAKERS
-        ),
-        player_folder=str(data.get("player_folder")) if data.get("player_folder") else None,
-        player_aliases=tuple(data.get("player_aliases") or ()),
+        compose_modes=compose_modes or None,
+        output_dir=_optional_project_path(data, "output_dir"),
+        manifest_path=_optional_project_path(data, "manifest_path"),
+        declaration_path=_optional_project_path(data, "declaration_path"),
+        report_path=_optional_project_path(data, "report_path"),
     )

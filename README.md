@@ -94,7 +94,7 @@ This project is intended to be a toolkit to convert Ren'Py based games and visua
 6. **Decompile and extract Ren'Py games**:
 
    ```bash
-   python src/converter/decompile/decompile.py
+   python -m converter.decompile
    ```
 
    Or via mise:
@@ -129,7 +129,8 @@ This project is intended to be a toolkit to convert Ren'Py based games and visua
    python -m converter.compose apply
    python -m converter.compose restore
 
-   # Full pipeline: decompile → compose (apply deferred)
+   # Full pipeline: stage → decompile → compose (apply deferred)
+   # The source game is not modified; compose uses the config from this run.
    python -m converter.pipeline
    ```
 
@@ -160,7 +161,7 @@ This project is intended to be a toolkit to convert Ren'Py based games and visua
 │   │   └── README.md        # agent subpackage documentation
 │   ├── converter/           # Ren'Py conversion toolkit (top-level `converter` module)
 │   │   ├── __init__.py      # Entry point (main())
-│   │   ├── pipeline.py      # End-to-end decompile → compose → apply pipeline
+│   │   ├── pipeline.py      # End-to-end staged decompile → compose pipeline
 │   │   ├── config.json      # Decompile-generated GameConfig (src/converter/config.json)
 │   │   ├── py.typed
 │   │   ├── utility/         # Shared utilities (tqdm)
@@ -171,7 +172,7 @@ This project is intended to be a toolkit to convert Ren'Py based games and visua
 │   │   │   ├── constants.py
 │   │   │   ├── discovery.py # find_game_folder, find_game_folders
 │   │   │   ├── extract.py   # extract_rpa_file
-│   │   │   ├── flow.py      # process_game, process_all_games
+│   │   │   ├── flow.py      # prepare_game, process_game, process_all_games
 │   │   │   ├── restore.py   # restore_decompile
 │   │   │   ├── scan.py
 │   │   │   ├── staging.py
@@ -235,11 +236,12 @@ See `src/converter/compose/README.md` for full documentation.
 
 New subpackage for handling Ren'Py script decompilation and RPA archive extraction:
 
-- **`find_game_folders()`** - Discovers all games under `src\renpy_game\`, locates `\game` subfolders, and caches the relative path
+- **`find_game_folder()`** - Locates the first `\game` folder under `src\renpy_game\`; `find_game_folders()` is a backward-compatible single-game wrapper
 - **`get_game_folder_rel_path()` / `set_game_folder_rel_path()`** - Reusable path caching for other subpackages
-- **`decompile_rpyc_files()` / `decompile_rpyc_file()`** - Decompile `.rpyc` → `.rpy` using rpa-toolkit
-- **`extract_rpa_file()`** - Extract `.rpa` archives into directory alongside the `.rpa` file, preserving relative path structure
-- **`process_all_games()`** - Full workflow: find → decompile → extract
+- **`decompile_rpyc_files()` / `decompile_rpyc_file()`** - Decompile `.rpyc`/`.rpymc` scripts using rpa-toolkit
+- **`extract_rpa_file()`** - Extract `.rpa` archives into a directory alongside the archive, preserving relative path structure
+- **`prepare_game()`** - Canonical workflow: stage → extract → decompile → scan → write config, without modifying the source game
+- **`process_all_games()`** - Backward-compatible wrapper that processes the first game found
 
 Example extraction path structure:
 ```
@@ -279,7 +281,7 @@ result = decompile_rpyc_file(
 ### Extract Specific .rpa
 
 ```python
-from src.converter.decompile.decompile import extract_rpa_file
+from converter.decompile import extract_rpa_file
 extract_rpa_file(Path("src/renpy_game/my_game/archive.rpa"))
 # Extracted to: src/renpy_game/my_game/archive/
 ```
@@ -287,9 +289,9 @@ extract_rpa_file(Path("src/renpy_game/my_game/archive.rpa"))
 ### Using Cached Path in Other Subpackages
 
 ```python
-from src.converter.decompile.decompile import find_game_folders, get_game_folder_rel_path
+from converter.decompile import get_game_folder_rel_path, prepare_game
 
-find_game_folders()  # Cache the path
+result = prepare_game()  # Stages the game and caches the staged path
 cached = get_game_folder_rel_path()
 if cached:
     game_dir = f"src/{cached}"

@@ -868,6 +868,7 @@ def _run_native_stage(
             engine_config={},
             result_path=reports_dir / ".native-result.json",
             workspace_parent=game_config.game_root.parent,
+            archive_dirs=[path for path in game_config.archive_dirs],
         )
         candidates, last = _run_batches(
             workspace, modes, dict(index.all_defaults), layout, timeout

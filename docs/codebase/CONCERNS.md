@@ -6,7 +6,7 @@
 
 | Severity | Concern | Evidence | Impact | Suggested action |
 |----------|---------|----------|--------|------------------|
-| high | No test suite or CI/CD detected; CONTRIBUTING.md requires only `uv run ruff` + `uv run mypy src/` before PR | Scan output (no CI/CD, no testing configs); `CONTRIBUTING.md` §7; `TESTING.md` | Regressions in compose/apply/decompile go undetected; refactoring is unsafe | Add a test framework (e.g. pytest) and CI pipeline; see `README.md` roadmap ("Document CI/CD and testing setup") — [ASK USER #1] |
+| high | Automated coverage is still limited to orchestration/config boundaries; native compose, review, apply, and restore are not covered end-to-end | `tests/`; `TESTING.md`; `.github/workflows/ci.yml` | Regressions in the highest-risk rendering and script-rewrite paths can still go undetected | Add a tiny synthetic Ren'Py fixture and focused compose/apply/review regression tests |
 | high | `rpa-toolkit` installed from a git commit SHA; if the reference becomes unreachable, `uv sync`/installs break | `pyproject.toml` (`rpa-toolkit @ git+https://github.com/regiellis/rpa-toolkit.git@435f202e...`) | Dependency availability / build breakage | Pin to a released PyPI version or vendor the package — [ASK USER #2] |
 | med | `NVIDIA_API_KEY` secret handling; key must never be committed | `AGENTS.md` §3 (`mise.local.toml` gitignored, may hold `NVIDIA_API_KEY`); `.gitignore` (`mise.local.toml`) | Credential leakage if committed | Continue keeping `mise.local.toml` out of commits; never add real keys to tracked files |
 | med | `opencode.json` is auto-generated and overwritten by the agent CLI on each profile launch; manual edits are not durable | `AGENTS.md` §3; `src/agent/cli.py` `_write_project_config` | Lost manual configuration changes | Treat `opencode.json` as generated; edit only for local testing |
@@ -18,8 +18,8 @@
 
 | Debt item | Why it exists | Where | Risk if ignored | Suggested fix |
 |-----------|---------------|-------|-----------------|---------------|
-| No automated tests | Testing/CI deliberately deferred | Whole repo (`TESTING.md`); `README.md` roadmark unchecked | Undetected regressions | Add pytest suite for compose/apply/decompile; add CI — [ASK USER #1] |
-| Unchecked roadmap items (ComfyUI integration, example workflow JSON, additional Modelfiles, CI/CD/testing docs) | Features planned but not yet implemented | `README.md` 🚧 Roadmap | Scope creep / stale roadmap | Prioritize or remove roadmap items — [ASK USER #3] |
+| Limited automated coverage | The initial pytest/CI baseline focuses on decompile/config/pipeline boundaries | `tests/`; `TESTING.md` | Native rendering and script mutation remain unprotected | Add synthetic Ren'Py integration tests before deeper compose/apply refactors |
+| Unchecked roadmap items (ComfyUI integration, example workflow JSON, additional Modelfiles) | Features planned but not yet implemented | `README.md` 🚧 Roadmap | Scope creep / stale roadmap | Prioritize or remove roadmap items — [ASK USER #3] |
 
 ### 3) Security Concerns
 
@@ -47,7 +47,7 @@
 
 ### 6) `[ASK USER]` Questions
 
-1. Is there a test suite planned, and which test framework (e.g. pytest) and CI provider should be adopted? The `README.md` roadmap lists "Document CI/CD and testing setup" as unchecked, and `CONTRIBUTING.md` requires only ruff + mypy today.
+1. Which phase should receive the next test-coverage investment: native compose, review, apply, or restore?
 2. Should `rpa-toolkit` remain a git commit-pinned dependency, or should it be moved to a released PyPI version / vendored to avoid install breakage if the git reference becomes unavailable?
 3. Are NVIDIA-hosted profiles intended for production/conversion use, or is Ollama the primary path? This affects where to prioritize testing and documentation effort.
 4. Should the generated `docs/codebase/` documentation (these files) be committed to the repository, or kept as agent-workspace artifacts only?
@@ -55,7 +55,7 @@
 ### 7) Evidence
 
 - Scan output `.codebase-scan.txt`: HIGH-CHURN FILES, CODE METRICS, CI/CD PIPELINES, PERFORMANCE & TESTING sections
-- `pyproject.toml` (rpa-toolkit git dependency; dev group = mypy, ruff)
+- `pyproject.toml` (rpa-toolkit git dependency; dev group = mypy, pytest, ruff)
 - `CONTRIBUTING.md` (§7 required checks)
 - `README.md` (🚧 Roadmap)
 - `AGENTS.md` (§3 secrets; §5 rate limit, Modelfile/ctx matching, gitignore)
