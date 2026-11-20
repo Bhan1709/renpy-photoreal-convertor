@@ -72,7 +72,7 @@ def _proxy_health() -> dict[str, Any] | None:
         response = httpx.get(url, timeout=1.0, trust_env=False)
         response.raise_for_status()
         payload = response.json()
-    except httpx.HTTPError, ValueError:
+    except (httpx.HTTPError, ValueError):
         return None
 
     if not isinstance(payload, dict):

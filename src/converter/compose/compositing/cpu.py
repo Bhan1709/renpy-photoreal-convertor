@@ -39,7 +39,7 @@ class CPUCompositor:
             return im
         try:
             im = Image.open(path).convert("RGBA")
-        except OSError, ValueError:
+        except (OSError, ValueError):
             return None
         if len(self._image_cache) >= self._MAX_IMAGE_CACHE:
             # Evict the oldest entry to bound memory usage.

@@ -238,7 +238,7 @@ def _load_all_category_manifests(reports_dir: Path) -> dict[str, dict]:
         if cat_path.is_file():
             try:
                 all_data[cat_name] = json.loads(cat_path.read_text(encoding="utf-8"))
-            except json.JSONDecodeError, OSError:
+            except (json.JSONDecodeError, OSError):
                 all_data[cat_name] = {
                     "category": cat_name,
                     "composites": [],

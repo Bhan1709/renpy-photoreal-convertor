@@ -421,7 +421,7 @@ def confirm(message: str, default: bool = False) -> bool | None:
     """
     try:
         return questionary.confirm(message, default=default, style=CUSTOM_STYLE).ask()
-    except KeyboardInterrupt, EOFError:
+    except (KeyboardInterrupt, EOFError):
         console.print()
         return None
 
@@ -433,7 +433,7 @@ def prompt_text(message: str, default: str = "") -> str | None:
     """
     try:
         return questionary.text(message, default=default, style=CUSTOM_STYLE).ask()
-    except KeyboardInterrupt, EOFError:
+    except (KeyboardInterrupt, EOFError):
         console.print()
         return None
 
@@ -598,7 +598,7 @@ def _run_read_only_list_viewer(
 
     try:
         return application.run() is True
-    except KeyboardInterrupt, EOFError:
+    except (KeyboardInterrupt, EOFError):
         console.print()
         return False
 
@@ -1087,7 +1087,7 @@ def _run_context_selection(
 
     try:
         return application.run()
-    except KeyboardInterrupt, EOFError:
+    except (KeyboardInterrupt, EOFError):
         console.print()
         return None
 
@@ -1314,7 +1314,7 @@ def select(
         )
         _set_completion_viewport(question, max_visible_rows)
         return question.ask()
-    except KeyboardInterrupt, EOFError:
+    except (KeyboardInterrupt, EOFError):
         console.print()
         return None
 
