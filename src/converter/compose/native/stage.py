@@ -533,6 +533,7 @@ def _engine_config(
     batch_index: int,
     state_offset: int,
     progress_path: Path,
+    states_path: Path,
     max_render_states: int = MAX_RENDER_STATES_PER_BATCH,
 ) -> str:
     """Serialise one native batch's engine configuration."""
@@ -540,6 +541,7 @@ def _engine_config(
         {
             "game_root": str(game_root),
             "render_dir": str(render_dir),
+            "states_path": str(states_path),
             "modes": list(modes),
             "defaults": dict(defaults),
             "max_synthetic_states": MAX_SYNTHETIC_ATTRIBUTE_STATES,
@@ -639,6 +641,11 @@ def _run_batches(
     memory pressure) is retried from the same offset with a halved sub-batch,
     so pagination always makes forward progress.
 
+    The child enumerates the state list once and freezes it in the workspace;
+    every later batch renders a slice of that same list. This keeps the total
+    and the offsets stable, so a state cannot be skipped or duplicated because
+    a fresh Ren'Py process resolved its image states slightly differently.
+
     Rendering uses a single host-side progress bar for all batches. The child
     reports the overall state total in its batch-start line; until then a
     spinner shows that states are being enumerated. The bar is created as soon
@@ -658,6 +665,7 @@ def _run_batches(
     bar: Any = None
     batch_rendered = 0
     spinner_stack: ExitStack | None = None
+    states_path = workspace.root / "states.json"
 
     with ExitStack() as stack:
 
@@ -740,6 +748,7 @@ def _run_batches(
                     batch_index=batch_index,
                     state_offset=state_offset,
                     progress_path=workspace.root / "progress.log",
+                    states_path=states_path,
                     max_render_states=batch_size,
                 ),
                 encoding="utf-8",

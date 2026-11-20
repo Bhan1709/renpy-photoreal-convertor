@@ -88,6 +88,72 @@ init -999 python in _composite_export:
         except Exception:
             pass
 
+    def _states_signature(config):
+        """Hash the inputs that affect state enumeration, not batching."""
+        payload = {
+            "game_root": config.get("game_root") or "",
+            "modes": config.get("modes") or [],
+            "defaults": config.get("defaults") or {},
+            "max_synthetic_states": int(config.get("max_synthetic_states") or 1024),
+            "max_condition_assignments": int(
+                config.get("max_condition_assignments") or 64
+            ),
+            "max_cfg_states": int(config.get("max_cfg_states") or 1000000),
+            "max_cfg_depth": int(config.get("max_cfg_depth") or 6),
+        }
+        return hashlib.sha256(
+            json.dumps(payload, sort_keys=True).encode("utf-8")
+        ).hexdigest()
+
+    def _save_states(path, signature, states, walk_stats):
+        """Freeze the enumerated states so every batch slices the same list."""
+        payload = {
+            "signature": signature,
+            "walk": walk_stats,
+            "states": [
+                {
+                    "kind": entry["kind"],
+                    "tag": entry["tag"],
+                    "attributes": list(entry["attributes"]),
+                    "condition_assignments": dict(entry["condition_assignments"]),
+                    "synthetic": bool(entry.get("synthetic")),
+                    "usages": list(entry.get("usages") or []),
+                }
+                for entry in states
+            ],
+        }
+        temp_path = path + ".tmp"
+        with open(temp_path, "wb") as handle:
+            handle.write(json.dumps(payload, sort_keys=True).encode("utf-8"))
+        os.replace(temp_path, path)
+
+    def _load_states(path, signature):
+        """Return the frozen ``(states, walk_stats)``, or None if unusable."""
+        if not path or not os.path.isfile(path):
+            return None
+        try:
+            with open(path, "rb") as handle:
+                payload = json.loads(handle.read().decode("utf-8"))
+            if payload.get("signature") != signature:
+                return None
+            states = []
+            for entry in payload["states"]:
+                states.append(
+                    {
+                        "kind": entry["kind"],
+                        "tag": entry["tag"],
+                        "attributes": tuple(entry["attributes"]),
+                        "condition_assignments": dict(
+                            entry["condition_assignments"]
+                        ),
+                        "synthetic": bool(entry.get("synthetic")),
+                        "usages": list(entry.get("usages") or []),
+                    }
+                )
+            return states, dict(payload.get("walk") or {})
+        except Exception:
+            return None
+
     def _pygame():
         import pygame_sdl2
 
@@ -1200,16 +1266,24 @@ init -999 python in _composite_export:
 
         screen_width, screen_height = _setup_display(config)
 
-        roots = _roots()
-        usages, walk_stats = _walk(
-            roots,
-            game_root,
-            int(config.get("max_cfg_states") or 1000000),
-            int(config.get("max_cfg_depth") or 6),
-        )
-        layered = _layered_registry()
         defaults = config.get("defaults") or {}
-        states = _build_states(config, usages, layered, defaults)
+        layered = _layered_registry()
+        states_path = config.get("states_path") or None
+        signature = _states_signature(config)
+        cached = _load_states(states_path, signature)
+        if cached is None:
+            roots = _roots()
+            usages, walk_stats = _walk(
+                roots,
+                game_root,
+                int(config.get("max_cfg_states") or 1000000),
+                int(config.get("max_cfg_depth") or 6),
+            )
+            states = _build_states(config, usages, layered, defaults)
+            if states_path:
+                _save_states(states_path, signature, states, walk_stats)
+        else:
+            states, walk_stats = cached
 
         state_counts = {}
         for state in states:
