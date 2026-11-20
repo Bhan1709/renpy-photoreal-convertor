@@ -3,6 +3,10 @@
 Encapsulates the state previously held in a closure inside
 :meth:`converter.compose.compose_pass.orchestrate.Composer.compose` so it can be
 instantiated and unit-tested independently.
+
+Compose v2 delegates extraction and rendering to the native Ren'Py stage
+(:mod:`converter.compose.native.stage`).  There is no separate v1 static
+pipeline.
 """
 
 from __future__ import annotations

@@ -317,12 +317,9 @@ compose/
 │   ├── __init__.py
 │   ├── record.py    # _emit_record, enrichment, normalization
 │   └── emitter.py   # _CompositeEmitter
-├── compose_pass/    # Compose pass orchestration
-│   ├── __init__.py
-│   ├── orchestrate.py   # Composer class
-│   ├── counting.py      # composite counting for progress bar
-│   ├── variants.py      # condition variant enumeration
-│   └── passes.py        # Pass 1/2/3 processors
+├── compose_pass/    # Compose pass orchestration (delegates to native stage)
+│   ├── __init__.py  # Package exports (Composer)
+│   └── orchestrate.py   # Composer class — delegates to native stage
 ├── apply_pass/      # Apply pass orchestration
 │   ├── __init__.py
 │   └── applier.py   # Applier class

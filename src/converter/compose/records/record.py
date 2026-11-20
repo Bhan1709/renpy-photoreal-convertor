@@ -1,9 +1,12 @@
 """Record emission helpers for the compose pass.
 
 All functions that build, enrich, or render :class:`~converter.compose.models.CompositeRecord`
-instances live here.  This keeps :mod:`converter.compose.compose_pass` focused on
-orchestration (pass ordering, index consumption, progress reporting) rather
-than record construction details.
+instances live here.  This keeps :mod:`converter.compose.native.stage`
+focused on orchestration (pass ordering, index consumption, progress reporting)
+rather than record construction details.
+
+Compose v2 delegates extraction and rendering to the native Ren'Py stage.
+There is no separate v1 static pipeline.
 """
 
 from __future__ import annotations
