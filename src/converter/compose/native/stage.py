@@ -643,7 +643,9 @@ def _run_batches(
     reports the overall state total in its batch-start line; until then a
     spinner shows that states are being enumerated. The bar is created as soon
     as the total arrives so it always shows the real total instead of ``?``,
-    and its count accumulates across batches instead of restarting.
+    and its count accumulates across batches instead of restarting. Per-batch
+    status is written into the bar description so the same line is updated in
+    place instead of adding a new log line for every batch.
     """
     candidates: list[dict] = []
     batch_index = 0
@@ -666,7 +668,7 @@ def _run_batches(
             spinner_stack = ExitStack()
             stack.enter_context(spinner_stack)
             spinner_stack.enter_context(
-                loading("Enumerating native render states...")
+                loading(f"Native batch {batch_index}: enumerating states...")
             )
 
         def _stop_spinner() -> None:
@@ -675,6 +677,14 @@ def _run_batches(
                 return
             spinner_stack.close()
             spinner_stack = None
+
+        def _set_status(message: str) -> None:
+            if bar is None:
+                return
+            # tqdm_rich.set_description() appends a stray ': ', so update the
+            # description the same way display() reads it.
+            bar.desc = message
+            bar.display()
 
         def _ensure_bar(total: int) -> None:
             nonlocal bar, total_states
@@ -685,7 +695,7 @@ def _run_batches(
             bar = stack.enter_context(
                 progress_bar(
                     total=total,
-                    desc="Native states rendering",
+                    desc=f"Native batch {batch_index}: rendering",
                     unit="states",
                 )
             )
@@ -718,6 +728,7 @@ def _run_batches(
             attempt += 1
             batch_rendered = 0
             _set_progress(state_offset)
+            _set_status(f"Native batch {batch_index}: rendering")
 
             render_dir = workspace.root / "renders"
             workspace.config_path.write_text(
@@ -782,7 +793,7 @@ def _run_batches(
             if bar is None and total:
                 _ensure_bar(total)
             _set_progress(state_offset + int(batch.get("rendered", 0)))
-            info(
+            _set_status(
                 "Native batch {}: rendered {} of {} states.".format(
                     batch_index, batch.get("rendered", 0), total
                 )
