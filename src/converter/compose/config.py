@@ -17,8 +17,10 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
-from pathlib import Path, PureWindowsPath
+from pathlib import Path
 
+from ..utility.safe_paths import UnsafePathError
+from ..utility.safe_paths import safe_relative_path as _shared_safe_relative_path
 from .errors import ConfigError
 
 # Project root: this file lives at src/converter/compose/config.py, so
@@ -99,12 +101,17 @@ class GameConfig:
             ``game_root``. Kept for compatibility only.
         output_dir: Directory where generated composite PNGs are written.
             Defaults to ``<game_root>/composites``.
-        manifest_path: Path to the manifest JSON produced by the compose pass.
-            Defaults to ``<output_dir>/reports/manifest.json``.
+        report_dir: Directory containing split manifests and compose reports.
+            Defaults to ``<output_dir>/reports``.
+        manifest_index_path: Path to the split-manifest index JSON.
+            Defaults to ``<report_dir>/manifest_index.json``.
+        manifest_path: Legacy manifest-path override.  It is retained as a
+            compatibility anchor for its parent directory; new code should use
+            ``manifest_index_path`` and ``report_dir``.
         declaration_path: Path to ``composite_images.rpy`` written by the apply
             pass (inside the live ``game`` folder).
         report_path: Path to the adoption report JSON written by the apply pass.
-            Defaults to ``<output_dir>/reports/adoption_report.json``.
+            Defaults to ``<report_dir>/adoption_report.json``.
     """
 
     name: str
@@ -136,6 +143,8 @@ class GameConfig:
     # ``["cfg"]`` in config.json to keep a compose pass fast.
     compose_modes: tuple[str, ...] | None = None
     output_dir: Path | None = None
+    report_dir: Path | None = None
+    manifest_index_path: Path | None = None
     manifest_path: Path | None = None
     declaration_path: Path | None = None
     report_path: Path | None = None
@@ -221,19 +230,37 @@ class GameConfig:
         return self._category_folder_regex
 
     def resolved_paths(self) -> dict[str, Path]:
-        """Convenience: all important absolute paths.
+        """Return all resolved absolute output paths.
 
-        Output locations default to ``<game_root>/composites`` (i.e.
-        ``<game_folder>/composites``) when not explicitly set.
+        ``manifest_index_path`` and ``report_dir`` are the authoritative split-
+        manifest contract.  The legacy ``manifest_path`` setting is accepted
+        as a directory anchor so existing game configurations keep working.
         """
         out = self.output_dir or (self.game_root / "composites")
+
+        if self.report_dir is not None:
+            report_dir = self.report_dir
+        elif self.manifest_index_path is not None:
+            report_dir = self.manifest_index_path.parent
+        elif self.manifest_path is not None:
+            report_dir = self.manifest_path.parent
+        else:
+            report_dir = out / "reports"
+
+        manifest_index_path = self.manifest_index_path or (
+            report_dir / "manifest_index.json"
+        )
+
         return {
             "output_dir": out,
-            "manifest_path": self.manifest_path or (out / "reports" / "manifest.json"),
+            "report_dir": report_dir,
+            "manifest_index_path": manifest_index_path,
+            # Legacy key retained for callers that have not migrated yet.
+            "manifest_path": self.manifest_path or manifest_index_path,
             "declaration_path": self.declaration_path
             or (self.game_root / "composite_images.rpy"),
             "report_path": self.report_path
-            or (out / "reports" / "adoption_report.json"),
+            or (report_dir / "adoption_report.json"),
         }
 
     def to_dict(self) -> dict[str, object]:
@@ -256,7 +283,9 @@ class GameConfig:
             "ren_py_files": self.ren_py_files,
             "compose_modes": list(self.compose_modes) if self.compose_modes else None,
             "output_dir": str(paths["output_dir"]),
-            "manifest_path": str(paths["manifest_path"]),
+            "report_dir": str(paths["report_dir"]),
+            "manifest_index_path": str(paths["manifest_index_path"]),
+            "manifest_path": str(self.manifest_path or paths["manifest_index_path"]),
             "declaration_path": str(paths["declaration_path"]),
             "report_path": str(paths["report_path"]),
         }
@@ -278,23 +307,10 @@ def _safe_relative_path(value: str, *, field_name: str) -> Path:
     Both native and Windows path syntax are checked so a config authored on
     one platform cannot escape its intended root when consumed on another.
     """
-    normalized = value.replace("\\", "/").strip()
-    if not normalized or "\x00" in normalized:
-        raise ConfigError(f"unsafe {field_name} in config: {value!r}")
-
-    native = Path(normalized)
-    windows = PureWindowsPath(normalized)
-    if (
-        native.is_absolute()
-        or native.anchor
-        or windows.is_absolute()
-        or windows.drive
-        or windows.root
-        or ".." in native.parts
-        or not native.parts
-    ):
-        raise ConfigError(f"unsafe {field_name} in config: {value!r}")
-    return native
+    try:
+        return _shared_safe_relative_path(value.strip(), field_name=field_name)
+    except UnsafePathError as exc:
+        raise ConfigError(f"unsafe {field_name} in config: {value!r}") from exc
 
 
 def _archive_dirs_from_data(
@@ -533,6 +549,8 @@ def load_config(config_path: str | Path) -> GameConfig:
         ren_py_files=ren_py_files,
         compose_modes=compose_modes or None,
         output_dir=_optional_project_path(data, "output_dir"),
+        report_dir=_optional_project_path(data, "report_dir"),
+        manifest_index_path=_optional_project_path(data, "manifest_index_path"),
         manifest_path=_optional_project_path(data, "manifest_path"),
         declaration_path=_optional_project_path(data, "declaration_path"),
         report_path=_optional_project_path(data, "report_path"),

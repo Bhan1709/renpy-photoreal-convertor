@@ -8,7 +8,7 @@ from typing import Any
 
 import pytest
 
-from converter.compose.config import load_config
+from converter.compose.config import GameConfig, load_config
 from converter.compose.errors import ConfigError
 
 
@@ -77,6 +77,47 @@ def test_load_config_derives_archive_root_and_loads_optional_fields(
     assert config.non_character_folders == frozenset({"props", "fx"})
     assert config.game_defaults == {"month": 6, "day": 1}
     assert config.resolved_paths()["output_dir"] == tmp_path / "output"
+
+
+def test_load_config_resolves_explicit_manifest_paths(tmp_path: Path) -> None:
+    game_root = tmp_path / "game"
+    game_root.mkdir()
+    report_dir = tmp_path / "custom-reports"
+    index_path = report_dir / "custom-index.json"
+    config_path = _write_config(
+        tmp_path,
+        _payload(
+            game_root,
+            report_dir=str(report_dir),
+            manifest_index_path=str(index_path),
+        ),
+    )
+
+    config = load_config(config_path)
+
+    paths = config.resolved_paths()
+    assert paths["report_dir"] == report_dir
+    assert paths["manifest_index_path"] == index_path
+
+
+def test_legacy_manifest_path_remains_a_report_directory_anchor(
+    tmp_path: Path,
+) -> None:
+    game_root = tmp_path / "game"
+    game_root.mkdir()
+    legacy_manifest = tmp_path / "custom-reports" / "manifest.json"
+    config = GameConfig(
+        name="Example",
+        game_root=game_root,
+        archive_dir=game_root / "archive",
+        manifest_path=legacy_manifest,
+    )
+
+    paths = config.resolved_paths()
+
+    assert paths["report_dir"] == legacy_manifest.parent
+    assert paths["manifest_index_path"] == legacy_manifest.parent / "manifest_index.json"
+    assert paths["manifest_path"] == legacy_manifest
 
 
 def test_load_config_uses_built_in_defaults_when_optional_fields_are_absent(

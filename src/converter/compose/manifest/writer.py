@@ -4,7 +4,7 @@ Responsibility: serialise a :class:`~converter.compose.models.CompositeManifest`
 to JSON, write per-category manifest files and an index, and load manifests back
 for the apply pass.  No compositing or script parsing happens here.
 
-Layout (under ``<output_dir>/reports/``):
+Layout (under the configured ``report_dir``):
 
 - ``manifest_bg.json``   — composites in the ``bg`` family
 - ``manifest_char.json`` — composites in the ``char`` family
@@ -13,31 +13,100 @@ Layout (under ``<output_dir>/reports/``):
 - ``manifest_other.json`` — composites that don't fit a known family
 - ``characters.json`` — canonical character names, generated folders, and aliases
 - ``manifest_index.json`` — global data (summary, dynamic_states, image_declarations,
-  dynamic_declarations, unresolved) plus references to each category file.
+  dynamic_declarations, unresolved, CFG walk state) plus references to each
+  category file.
 
-There is no single monolithic ``manifest.json``.  The apply pass loads the index
-and merges all category manifests in memory.
+There is no single monolithic ``manifest.json``.  The bundle is published with
+atomic replacements, and the index stores relative category references that all
+consumers resolve.
 """
 
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import cast
 
 from cli import print_summary
 
+from ...utility import atomic_write_json, atomic_write_json_files
+from ...utility.atomic import json_payload_digest
+from ...utility.manifest_bundle import (
+    ManifestBundlePathError,
+    bundle_journal_metadata,
+    bundle_journal_path,
+    bundle_paths,
+    manifest_bundle_lock,
+    recover_manifest_bundle,
+    register_bundle_owner,
+    validate_manifest_index_path,
+)
+from ...utility.manifest_paths import (
+    MANIFEST_BUNDLE_VERSION,
+    MANIFEST_CATEGORIES,
+    ManifestIntegrityError,
+    ManifestPathError,
+    verify_category_manifest_digests,
+)
+from ...utility.manifest_paths import (
+    resolve_category_manifest_paths as _resolve_category_manifest_paths,
+)
 from ..association import CharacterAssociator, CharacterDeclaration
 from ..config import GameConfig
 from ..errors import ManifestError
 from ..models import CompositeManifest, CompositeRecord
 
-KNOWN_FAMILIES = ("bg", "char", "scene", "gui", "other")
+KNOWN_FAMILIES = MANIFEST_CATEGORIES
 
 # Canonical character catalog — source of truth for character names and their
 # speaker aliases. Seeded during compose from Ren'Py Character() declarations;
 # used by the interactive review task.
 CHARACTERS_FILE = "characters.json"
+
+
+def _validate_index_path(index_path: Path, report_dir: Path) -> None:
+    """Reject an index path that aliases a reserved bundle file."""
+    try:
+        validate_manifest_index_path(index_path, report_dir)
+    except ManifestBundlePathError as exc:
+        raise ManifestError(str(exc)) from exc
+
+
+def _relative_manifest_reference(target: Path, manifest_index_path: Path) -> str:
+    """Return a category path relative to the manifest index directory."""
+    try:
+        relative = os.path.relpath(
+            os.path.abspath(os.fspath(target)),
+            os.path.abspath(os.fspath(manifest_index_path.parent)),
+        )
+    except ValueError as exc:
+        raise ManifestError(
+            f"Manifest category path is on a different filesystem: {target}"
+        ) from exc
+    return Path(relative).as_posix()
+
+
+def resolve_category_manifest_paths(
+    index_payload: dict,
+    manifest_index_path: Path,
+    report_dir: Path | None = None,
+) -> dict[str, Path]:
+    """Resolve category manifests from the references stored in an index.
+
+    Relative references are resolved against the index directory.  Absolute
+    references remain readable for compatibility with older manifests.  A
+    missing reference key falls back to the canonical category filename in
+    *report_dir*, while an explicitly referenced missing file is an error.
+    """
+    try:
+        return _resolve_category_manifest_paths(
+            index_payload,
+            manifest_index_path,
+            report_dir,
+        )
+    except ManifestPathError as exc:
+        raise ManifestError(str(exc)) from exc
 
 
 def _collect_unmapped_speakers(
@@ -72,7 +141,7 @@ def _load_characters(reports_dir: Path) -> dict[str, dict]:
 def _save_characters(reports_dir: Path, characters: dict[str, dict]) -> None:
     """Persist character -> {folder, aliases} map to characters.json."""
     characters_path = reports_dir / CHARACTERS_FILE
-    characters_path.write_text(json.dumps(characters, indent=2), encoding="utf-8")
+    atomic_write_json(characters_path, characters)
 
 
 def _generated_character_folders(
@@ -141,6 +210,8 @@ def _seed_characters(
     reports_dir: Path,
     manifest: CompositeManifest | None = None,
     extra: dict[str, CharacterDeclaration] | None = None,
+    *,
+    persist: bool = True,
 ) -> dict[str, dict]:
     """Build characters.json from Ren'Py Character() declarations.
 
@@ -190,15 +261,39 @@ def _seed_characters(
         info["aliases"] = sorted(aliases, key=str.lower)
         characters[name] = info
 
-    _save_characters(reports_dir, characters)
+    if persist:
+        _save_characters(reports_dir, characters)
     return characters
 
 
 class ManifestWriter:
     """Writes and loads split category manifests for the compose pass."""
 
-    def __init__(self, config: GameConfig) -> None:
+    def __init__(
+        self,
+        config: GameConfig,
+        *,
+        manifest_index_path: Path | None = None,
+        report_dir: Path | None = None,
+    ) -> None:
         self.config = config
+        paths = config.resolved_paths()
+        if manifest_index_path is not None:
+            self.manifest_index_path = Path(manifest_index_path)
+            self.report_dir = (
+                Path(report_dir)
+                if report_dir is not None
+                else self.manifest_index_path.parent
+            )
+        else:
+            self.report_dir = (
+                Path(report_dir) if report_dir is not None else paths["report_dir"]
+            )
+            self.manifest_index_path = (
+                self.report_dir / "manifest_index.json"
+                if report_dir is not None and config.manifest_index_path is None
+                else paths["manifest_index_path"]
+            )
 
     # ------------------------------------------------------------------ #
     # Writing
@@ -209,18 +304,66 @@ class ManifestWriter:
         manifest: CompositeManifest,
         dry_run: bool = False,
         extra_characters: dict[str, CharacterDeclaration] | None = None,
+        *,
+        manifest_index_path: Path | None = None,
+        report_dir: Path | None = None,
     ) -> CompositeManifest:
-        """Write per-category manifests + index to disk (unless ``dry_run``).
+        """Write the split-manifest bundle as one atomic transaction.
 
-        Does *not* write a monolithic manifest.json.  Each category gets its
-        own file; global data lives in manifest_index.json.
-
-        ``extra_characters`` merges native-stage character discoveries into
-        characters.json without overriding statically-parsed declarations.
+        Each category gets its own file and global data lives in the manifest
+        index.  The index is replaced last and acts as the transaction's commit
+        marker.  ``extra_characters`` merges native-stage discoveries into the
+        character catalog without overriding statically parsed declarations.
+        The native compose stage is the intended sole caller; callers must not
+        republish an already-published manifest.
         """
-        paths = self.config.resolved_paths()
-        reports_dir = paths["manifest_path"].parent
+        if manifest_index_path is not None:
+            index_path = Path(manifest_index_path)
+            reports_dir = (
+                Path(report_dir) if report_dir is not None else index_path.parent
+            )
+        else:
+            index_path = self.manifest_index_path
+            reports_dir = (
+                Path(report_dir) if report_dir is not None else self.report_dir
+            )
+        _validate_index_path(index_path, reports_dir)
 
+        with manifest_bundle_lock(index_path, report_dir=reports_dir):
+            recover_manifest_bundle(index_path, reports_dir)
+            return self._write_unlocked(
+                manifest,
+                dry_run=dry_run,
+                extra_characters=extra_characters,
+                manifest_index_path=manifest_index_path,
+                report_dir=report_dir,
+            )
+
+    def _write_unlocked(
+        self,
+        manifest: CompositeManifest,
+        dry_run: bool = False,
+        extra_characters: dict[str, CharacterDeclaration] | None = None,
+        *,
+        manifest_index_path: Path | None = None,
+        report_dir: Path | None = None,
+    ) -> CompositeManifest:
+        """Write the bundle while the caller holds the bundle lock."""
+        if manifest_index_path is not None:
+            index_path = Path(manifest_index_path)
+            reports_dir = (
+                Path(report_dir) if report_dir is not None else index_path.parent
+            )
+        else:
+            index_path = self.manifest_index_path
+            reports_dir = (
+                Path(report_dir) if report_dir is not None else self.report_dir
+            )
+        self.manifest_index_path = index_path
+        self.report_dir = reports_dir
+        _validate_index_path(index_path, reports_dir)
+
+        stable_bundle_paths = bundle_paths(index_path, reports_dir)
         known_families = set(KNOWN_FAMILIES)
         categories: dict[str, list] = {name: [] for name in KNOWN_FAMILIES}
         for record in manifest.composites_list:
@@ -231,8 +374,12 @@ class ManifestWriter:
                 categories.setdefault("other", []).append(record)
 
         if dry_run:
-            scene_records = [r for r in manifest.composites_list if r.family == "scene"]
-            missing = [r.composite_path for r in scene_records if not r.characters]
+            scene_records = [
+                record for record in manifest.composites_list if record.family == "scene"
+            ]
+            missing = [
+                record.composite_path for record in scene_records if not record.characters
+            ]
             pending_scenes = missing
             unmapped_speakers = _collect_unmapped_speakers(manifest)
             association_summary = {
@@ -243,83 +390,93 @@ class ManifestWriter:
             }
         else:
             reports_dir.mkdir(parents=True, exist_ok=True)
+            index_path.parent.mkdir(parents=True, exist_ok=True)
 
+            transaction: dict[Path, dict] = {}
             category_files: dict[str, str] = {}
-            for cat_name in KNOWN_FAMILIES:
-                cat_records = categories.get(cat_name, [])
-                cat_manifest = {
-                    "category": cat_name,
-                    "composites": [r.to_dict() for r in cat_records],
-                    "summary": {"composites": len(cat_records)},
+            category_digests: dict[str, str] = {}
+            for category_name in KNOWN_FAMILIES:
+                category_records = categories.get(category_name, [])
+                category_manifest = {
+                    "category": category_name,
+                    "composites": [record.to_dict() for record in category_records],
+                    "summary": {"composites": len(category_records)},
                 }
-                cat_path = reports_dir / f"manifest_{cat_name}.json"
-                cat_path.write_text(
-                    json.dumps(cat_manifest, indent=2), encoding="utf-8"
+                category_path = reports_dir / f"manifest_{category_name}.json"
+                transaction[category_path] = category_manifest
+                category_digests[category_name] = json_payload_digest(
+                    category_manifest
                 )
-                category_files[cat_name] = str(cat_path)
+                category_files[category_name] = _relative_manifest_reference(
+                    category_path, index_path
+                )
 
-            # Index carries the global (non-composite) data plus file references.
+            characters = _seed_characters(
+                self.config,
+                reports_dir,
+                manifest,
+                extra_characters,
+                persist=False,
+            )
+            transaction[reports_dir / CHARACTERS_FILE] = characters
+
+            scene_without_chars = [
+                {
+                    "composite_path": record.composite_path,
+                    "name": record.name,
+                    "definition": {
+                        "script": record.definition.script,
+                        "line": record.definition.line,
+                    },
+                    "usage_locations": [
+                        {
+                            "script": location.script,
+                            "line": location.line,
+                            "statement": location.statement,
+                        }
+                        for location in record.usage_locations
+                    ],
+                }
+                for record in manifest.composites_list
+                if record.family == "scene" and not record.characters
+            ]
+            all_unmapped = _collect_unmapped_speakers(manifest)
+            transaction[reports_dir / "review_pending.json"] = {
+                "pending_reviews": len(scene_without_chars),
+                "scenes": scene_without_chars,
+                "unmapped_speakers": [
+                    {"speaker": speaker, "composites": sorted(composites)}
+                    for speaker, composites in sorted(all_unmapped.items())
+                ],
+            }
+
             index_manifest = {
+                "bundle_version": MANIFEST_BUNDLE_VERSION,
                 "categories": category_files,
+                "category_digests": category_digests,
                 "summary": manifest.summary,
                 "dynamic_states": manifest.dynamic_states,
                 "image_declarations": manifest.image_declarations,
                 "dynamic_declarations": manifest.dynamic_declarations,
                 "unresolved": list(manifest.unresolved),
+                "cfg_processed": manifest.cfg_processed,
+                "cfg_truncated": manifest.cfg_truncated,
             }
-            index_path = reports_dir / "manifest_index.json"
-            index_path.write_text(
-                json.dumps(index_manifest, indent=2), encoding="utf-8"
+            # The index is intentionally the final replacement in the bundle.
+            transaction[index_path] = index_manifest
+            register_bundle_owner(index_path, reports_dir)
+            atomic_write_json_files(
+                transaction,
+                journal_path=bundle_journal_path(index_path, reports_dir),
+                allowed_paths=stable_bundle_paths,
+                journal_metadata=bundle_journal_metadata(index_path, reports_dir),
             )
 
-            # Build pending review: scenes without character association, plus
-            # all unmapped speakers found across scene composites (speakers in
-            # dialog that could not be mapped to any char folder).
-            # Seed characters.json from Character() declarations before
-            # generating the pending review.
-            _seed_characters(self.config, reports_dir, manifest, extra_characters)
-
-            scene_without_chars = [
-                {
-                    "composite_path": r.composite_path,
-                    "name": r.name,
-                    "definition": {
-                        "script": r.definition.script,
-                        "line": r.definition.line,
-                    },
-                    "usage_locations": [
-                        {
-                            "script": loc.script,
-                            "line": loc.line,
-                            "statement": loc.statement,
-                        }
-                        for loc in r.usage_locations
-                    ],
-                }
-                for r in manifest.composites_list
-                if r.family == "scene" and not r.characters
-            ]
-            all_unmapped = _collect_unmapped_speakers(manifest)
             pending_scenes = cast(
-                list[str], [s["composite_path"] for s in scene_without_chars]
+                list[str],
+                [scene["composite_path"] for scene in scene_without_chars],
             )
             unmapped_speakers = dict(all_unmapped)
-            pending_path = reports_dir / "review_pending.json"
-            pending_path.write_text(
-                json.dumps(
-                    {
-                        "pending_reviews": len(scene_without_chars),
-                        "scenes": scene_without_chars,
-                        "unmapped_speakers": [
-                            {"speaker": speaker, "composites": sorted(composites)}
-                            for speaker, composites in sorted(all_unmapped.items())
-                        ],
-                    },
-                    indent=2,
-                ),
-                encoding="utf-8",
-            )
-
             association_summary = cast(
                 dict, manifest.summary.get("scene_character_associations", {})
             )
@@ -332,59 +489,159 @@ class ManifestWriter:
     # ------------------------------------------------------------------ #
 
     @classmethod
-    def has_composite_manifest(cls, config: GameConfig) -> bool:
+    def has_composite_manifest(
+        cls,
+        config: GameConfig,
+        *,
+        manifest_index_path: Path | None = None,
+        report_dir: Path | None = None,
+    ) -> bool:
         """Return whether the compose pass has produced a manifest index."""
-        paths = config.resolved_paths()
-        index_path = paths["manifest_path"].parent / "manifest_index.json"
-        return index_path.is_file()
+        writer = cls(
+            config,
+            manifest_index_path=manifest_index_path,
+            report_dir=report_dir,
+        )
+        _validate_index_path(writer.manifest_index_path, writer.report_dir)
+        with manifest_bundle_lock(
+            writer.manifest_index_path,
+            report_dir=writer.report_dir,
+        ):
+            recover_manifest_bundle(
+                writer.manifest_index_path,
+                writer.report_dir,
+            )
+            return writer.manifest_index_path.is_file()
 
     @classmethod
-    def load_all(cls, config: GameConfig) -> CompositeManifest:
-        """Load the index and all category manifests, merge into one manifest.
+    def load_all(
+        cls,
+        config: GameConfig,
+        *,
+        manifest_index_path: Path | None = None,
+        report_dir: Path | None = None,
+    ) -> CompositeManifest:
+        """Load the index and referenced category manifests into one manifest."""
+        writer = cls(
+            config,
+            manifest_index_path=manifest_index_path,
+            report_dir=report_dir,
+        )
+        _validate_index_path(writer.manifest_index_path, writer.report_dir)
+        with manifest_bundle_lock(
+            writer.manifest_index_path,
+            report_dir=writer.report_dir,
+        ):
+            recover_manifest_bundle(
+                writer.manifest_index_path,
+                writer.report_dir,
+            )
+            return writer._load_all_unlocked()
 
-        Used by the apply pass.  Reads ``manifest_index.json`` for global data
-        and each ``manifest_<cat>.json`` for the composites in that category.
-        """
-        paths = config.resolved_paths()
-        reports_dir = paths["manifest_path"].parent
-        index_path = reports_dir / "manifest_index.json"
-
+    def _load_all_unlocked(self) -> CompositeManifest:
+        """Load the bundle while the caller holds the bundle lock."""
+        index_path = self.manifest_index_path
+        _validate_index_path(index_path, self.report_dir)
         if not index_path.is_file():
             raise ManifestError(f"Manifest index not found: {index_path}")
 
-        index = json.loads(index_path.read_text(encoding="utf-8"))
+        try:
+            index = json.loads(index_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ManifestError(
+                f"Could not read manifest index {index_path}: {exc}"
+            ) from exc
+        if not isinstance(index, dict):
+            raise ManifestError(f"Manifest index must contain an object: {index_path}")
+        category_paths = resolve_category_manifest_paths(
+            index,
+            index_path,
+            self.report_dir,
+        )
+        try:
+            verify_category_manifest_digests(
+                index,
+                category_paths,
+                report_dir=self.report_dir,
+                manifest_index_path=index_path,
+            )
+        except ManifestIntegrityError as exc:
+            raise ManifestError(str(exc)) from exc
 
         all_composites: list[dict] = []
-        for cat_name in KNOWN_FAMILIES:
-            cat_path = reports_dir / f"manifest_{cat_name}.json"
-            if not cat_path.is_file():
-                continue
-            cat_data = json.loads(cat_path.read_text(encoding="utf-8"))
-            all_composites.extend(cat_data.get("composites", []))
+        for category_path in category_paths.values():
+            try:
+                category_data = json.loads(category_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                raise ManifestError(
+                    f"Could not read manifest category file {category_path}: {exc}"
+                ) from exc
+            if not isinstance(category_data, dict):
+                raise ManifestError(
+                    f"Manifest category file must contain an object: {category_path}"
+                )
+            composites = category_data.get("composites", [])
+            if not isinstance(composites, list):
+                raise ManifestError(
+                    f"Manifest category 'composites' must be a list: {category_path}"
+                )
+            for composite in composites:
+                if not isinstance(composite, dict):
+                    raise ManifestError(
+                        f"Manifest category contains an invalid composite: {category_path}"
+                    )
+            all_composites.extend(composites)
+
+        try:
+            records = tuple(CompositeRecord.from_dict(c) for c in all_composites)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ManifestError(
+                f"Manifest category contains an invalid composite record: {exc}"
+            ) from exc
 
         return CompositeManifest(
-            composites=tuple(CompositeRecord.from_dict(c) for c in all_composites),
+            composites=records,
             dynamic_states=index.get("dynamic_states", []),
             image_declarations=index.get("image_declarations", []),
             dynamic_declarations=index.get("dynamic_declarations", []),
             unresolved=tuple(index.get("unresolved", [])),
             summary=index.get("summary", {}),
+            cfg_processed=int(index.get("cfg_processed", 0)),
+            cfg_truncated=bool(index.get("cfg_truncated", False)),
         )
 
     @classmethod
-    def load_pending_review(cls, config: GameConfig) -> dict:
-        """Load the pending scene review report, if any.
-
-        Returns the full pending review dict with ``scenes`` and
-        ``unmapped_speakers`` keys.  Empty dict when no pending reviews exist
-        or the file is absent.
-        """
-        paths = config.resolved_paths()
-        reports_dir = paths["manifest_path"].parent
-        pending_path = reports_dir / "review_pending.json"
-        if not pending_path.is_file():
-            return {}
-        return json.loads(pending_path.read_text(encoding="utf-8"))
+    def load_pending_review(
+        cls,
+        config: GameConfig,
+        *,
+        manifest_index_path: Path | None = None,
+        report_dir: Path | None = None,
+    ) -> dict:
+        """Load the pending scene review report, if any."""
+        writer = cls(
+            config,
+            manifest_index_path=manifest_index_path,
+            report_dir=report_dir,
+        )
+        _validate_index_path(writer.manifest_index_path, writer.report_dir)
+        pending_path = writer.report_dir / "review_pending.json"
+        with manifest_bundle_lock(
+            writer.manifest_index_path,
+            report_dir=writer.report_dir,
+        ):
+            recover_manifest_bundle(
+                writer.manifest_index_path,
+                writer.report_dir,
+            )
+            if not pending_path.is_file():
+                return {}
+            try:
+                return json.loads(pending_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                raise ManifestError(
+                    f"Could not read pending review file {pending_path}: {exc}"
+                ) from exc
 
 
 def _print_summary(

@@ -136,7 +136,12 @@ class UsageLocation:
 
 @dataclass(frozen=True)
 class CompositeRecord:
-    """A single composite: one output PNG plus provenance metadata."""
+    """A single composite: one output PNG plus provenance metadata.
+
+    Native records also retain the rendered ``content_hash`` and the condition
+    assignment state that produced the image.  Both are part of the record's
+    identity and are serialized with the manifest.
+    """
 
     composite_path: str  # relative to game_root parent
     name: str
@@ -153,6 +158,8 @@ class CompositeRecord:
     character_name: str | None = None
     character_association_status: str | None = None
     unmapped_speakers: tuple[str, ...] | None = None
+    content_hash: str | None = None
+    condition_state: dict[str, object] = field(default_factory=dict)
 
     def with_usage(self, location: UsageLocation) -> CompositeRecord:
         """Return a copy with an additional usage location appended."""
@@ -201,6 +208,8 @@ class CompositeRecord:
             "dynamic_conditions": list(self.dynamic_conditions),
             "resolved_conditions": list(self.resolved_conditions),
             "family": self.family,
+            "content_hash": self.content_hash,
+            "condition_state": dict(self.condition_state),
         }
         if self.characters is not None:
             d["characters"] = list(self.characters)
@@ -243,6 +252,8 @@ class CompositeRecord:
             dynamic_conditions=tuple(data.get("dynamic_conditions", [])),
             resolved_conditions=tuple(data.get("resolved_conditions", [])),
             family=data.get("family", data.get("kind", "")),
+            content_hash=data.get("content_hash"),
+            condition_state=dict(data.get("condition_state", {})),
             characters=tuple(data.get("characters", []))
             if data.get("characters")
             else None,
@@ -256,7 +267,11 @@ class CompositeRecord:
 
 @dataclass(frozen=True)
 class CompositeManifest:
-    """The full manifest produced by the compose pass."""
+    """The full manifest produced by the compose pass.
+
+    ``cfg_processed`` and ``cfg_truncated`` preserve whether the native CFG
+    walk completed or hit its node budget.
+    """
 
     composites: tuple[CompositeRecord, ...]
     dynamic_states: list[dict]
@@ -264,6 +279,8 @@ class CompositeManifest:
     dynamic_declarations: list[dict]
     unresolved: tuple[str, ...]
     summary: dict[str, object]
+    cfg_processed: int = 0
+    cfg_truncated: bool = False
 
     @property
     def composites_list(self) -> list[CompositeRecord]:
@@ -282,6 +299,8 @@ class CompositeManifest:
             dynamic_declarations=data.get("dynamic_declarations", []),
             unresolved=tuple(data.get("unresolved", [])),
             summary=data.get("summary", {}),
+            cfg_processed=int(data.get("cfg_processed", 0)),
+            cfg_truncated=bool(data.get("cfg_truncated", False)),
         )
 
     def to_dict(self) -> dict:
@@ -293,6 +312,8 @@ class CompositeManifest:
             "dynamic_declarations": self.dynamic_declarations,
             "unresolved": list(self.unresolved),
             "summary": self.summary,
+            "cfg_processed": self.cfg_processed,
+            "cfg_truncated": self.cfg_truncated,
         }
 
 

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from ...utility.safe_paths import UnsafePathError
 from ..config import GameConfig
 
 _SKIP_DIRS = frozenset({"archive", "cache"})
@@ -21,6 +22,17 @@ def _is_live_script(path: Path, game_root: Path) -> bool:
         path.name not in _GENERATED_SCRIPTS
         and not _SKIP_DIRS.intersection(relative.parts[:-1])
     )
+
+
+def _require_contained(path: Path, game_root: Path) -> Path:
+    """Return a script path after rejecting a symlink escape."""
+    root = game_root.resolve()
+    resolved = path.resolve()
+    if not resolved.is_relative_to(root):
+        raise UnsafePathError(
+            f"Game script path escapes the game root: {path}"
+        )
+    return resolved
 
 
 def files(
@@ -38,6 +50,7 @@ def files(
     for path in sorted(
         config.game_root.rglob("*.rpy"), key=lambda p: p.as_posix().lower()
     ):
+        _require_contained(path, config.game_root)
         if not _is_live_script(path, config.game_root):
             continue
         if include is None:
@@ -60,9 +73,8 @@ def live_scripts(config: GameConfig) -> list[str]:
         path.relative_to(config.game_root).as_posix()
         for path in files(config)
     }
-    scripts.update(
-        path.relative_to(config.game_root).as_posix()
-        for path in config.game_root.rglob("*_ren.py")
-        if _is_live_script(path, config.game_root)
-    )
+    for path in config.game_root.rglob("*_ren.py"):
+        _require_contained(path, config.game_root)
+        if _is_live_script(path, config.game_root):
+            scripts.add(path.relative_to(config.game_root).as_posix())
     return sorted(scripts)

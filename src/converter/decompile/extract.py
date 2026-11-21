@@ -7,6 +7,12 @@ from pathlib import Path
 
 from cli import counted, error, info, loading, success
 
+from ..utility.safe_paths import (
+    UnsafePathError,
+    resolve_under_root,
+    safe_relative_path,
+)
+
 
 @dataclass(frozen=True)
 class ArchiveExtraction:
@@ -35,15 +41,23 @@ class ArchiveExtraction:
 
 def _safe_member_target(extract_dir: Path, filename: str) -> Path:
     """Resolve an archive member and reject paths outside the extraction root."""
-    member = Path(filename)
-    if member.is_absolute() or ".." in member.parts:
-        raise ValueError(f"unsafe archive member path: {filename!r}")
-
-    target = (extract_dir / member).resolve()
-    root = extract_dir.resolve()
-    if not target.is_relative_to(root):
-        raise ValueError(f"archive member escapes extraction root: {filename!r}")
-    return target
+    try:
+        relative = safe_relative_path(
+            filename,
+            field_name="archive member path",
+        )
+    except UnsafePathError as exc:
+        raise ValueError(f"unsafe archive member path: {filename!r}") from exc
+    try:
+        return resolve_under_root(
+            extract_dir,
+            relative,
+            field_name="archive member path",
+        )
+    except UnsafePathError as exc:
+        raise ValueError(
+            f"archive member escapes extraction root: {filename!r}"
+        ) from exc
 
 
 def extract_rpa_file_detailed(rpa_file: Path) -> ArchiveExtraction:

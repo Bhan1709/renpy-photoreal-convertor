@@ -37,7 +37,7 @@ List only meaningful top-level directories and files.
 | Boundary | What belongs here | What must not be here |
 |----------|-------------------|------------------------|
 | `src/agent/` | OpenCode orchestration: profile loading/validation (`config.py`), CLI launcher (`cli.py`), NVIDIA rate-limit proxy (`nvidia_proxy.py`), context-window monitor (`monitor.py`), constants, bundled Modelfiles | Ren'Py asset processing, `.rpy`/`.rpa` handling, image compositing |
-| `src/converter/` | Ren'Py conversion toolkit shared utilities (`utility/tqdm`) plus `decompile`, `compose`, `restore` subpackages | OpenCode/profile/proxy logic |
+| `src/converter/` | Ren'Py conversion toolkit shared utilities (`utility/`: progress, atomic writes, manifest paths) plus `decompile`, `compose`, `restore` subpackages | OpenCode/profile/proxy logic |
 | `src/converter/decompile/` | Discover game folders, copy/stage files, extract `.rpa`, decompile `.rpyc`, scan image categories, write/load `config.json`, restore decompile outputs | Compositing, script rewriting, OpenCode launching |
 | `src/converter/compose/` | Parse Ren'Py scripts, resolve asset paths, static condition eval, composite PNGs (PIL), per-category manifests, apply composites into live `.rpy` scripts, `composite_images.rpy` declarations | Game-folder discovery, `.rpa` extraction, `.rpyc` decompilation, OpenCode orchestration |
 | `src/converter/restore/` | Revert modified `.rpy` files from `archive.rpa`; undo a full decompile (remove extracted folder + `config.json`) | Composing new composites, decompiling |

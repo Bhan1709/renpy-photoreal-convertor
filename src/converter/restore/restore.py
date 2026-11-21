@@ -6,7 +6,8 @@ pass, by re-extracting them from the game's ``archive.rpa``.
 This subpackage is intentionally independent of :mod:`converter.compose` — it
 only needs a ``game_root`` (the Ren'Py ``\\game`` folder) and, optionally, a
 manifest path.  This makes it reusable by the decompile/pipeline layers as
-well as by compose.
+well as by compose. Archive members, manifest script references, and destructive
+restore roots are containment-checked before live files are modified.
 
 Usage::
 
@@ -28,11 +29,30 @@ Usage::
 from __future__ import annotations
 
 import json
+import os
 import shutil
+import tempfile
 from pathlib import Path
 
 from cli import loading
 
+from ..utility.manifest_bundle import (
+    ManifestBundlePathError,
+    game_script_lock,
+    manifest_bundle_lock,
+    recover_manifest_bundle,
+    validate_manifest_index_path,
+)
+from ..utility.manifest_paths import (
+    ManifestPathError,
+    resolve_category_manifest_paths,
+    verify_category_manifest_digests,
+)
+from ..utility.safe_paths import (
+    UnsafePathError,
+    game_script_relative_path,
+    resolve_under_root,
+)
 from .errors import RestoreError
 
 
@@ -51,7 +71,44 @@ def find_archive(game_root: Path) -> Path | None:
     return None
 
 
+def _atomic_write_bytes(target: Path, data: bytes) -> None:
+    """Atomically replace one restored script with *data*."""
+    target.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, raw_temporary = tempfile.mkstemp(
+        prefix=f".{target.name}.",
+        suffix=".tmp",
+        dir=target.parent,
+    )
+    temporary = Path(raw_temporary)
+    os.close(descriptor)
+    try:
+        with temporary.open("wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, target)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def restore_rpy_files(
+    game_root: Path,
+    *,
+    archive_path: Path | None = None,
+    only_files: list[str] | None = None,
+    dry_run: bool = False,
+) -> dict[str, str]:
+    """Restore archived ``.rpy`` files while holding the game-script lock."""
+    with game_script_lock(game_root):
+        return _restore_rpy_files_unlocked(
+            game_root,
+            archive_path=archive_path,
+            only_files=only_files,
+            dry_run=dry_run,
+        )
+
+
+def _restore_rpy_files_unlocked(
     game_root: Path,
     *,
     archive_path: Path | None = None,
@@ -101,21 +158,30 @@ def restore_rpy_files(
         RenPyArchive(archive, verbose=False) as rpa,
         loading(restore_message),
     ):
+        candidates: list[tuple[str, Path]] = []
         for filename in rpa.list():
             if not filename.endswith(".rpy"):
                 continue
             if only_files is not None and filename not in only_files:
                 continue
+            try:
+                target = resolve_under_root(
+                    game_root,
+                    filename,
+                    field_name="archive script path",
+                )
+            except UnsafePathError as exc:
+                raise RestoreError(str(exc)) from exc
+            candidates.append((filename, target))
 
-            target = game_root / filename
+        for filename, target in candidates:
             if dry_run:
                 results[filename] = "would_restore"
                 continue
 
             try:
                 data = rpa.read(filename)
-                target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_bytes(data)
+                _atomic_write_bytes(target, data)
                 results[filename] = "restored"
             except Exception as exc:  # noqa: BLE001
                 results[filename] = f"skipped: {exc}"
@@ -127,42 +193,163 @@ def restore_from_manifest(
     game_root: Path,
     manifest_path: str | Path | None = None,
     *,
+    manifest_index_path: str | Path | None = None,
+    report_dir: str | Path | None = None,
     dry_run: bool = False,
 ) -> dict[str, str]:
     """Restore only the .rpy files that a compose/apply pass touched.
 
-    Reads the manifest JSON to determine which scripts had usage locations
-    (and therefore potential replacements), then restores only those files
-    from the archive.
+    Both the split manifest index and the legacy monolithic manifest are
+    supported.  Split category references are resolved relative to the index
+    directory; categories omitted from a partial index fall back to the
+    canonical filenames in ``report_dir``.
 
     Args:
         game_root: The Ren'Py ``\\game`` folder.
-        manifest_path: Path to the manifest JSON.  Defaults to
-            ``game_root.parent / "composites" / "reports" / "manifest.json"``.
+        manifest_path: Legacy manifest path or manifest index path.
+        manifest_index_path: Explicit path to ``manifest_index.json``.
+        report_dir: Explicit report directory used to locate the index and
+            legacy manifest fallback.
         dry_run: If True, report what would be restored without writing.
 
     Returns:
         A dict mapping restored relative paths to a status string.
     """
-    mp = Path(manifest_path) if manifest_path is not None else None
-    if mp is None:
-        mp = game_root.parent / "composites" / "reports" / "manifest.json"
-    if not mp.is_file():
-        raise RestoreError(f"Manifest not found: {mp}")
+    explicit_manifest = manifest_index_path is not None or manifest_path is not None
+    if manifest_index_path is not None:
+        index_path = Path(manifest_index_path)
+    elif manifest_path is not None:
+        index_path = Path(manifest_path)
+    else:
+        category_report_dir = (
+            Path(report_dir)
+            if report_dir is not None
+            else game_root.parent / "composites" / "reports"
+        )
+        index_path = category_report_dir / "manifest_index.json"
 
-    data = json.loads(mp.read_text(encoding="utf-8"))
+    if manifest_index_path is not None or manifest_path is not None:
+        category_report_dir = (
+            Path(report_dir) if report_dir is not None else index_path.parent
+        )
 
-    # Collect all unique script paths that had usage locations.
+    with (
+        manifest_bundle_lock(index_path, report_dir=category_report_dir),
+        game_script_lock(game_root),
+    ):
+        if not explicit_manifest and not index_path.is_file():
+            legacy_manifest = category_report_dir / "manifest.json"
+            if legacy_manifest.is_file():
+                index_path = legacy_manifest
+        try:
+            validate_manifest_index_path(index_path, category_report_dir)
+        except ManifestBundlePathError as exc:
+            raise RestoreError(str(exc)) from exc
+        try:
+            recover_manifest_bundle(index_path, category_report_dir)
+        except (OSError, RuntimeError) as exc:
+            raise RestoreError(f"Could not recover manifest bundle: {exc}") from exc
+        return _restore_from_manifest_unlocked(
+            game_root,
+            index_path,
+            category_report_dir,
+            dry_run=dry_run,
+        )
+
+
+def _restore_from_manifest_unlocked(
+    game_root: Path,
+    index_path: Path,
+    category_report_dir: Path,
+    *,
+    dry_run: bool,
+) -> dict[str, str]:
+    """Restore from a manifest while the caller holds the bundle lock."""
+    try:
+        validate_manifest_index_path(index_path, category_report_dir)
+    except ManifestBundlePathError as exc:
+        raise RestoreError(str(exc)) from exc
+    if not index_path.is_file():
+        raise RestoreError(f"Manifest not found: {index_path}")
+
+    try:
+        index = json.loads(index_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RestoreError(f"Could not read manifest {index_path}: {exc}") from exc
+
+    if not isinstance(index, dict):
+        raise RestoreError(f"Manifest must contain an object: {index_path}")
+
+    is_split_bundle = any(
+        marker in index
+        for marker in ("categories", "category_digests", "bundle_version")
+    )
+    records: list[dict] = []
+    if not is_split_bundle:
+        # A legacy monolithic manifest is self-contained.  Do not merge
+        # stale split category files that happen to live beside it.
+        legacy_records = index.get("composites", [])
+        if not isinstance(legacy_records, list):
+            raise RestoreError("Manifest 'composites' must be a list")
+        for record in legacy_records:
+            if not isinstance(record, dict):
+                raise RestoreError("Manifest contains an invalid composite record")
+        records.extend(legacy_records)
+    else:
+        try:
+            category_paths = resolve_category_manifest_paths(
+                index,
+                index_path,
+                category_report_dir,
+            )
+            verify_category_manifest_digests(
+                index,
+                category_paths,
+                report_dir=category_report_dir,
+                manifest_index_path=index_path,
+            )
+        except ManifestPathError as exc:
+            raise RestoreError(str(exc)) from exc
+
+        for category_path in category_paths.values():
+            try:
+                category_data = json.loads(category_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                raise RestoreError(
+                    f"Could not read manifest category file {category_path}: {exc}"
+                ) from exc
+            if not isinstance(category_data, dict):
+                raise RestoreError(
+                    f"Manifest category file must contain an object: {category_path}"
+                )
+            composites = category_data.get("composites", [])
+            if not isinstance(composites, list):
+                raise RestoreError(
+                    f"Manifest category 'composites' must be a list: {category_path}"
+                )
+            for composite in composites:
+                if not isinstance(composite, dict):
+                    raise RestoreError(
+                        f"Manifest category contains an invalid composite: {category_path}"
+                    )
+            records.extend(composites)
+
     scripts_to_restore: set[str] = set()
-    for record in data.get("composites", []):
-        for loc in record.get("usage_locations", []):
-            script = loc.get("script", "")
-            if script:
-                scripts_to_restore.add(script)
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        for location in record.get("usage_locations", []):
+            if not isinstance(location, dict):
+                continue
+            script = str(location.get("script") or "")
+            if not script:
+                continue
+            try:
+                relative = game_script_relative_path(game_root, script)
+            except UnsafePathError as exc:
+                raise RestoreError(str(exc)) from exc
+            scripts_to_restore.add(relative.as_posix())
 
-    # The manifest doesn't directly record which scripts were rewritten, but
-    # every script with a usage location had potential replacements.  Restore
-    # all of them to be safe.
     only_files = sorted(scripts_to_restore)
     if not only_files:
         return {}
@@ -177,11 +364,13 @@ def restore_from_manifest(
 DEFAULT_CONFIG_PATH: Path = (
     Path(__file__).resolve().parents[3] / "src/converter/config.json"
 )
+DEFAULT_LIVE_ROOT: Path = Path(__file__).resolve().parents[2] / "renpy_game"
 
 
 def restore_decompile(
     config_path: str | Path | None = None,
     *,
+    allowed_root: str | Path | None = None,
     dry_run: bool = False,
 ) -> dict[str, str]:
     """Undo a full decompile: remove the extracted game folder and config.json.
@@ -194,6 +383,8 @@ def restore_decompile(
         config_path: Path to the decompile-generated ``config.json``.
             Defaults to ``src/converter/config.json`` relative to the project
             root.
+        allowed_root: Independent root that may contain the extracted game
+            folder.  Defaults to ``src/renpy_game``.
         dry_run: If True, report what would be removed without writing.
 
     Returns:
@@ -223,7 +414,19 @@ def restore_decompile(
         gp = Path(game_folder)
         if not gp.is_absolute():
             gp = cp.parent.parent.parent / gp  # project root / game_folder
-        game_root = gp
+        allowed = Path(allowed_root) if allowed_root is not None else DEFAULT_LIVE_ROOT
+        allowed_path = allowed.resolve()
+        lexical_root = gp
+        resolved_root = gp.resolve()
+        if (
+            resolved_root == allowed_path
+            or not resolved_root.is_relative_to(allowed_path)
+            or lexical_root.is_symlink()
+        ):
+            raise RestoreError(
+                f"Refusing to remove game folder outside {allowed_path}: {gp}"
+            )
+        game_root = resolved_root
 
     # Remove the extracted game folder.
     if game_root is not None and game_root.exists():
@@ -263,6 +466,8 @@ COMPOSITE_DECLARATION_FILE = "composite_images.rpy"
 def restore_compose_from_source(
     config_path: str | Path | None = None,
     *,
+    allowed_live_root: str | Path | None = None,
+    allowed_source_root: str | Path | None = None,
     dry_run: bool = False,
 ) -> dict[str, str]:
     r"""Restore the live ``game_folder`` from the original source, keeping composites.
@@ -280,6 +485,10 @@ def restore_compose_from_source(
     Args:
         config_path: Path to ``config.json``.  Defaults to
             ``src/converter/config.json`` relative to the project root.
+        allowed_live_root: Independent root that may contain the live game
+            folder.  Defaults to ``src/renpy_game``.
+        allowed_source_root: Independent root that may contain the source
+            game folder.  Defaults to ``src/renpy_game``.
         dry_run: If True, report what would be done without writing.
 
     Returns:
@@ -317,65 +526,130 @@ def restore_compose_from_source(
     if not gp.is_absolute():
         gp = cp.parent.parent.parent / gp  # project root / game_folder
 
-    source_game = sp / "game"
+    live_allowed = (
+        Path(allowed_live_root)
+        if allowed_live_root is not None
+        else DEFAULT_LIVE_ROOT
+    ).resolve()
+    source_allowed = (
+        Path(allowed_source_root)
+        if allowed_source_root is not None
+        else DEFAULT_LIVE_ROOT
+    ).resolve()
+    lexical_source_game = sp / "game"
+    source_game = lexical_source_game.resolve()
+    lexical_live_root = gp
+    live_root = gp.resolve()
+    if (
+        live_root == live_allowed
+        or not live_root.is_relative_to(live_allowed)
+        or lexical_live_root.is_symlink()
+    ):
+        raise RestoreError(
+            f"Refusing to restore game files outside {live_allowed}: {gp}"
+        )
+    if (
+        source_game == source_allowed
+        or not source_game.is_relative_to(source_allowed)
+        or lexical_source_game.is_symlink()
+    ):
+        raise RestoreError(
+            f"Refusing to restore from a source game outside {source_allowed}: "
+            f"{lexical_source_game}"
+        )
+    if (
+        live_root.is_relative_to(source_game)
+        or source_game.is_relative_to(live_root)
+    ):
+        raise RestoreError(
+            "Refusing to restore a game folder from an overlapping source path: "
+            f"{source_game} -> {live_root}"
+        )
     if not source_game.is_dir():
         results[str(source_game)] = (
             "skipped: source game folder not found; run decompile first"
         )
         return results
 
-    if not gp.exists():
-        if dry_run:
-            results[str(gp)] = "would_create"
-        else:
-            try:
-                gp.mkdir(parents=True, exist_ok=True)
-                results[str(gp)] = "created"
-            except OSError as exc:
-                results[str(gp)] = f"skipped: {exc}"
-                return results
+    copy_entries: list[tuple[Path, Path]] = []
+    for entry in sorted(source_game.iterdir()):
+        if entry.name == COMPOSITES_DIR_NAME:
+            continue
+        target = live_root / entry.name
+        if target.is_symlink():
+            raise RestoreError(
+                f"Refusing to overwrite a symlinked live file: {target}"
+            )
+        resolved_target = target.resolve()
+        if not resolved_target.is_relative_to(live_root):
+            raise RestoreError(
+                f"Live restore target escapes the game root: {target}"
+            )
+        resolved_source = entry.resolve()
+        if not resolved_source.is_relative_to(source_game):
+            raise RestoreError(
+                f"Source restore entry escapes the source game root: {entry}"
+            )
+        if entry.is_dir() and any(
+            child.is_symlink() for child in entry.rglob("*")
+        ):
+            raise RestoreError(
+                f"Source restore directory contains a symlink: {entry}"
+            )
+        copy_entries.append((entry, target))
 
-    # Copy every entry from source/game into game_folder, overwriting, but never
-    # touch the live compose output (PNGs + reports under composites/).
-    restore_message = (
-        "Inspecting source game files..."
-        if dry_run
-        else "Restoring game files from the source game..."
-    )
-    with loading(restore_message):
+    with game_script_lock(live_root):
+        if not live_root.exists():
+            if dry_run:
+                results[str(live_root)] = "would_create"
+            else:
+                try:
+                    live_root.mkdir(parents=True, exist_ok=True)
+                    results[str(live_root)] = "created"
+                except OSError as exc:
+                    results[str(live_root)] = f"skipped: {exc}"
+                    return results
         for entry in sorted(source_game.iterdir()):
             if entry.name == COMPOSITES_DIR_NAME:
                 results[str(entry)] = "skipped: preserving live composites"
-                continue
-            target = gp / entry.name
+
+        # Copy every entry from source/game into game_folder, overwriting, but
+        # never touch the live compose output (PNGs + reports under composites/).
+        restore_message = (
+            "Inspecting source game files..."
+            if dry_run
+            else "Restoring game files from the source game..."
+        )
+        with loading(restore_message):
+            for entry, target in copy_entries:
+                if dry_run:
+                    results[str(target)] = f"would_overwrite ({entry.name})"
+                    continue
+                try:
+                    if entry.is_dir() and not entry.is_symlink():
+                        if target.exists():
+                            shutil.rmtree(target)
+                        shutil.copytree(entry, target)
+                    else:
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(entry, target)
+                    results[str(target)] = "restored"
+                except OSError as exc:
+                    results[str(target)] = f"skipped: {exc}"
+
+        # Remove the apply-generated composite declarations file (regenerated by
+        # the apply pass; not part of the original source).
+        declaration = live_root / COMPOSITE_DECLARATION_FILE
+        if declaration.is_file():
             if dry_run:
-                results[str(target)] = f"would_overwrite ({entry.name})"
-                continue
-            try:
-                if entry.is_dir() and not entry.is_symlink():
-                    if target.exists():
-                        shutil.rmtree(target)
-                    shutil.copytree(entry, target)
-                else:
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(entry, target)
-                results[str(target)] = "restored"
-            except OSError as exc:
-                results[str(target)] = f"skipped: {exc}"
+                results[str(declaration)] = "would_remove"
+            else:
+                try:
+                    declaration.unlink()
+                    results[str(declaration)] = "removed"
+                except OSError as exc:
+                    results[str(declaration)] = f"skipped: {exc}"
+        elif dry_run:
+            results[str(declaration)] = "would_remove: not present"
 
-    # Remove the apply-generated composite declarations file (regenerated by
-    # the apply pass; not part of the original source).
-    declaration = gp / COMPOSITE_DECLARATION_FILE
-    if declaration.is_file():
-        if dry_run:
-            results[str(declaration)] = "would_remove"
-        else:
-            try:
-                declaration.unlink()
-                results[str(declaration)] = "removed"
-            except OSError as exc:
-                results[str(declaration)] = f"skipped: {exc}"
-    elif dry_run:
-        results[str(declaration)] = "would_remove: not present"
-
-    return results
+        return results

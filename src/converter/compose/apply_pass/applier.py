@@ -23,10 +23,33 @@ from typing import NotRequired, TypedDict
 
 from cli import counted, loading, note, print_summary, progress_bar
 
+from ...utility import atomic_write_json_files
+from ...utility.manifest_bundle import (
+    ManifestBundlePathError,
+    bundle_journal_metadata,
+    bundle_journal_path,
+    bundle_paths,
+    game_script_lock,
+    manifest_bundle_lock,
+    recover_manifest_bundle,
+    register_bundle_owner,
+    validate_manifest_index_path,
+)
+from ...utility.manifest_paths import (
+    ManifestIntegrityError,
+    verify_category_manifest_digests,
+)
+from ...utility.safe_paths import (
+    UnsafePathError,
+    game_script_relative_path,
+    resolve_absolute_under_root,
+    resolve_game_output_path,
+    resolve_game_script_path,
+)
 from ..conditions import condition_variables, get_label_assignments_map
 from ..config import GameConfig
 from ..errors import ApplyError, ManifestError
-from ..manifest import KNOWN_FAMILIES
+from ..manifest import KNOWN_FAMILIES, ManifestWriter, resolve_category_manifest_paths
 from ..models import AdoptionReport, CompositeManifest, CompositeRecord
 from ..regexp import SHOW_RE
 
@@ -46,8 +69,19 @@ class _CompositeUsageInfo(TypedDict):
 class Applier:
     """Runs the full apply pass for a :class:`GameConfig`."""
 
-    def __init__(self, config: GameConfig) -> None:
+    def __init__(
+        self,
+        config: GameConfig,
+        *,
+        manifest_index_path: Path | None = None,
+        report_dir: Path | None = None,
+    ) -> None:
         self.config = config
+        self.manifests = ManifestWriter(
+            config,
+            manifest_index_path=manifest_index_path,
+            report_dir=report_dir,
+        )
         # Single cache for raw script lines, shared by all file-reading methods.
         self._source_text_cache: dict[str, tuple[str, ...]] = {}
         # Derived cache for (labels, writes) computed from raw lines.
@@ -60,21 +94,56 @@ class Applier:
     # Public API
     # ------------------------------------------------------------------ #
 
+    def _validate_index_path(self) -> None:
+        """Reject an index path that aliases a reserved bundle file."""
+        try:
+            validate_manifest_index_path(
+                self.manifests.manifest_index_path,
+                self.manifests.report_dir,
+            )
+        except ManifestBundlePathError as exc:
+            raise ApplyError(str(exc)) from exc
+
     def apply(self) -> tuple[CompositeManifest, AdoptionReport]:
         """Run the apply pass and return ``(manifest, report)``.
 
-        Composites are loaded and applied one category manifest at a time
-        (bg, char, scene, gui, …) with a progress bar, rather than merging all
-        manifests into a single in-memory list up front.
+        The complete read/modify/write operation is serialized with compose,
+        review, and restore operations through the manifest bundle lock.
         """
+        index_path = self.manifests.manifest_index_path
+        self._validate_index_path()
+        with (
+            manifest_bundle_lock(
+                index_path,
+                report_dir=self.manifests.report_dir,
+            ),
+            game_script_lock(self.config.game_root),
+        ):
+            recover_manifest_bundle(index_path, self.manifests.report_dir)
+            return self._apply_unlocked()
+
+    def _apply_unlocked(self) -> tuple[CompositeManifest, AdoptionReport]:
+        """Run the apply body while the caller holds the bundle lock."""
+        # Composites are loaded and applied one category manifest at a time
+        # (bg, char, scene, gui, …) with a progress bar, rather than merging all
+        # manifests into a single in-memory list up front.
         # Global index payload (dynamic states, declarations, summary) is read
         # once; composites are streamed per category manifest below.
+        index_path = self.manifests.manifest_index_path
         index_payload = self._load_index_payload()
+        # Register the trusted owner before any live script is modified.  A
+        # malformed registry must fail before apply can leave script rewrites
+        # behind, and the registration must precede any journal publication.
+        register_bundle_owner(index_path, self.manifests.report_dir)
+        declaration_path = self._declaration_path()
         dynamic_states = index_payload["dynamic_states"]
         summary = dict(index_payload.get("summary", {}))
 
         with loading("Loading script assignment states..."):
-            reset_map = get_label_assignments_map(self.config)
+            try:
+                reset_map = get_label_assignments_map(self.config)
+            except UnsafePathError as exc:
+                raise ApplyError(str(exc)) from exc
 
         mapping: dict[tuple[str, int], _CompositeUsageInfo] = {}
         used: dict[str, str | None] = {}
@@ -92,9 +161,32 @@ class Applier:
             unit="manifests",
         ) as bar:
             for cat_path in category_files:
-                cat_data = json.loads(cat_path.read_text(encoding="utf-8"))
-                for c in cat_data.get("composites", []):
-                    record = CompositeRecord.from_dict(c)
+                try:
+                    cat_data = json.loads(cat_path.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError) as exc:
+                    raise ManifestError(
+                        f"Could not read manifest category file {cat_path}: {exc}"
+                    ) from exc
+                if not isinstance(cat_data, dict):
+                    raise ManifestError(
+                        f"Manifest category file must contain an object: {cat_path}"
+                    )
+                composites = cat_data.get("composites", [])
+                if not isinstance(composites, list):
+                    raise ManifestError(
+                        f"Manifest category 'composites' must be a list: {cat_path}"
+                    )
+                for c in composites:
+                    if not isinstance(c, dict):
+                        raise ManifestError(
+                            f"Manifest category contains an invalid composite: {cat_path}"
+                        )
+                    try:
+                        record = CompositeRecord.from_dict(c)
+                    except (KeyError, TypeError, ValueError) as exc:
+                        raise ManifestError(
+                            f"Manifest category contains an invalid composite record: {exc}"
+                        ) from exc
                     all_records.append(record)
                     if record.status != "static":
                         continue
@@ -103,7 +195,16 @@ class Applier:
                             continue
                         if not SHOW_RE.match(loc.statement.strip()):
                             continue
-                        key = (loc.script, loc.line)
+                        try:
+                            script = game_script_relative_path(
+                                self.config.game_root,
+                                loc.script,
+                            ).as_posix()
+                        except UnsafePathError as exc:
+                            raise ManifestError(
+                                f"Unsafe script path in manifest: {loc.script!r}"
+                            ) from exc
+                        key = (script, loc.line)
                         usage_records[key].append((record, loc))
                 bar.update(1)
 
@@ -115,7 +216,7 @@ class Applier:
             for key, candidates in usage_records.items():
                 try:
                     statement = candidates[0][1].statement
-                    path = self.config.game_root.parent / key[0]
+                    path = resolve_game_script_path(self.config.game_root, key[0])
                     if not path.exists():
                         continue
                     composite_tags = {
@@ -169,9 +270,18 @@ class Applier:
             dynamic_declarations=index_payload["dynamic_declarations"],
             unresolved=tuple(index_payload.get("unresolved", [])),
             summary=summary,
+            cfg_processed=int(index_payload.get("cfg_processed", 0)),
+            cfg_truncated=bool(index_payload.get("cfg_truncated", False)),
         )
         with loading("Checking generated composite files..."):
             image_tags, missing_generated = self._generated_composites(full_manifest)
+
+        # Screen declarations can require a global replacement across scripts
+        # that are not otherwise mentioned by the manifest.  Validate every
+        # candidate before the first live-script write so an unreadable or
+        # escaping later file cannot leave an earlier script partially
+        # rewritten.
+        self._preflight_generated_screen_paths(image_tags)
 
         # --- Rewrite direct mappings ---
         by_file = self._group_by_file(mapping)
@@ -183,7 +293,7 @@ class Applier:
             unit="files",
         ) as script_bar:
             for script, entries in sorted(by_file.items()):
-                path = self.config.game_root / script
+                path = resolve_game_script_path(self.config.game_root, script)
                 lines = path.read_text(encoding="utf-8-sig").splitlines(keepends=True)
                 newline = "\r\n" if any("\r\n" in line for line in lines[:50]) else "\n"
                 changed = 0
@@ -220,7 +330,7 @@ class Applier:
             unit="files",
         ) as runtime_bar:
             for script, entries in sorted(runtime_by_file.items()):
-                path = self.config.game_root / script
+                path = resolve_game_script_path(self.config.game_root, script)
                 lines = path.read_text(encoding="utf-8-sig").splitlines(keepends=True)
                 changed = False
                 for line_no, info in sorted(entries, reverse=True):
@@ -278,7 +388,6 @@ class Applier:
             )
             declarations.append(f'    "True", {json.dumps(info["fallback"])},')  # type: ignore[typeddict-item]
             declarations.append(")")
-        declaration_path = self._declaration_path()
         declaration_path.write_text(
             "\n".join(declarations) + "\n", encoding="utf-8-sig"
         )
@@ -317,17 +426,27 @@ class Applier:
         }
         # Write updated index manifest (per-category manifests are unchanged;
         # only the index carries the adoption summary).
-        index_path = (
-            self.config.resolved_paths()["manifest_path"].parent / "manifest_index.json"
-        )
         index_path.parent.mkdir(parents=True, exist_ok=True)
         index_data = (
             json.loads(index_path.read_text(encoding="utf-8"))
             if index_path.is_file()
             else {}
         )
+        if not isinstance(index_data, dict):
+            raise ManifestError(f"Manifest index must contain an object: {index_path}")
         index_data["summary"] = full_manifest.summary
-        index_path.write_text(json.dumps(index_data, indent=2), encoding="utf-8")
+        atomic_write_json_files(
+            {index_path: index_data},
+            journal_path=bundle_journal_path(
+                index_path,
+                self.manifests.report_dir,
+            ),
+            allowed_paths=bundle_paths(index_path, self.manifests.report_dir),
+            journal_metadata=bundle_journal_metadata(
+                index_path,
+                self.manifests.report_dir,
+            ),
+        )
         print_summary(
             "Apply summary",
             [
@@ -353,10 +472,20 @@ class Applier:
     # ------------------------------------------------------------------ #
 
     def _declaration_path(self) -> Path:
-        return self.config.resolved_paths()["declaration_path"]
+        candidate = self.config.resolved_paths()["declaration_path"]
+        try:
+            return resolve_absolute_under_root(
+                self.config.game_root,
+                candidate,
+                field_name="declaration path",
+            )
+        except UnsafePathError as exc:
+            raise ApplyError(str(exc)) from exc
 
     def _report_path(self) -> Path:
-        return self.config.resolved_paths()["report_path"]
+        if self.config.report_path is not None:
+            return self.config.resolved_paths()["report_path"]
+        return self.manifests.report_dir / "adoption_report.json"
 
     def _read_source_lines(self, path: Path) -> tuple[str, ...] | None:
         """Read and cache raw lines from a script file, shared by all readers."""
@@ -382,17 +511,33 @@ class Applier:
         """Return every extant generated image path keyed by its unique image tag."""
         paths: dict[str, str] = {}
         missing: list[str] = []
+        config_paths = self.config.resolved_paths()
+        output_root = config_paths["output_dir"]
+        excluded_roots = (
+            self.manifests.report_dir,
+            output_root / "rejected",
+        )
         entries = list(manifest.composites_list)
         for state in manifest.dynamic_states:
             for entry in state.get("generated_states", []):
                 rel = entry.get("composite_path")
                 if not rel:
                     continue
-                p = self.config.game_root.parent / rel
+                try:
+                    p = resolve_game_output_path(
+                        self.config.game_root,
+                        output_root,
+                        rel,
+                        excluded_roots=excluded_roots,
+                    )
+                except UnsafePathError as exc:
+                    raise ApplyError(
+                        f"Unsafe composite path in manifest: {rel!r}"
+                    ) from exc
                 if not p.is_file():
                     missing.append(rel)
                     continue
-                tag = Path(rel).stem
+                tag = p.stem
                 prev = paths.get(tag)
                 if prev and prev != rel:
                     raise ApplyError(
@@ -403,11 +548,21 @@ class Applier:
             rel = record.composite_path
             if not rel:
                 continue
-            p = self.config.game_root.parent / rel
+            try:
+                p = resolve_game_output_path(
+                    self.config.game_root,
+                    output_root,
+                    rel,
+                    excluded_roots=excluded_roots,
+                )
+            except UnsafePathError as exc:
+                raise ApplyError(
+                    f"Unsafe composite path in manifest: {rel!r}"
+                ) from exc
             if not p.is_file():
                 missing.append(rel)
                 continue
-            tag = Path(rel).stem
+            tag = p.stem
             prev = paths.get(tag)
             if prev and prev != rel:
                 raise ApplyError(
@@ -567,7 +722,15 @@ class Applier:
         cache_key = (definition.script, definition.line, record.name)
         if cache_key in self._definition_condition_cache:
             return self._definition_condition_cache[cache_key]
-        source = self.config.game_root.parent / (definition.script or "")
+        try:
+            source = resolve_game_script_path(
+                self.config.game_root,
+                definition.script,
+            )
+        except UnsafePathError as exc:
+            raise ManifestError(
+                f"Unsafe definition script path in manifest: {definition.script!r}"
+            ) from exc
         if not source.is_file():
             self._definition_condition_cache[cache_key] = None
             return None
@@ -627,6 +790,31 @@ class Applier:
         self._definition_condition_cache[cache_key] = effective_by_line
         return effective_by_line
 
+    def _generated_screen_script_paths(self) -> list[Path]:
+        """Return every live script eligible for generated-path replacement."""
+        game_root = self.config.game_root.resolve()
+        declaration_path = self._declaration_path()
+        candidates: list[Path] = []
+        seen: set[Path] = set()
+        for path in self.config.game_root.rglob("*.rpy"):
+            resolved = path.resolve()
+            if not resolved.is_relative_to(game_root):
+                raise ApplyError(
+                    f"Game script path escapes the game root: {path}"
+                )
+            if "archive" in path.parts or resolved == declaration_path:
+                continue
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            candidates.append(resolved)
+        return candidates
+
+    def _preflight_generated_screen_paths(self, image_tags: dict[str, str]) -> None:
+        """Read every global rewrite target before any live script is changed."""
+        for path in self._generated_screen_script_paths():
+            path.read_text(encoding="utf-8-sig", errors="replace")
+
     def _replace_generated_screen_paths(self, image_tags: dict[str, str]) -> int:
         """Use declared image tags in screen switches instead of raw generated PNG paths."""
         replacements = {
@@ -634,9 +822,12 @@ class Applier:
             for tag, rel in image_tags.items()
         }
         changed = 0
-        for path in self.config.game_root.rglob("*.rpy"):
-            if "archive" in path.parts or path == self._declaration_path():
-                continue
+        prepared: list[tuple[Path, str, int]] = []
+
+        # Prepare every replacement before modifying the first live script.
+        # This keeps a later read/encoding failure from leaving the bundle in a
+        # partially rewritten state.
+        for path in self._generated_screen_script_paths():
             text = path.read_text(encoding="utf-8-sig", errors="replace")
             # Fast-path: skip files that reference no generated composite path.
             if not any(old in text for old in replacements):
@@ -645,8 +836,12 @@ class Applier:
             for old, new in replacements.items():
                 updated = updated.replace(old, new)
             if updated != text:
-                changed += sum(text.count(old) for old in replacements if old in text)
-                path.write_text(updated, encoding="utf-8-sig")
+                count = sum(text.count(old) for old in replacements if old in text)
+                prepared.append((path, updated, count))
+
+        for path, updated, count in prepared:
+            path.write_text(updated, encoding="utf-8-sig")
+            changed += count
         return changed
 
     def _group_by_file(
@@ -659,23 +854,55 @@ class Applier:
         return dict(by_file)
 
     def _load_index_payload(self) -> dict:
-        """Load the global manifest_index.json payload (no per-category composites)."""
-        paths = self.config.resolved_paths()
-        index_path = paths["manifest_path"].parent / "manifest_index.json"
+        """Load the global manifest index payload (without category records)."""
+        index_path = self.manifests.manifest_index_path
+        self._validate_index_path()
         if not index_path.is_file():
             raise ManifestError(f"Manifest index not found: {index_path}")
-        return json.loads(index_path.read_text(encoding="utf-8"))
+        try:
+            payload = json.loads(index_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ManifestError(
+                f"Could not read manifest index {index_path}: {exc}"
+            ) from exc
+        if not isinstance(payload, dict):
+            raise ManifestError(f"Manifest index must contain an object: {index_path}")
+        return payload
 
     def _category_manifest_files(self) -> list[Path]:
-        """Return existing per-category manifest files, in canonical order."""
-        paths = self.config.resolved_paths()
-        reports_dir = paths["manifest_path"].parent
-        files: list[Path] = []
-        for cat_name in KNOWN_FAMILIES:
-            cat_path = reports_dir / f"manifest_{cat_name}.json"
-            if cat_path.is_file():
-                files.append(cat_path)
-        return files
+        """Return referenced category manifest files in canonical order."""
+        index_path = self.manifests.manifest_index_path
+        self._validate_index_path()
+        with manifest_bundle_lock(
+            index_path,
+            report_dir=self.manifests.report_dir,
+        ):
+            recover_manifest_bundle(index_path, self.manifests.report_dir)
+            return self._category_manifest_files_unlocked()
+
+    def _category_manifest_files_unlocked(self) -> list[Path]:
+        """Return category files while the caller holds the bundle lock."""
+        index_path = self.manifests.manifest_index_path
+        index_payload = self._load_index_payload()
+        category_paths = resolve_category_manifest_paths(
+            index_payload,
+            index_path,
+            self.manifests.report_dir,
+        )
+        try:
+            verify_category_manifest_digests(
+                index_payload,
+                category_paths,
+                report_dir=self.manifests.report_dir,
+                manifest_index_path=index_path,
+            )
+        except ManifestIntegrityError as exc:
+            raise ManifestError(str(exc)) from exc
+        return [
+            category_paths[category]
+            for category in KNOWN_FAMILIES
+            if category in category_paths
+        ]
 
 
 # ---------------------------------------------------------------------- #

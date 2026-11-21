@@ -32,6 +32,21 @@ class ProcessResult:
     command: tuple[str, ...]
 
 
+def _require_workspace_path(
+    path: Path,
+    basedir: Path,
+    *,
+    label: str,
+) -> None:
+    """Require one native runtime path to stay inside its disposable root."""
+    try:
+        path.resolve().relative_to(basedir.resolve())
+    except ValueError as exc:
+        raise NativeExecutionError(
+            f"Native {label} must be inside the disposable workspace: {path}"
+        ) from exc
+
+
 def run_native_batch(
     *,
     layout: RuntimeLayout,
@@ -61,6 +76,9 @@ def run_native_batch(
         command=command,
         savedir=savedir,
     )
+    _require_workspace_path(result_path, basedir, label="result file")
+    _require_workspace_path(config_path, basedir, label="configuration file")
+    _require_workspace_path(savedir, basedir, label="save directory")
     environment = os.environ.copy()
     environment.pop("RENPY_SEARCHPATH", None)
     environment["RENPY_RENDERER"] = DEFAULT_RENDERER
@@ -81,6 +99,18 @@ def run_native_batch(
     for name in ("logs", "save-root", "multipersistent"):
         (basedir / name).mkdir(parents=True, exist_ok=True)
 
+    # Never let a child inherit a result from an earlier attempt.  The native
+    # stage normally clears this path too; doing it here protects direct
+    # callers of the subprocess helper as well.  If the stale file cannot be
+    # removed, abort before launching the child rather than risk accepting an
+    # unrelated result.
+    try:
+        result_path.unlink(missing_ok=True)
+    except OSError as exc:
+        raise NativeExecutionError(
+            f"Could not clear native result file before launch: {result_path}: {exc}"
+        ) from exc
+
     creation_flags = 0
     if os.name == "nt":
         creation_flags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
@@ -89,14 +119,26 @@ def run_native_batch(
     stderr_path = basedir / "batch_stderr.log"
 
     with open(stdout_path, "wb") as stdout_file, open(stderr_path, "wb") as stderr_file:
-        process = subprocess.Popen(
-            command_line,
-            cwd=str(basedir),
-            env=environment,
-            stdout=stdout_file,
-            stderr=stderr_file,
-            creationflags=creation_flags,
-        )
+        if os.name == "nt":
+            process = subprocess.Popen(
+                command_line,
+                cwd=str(basedir),
+                env=environment,
+                stdout=stdout_file,
+                stderr=stderr_file,
+                creationflags=creation_flags,
+            )
+        else:
+            # A dedicated process group lets timeout cleanup terminate the
+            # complete Ren'Py child tree without signalling the host group.
+            process = subprocess.Popen(
+                command_line,
+                cwd=str(basedir),
+                env=environment,
+                stdout=stdout_file,
+                stderr=stderr_file,
+                start_new_session=True,
+            )
 
         try:
             start_time = time.monotonic()
@@ -114,9 +156,20 @@ def run_native_batch(
                 elapsed = time.monotonic() - start_time
                 if elapsed >= timeout:
                     _terminate_process_tree(process)
+                    stdout = (
+                        stdout_path.read_text(encoding="utf-8", errors="replace")
+                        if stdout_path.is_file()
+                        else ""
+                    )
+                    stderr = (
+                        stderr_path.read_text(encoding="utf-8", errors="replace")
+                        if stderr_path.is_file()
+                        else ""
+                    )
                     raise NativeExecutionError(
                         f"Native Ren'Py compose batch timed out after {timeout} seconds.\n"
-                        f"Command: {_format_command(command_line)}"
+                        f"Command: {_format_command(command_line)}\n"
+                        f"{stdout}\n{stderr}"
                     )
 
                 if pp is not None and pp.is_file():

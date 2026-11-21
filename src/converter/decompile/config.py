@@ -24,6 +24,8 @@ PRESERVED_CONFIG_FIELDS = (
     "non_character_folders",
     "game_defaults",
     "output_dir",
+    "report_dir",
+    "manifest_index_path",
     "manifest_path",
     "declaration_path",
     "report_path",

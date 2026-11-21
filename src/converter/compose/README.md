@@ -132,8 +132,15 @@ are rejected before compose starts.
   compose pass fast.
 - ``output_dir`` — where composite PNGs are written (default:
   ``<game_root>/composites``).
-- ``manifest_path`` / ``declaration_path`` / ``report_path`` — output locations
-  (default to ``<output_dir>/reports/`` and ``<game_root>/composite_images.rpy``).
+- ``report_dir`` — where split manifests, the character catalog, and pending
+  review data are written (default: ``<output_dir>/reports``).
+- ``manifest_index_path`` — exact split-manifest index path (default:
+  ``<report_dir>/manifest_index.json``).
+- ``declaration_path`` / ``report_path`` — apply-pass output locations
+  (default to ``<game_root>/composite_images.rpy`` and
+  ``<report_dir>/adoption_report.json``).
+- ``manifest_path`` — legacy compatibility setting; new configurations should
+  use ``report_dir`` and ``manifest_index_path``.
 
 Use :meth:`GameConfig.resolved_paths` to get all resolved absolute output paths.
 
@@ -240,16 +247,14 @@ python -m converter.compose restore  # restore game folder from source, keep com
 ```python
 from converter.compose.config import GameConfig, load_config
 from converter.compose.compose_pass import Composer
-from converter.compose.manifest import ManifestWriter
 from converter.compose.apply_pass import Applier
 
 # 1. Load the decompile-generated config
 config = load_config("src/converter/config.json")
 
-# 2. Compose → manifest + PNGs
+# 2. Compose → manifest + PNGs (the compose pass publishes the manifest)
 composer = Composer(config)
 manifest = composer.compose(dry_run=False, clean_output=False)
-ManifestWriter(config).write(manifest, dry_run=False)
 
 # 3. Apply → adopt composites into live scripts
 applier = Applier(config)
@@ -259,6 +264,8 @@ manifest, report = applier.apply()
 ### Via Python import (restore)
 
 ```python
+from pathlib import Path
+
 from converter.restore import restore_compose_from_source
 
 # Restore the live game folder from the original source, keeping composites.
@@ -266,6 +273,13 @@ results = restore_compose_from_source("src/converter/config.json")
 
 # Dry run: preview what would be done without writing.
 results = restore_compose_from_source("src/converter/config.json", dry_run=True)
+
+# Games outside src/renpy_game require explicit containment roots.
+results = restore_compose_from_source(
+    "src/converter/config.json",
+    allowed_live_root=Path("D:/games"),
+    allowed_source_root=Path("D:/games"),
+)
 ```
 
 ---
@@ -353,9 +367,73 @@ Under ``<output_dir>/reports/``:
 - ``manifest_other.json`` — composites that don't fit a known family
 - ``characters.json`` — canonical character names, generated folders, and speaker aliases
 - ``manifest_index.json`` — global data (summary, dynamic_states, image_declarations,
-  dynamic_declarations, unresolved) plus references to each category file.
+  dynamic_declarations, unresolved, CFG walk state) plus relative references to
+  each category file.
 
-The apply pass loads the index and merges all category manifests in memory.
+Two hidden support files live beside them: ``.manifest-bundle.journal`` is the
+active write-ahead rollback record, and ``.manifest-bundle.owners.json`` records
+which index paths are trusted participants in that report scope.  Both
+filenames are reserved: an index path, registered owner, or review category
+may not alias either support file.
+
+The complete report bundle is serialized first, staged in the destination
+filesystem, and published through atomic replacements.  The index is replaced
+last as the commit marker.  Category references are relative to the index
+directory, and the apply, review, and restore consumers resolve those
+references instead of reconstructing absolute filenames. If a legacy or
+partially edited index omits a category reference, every consumer uses the
+canonical filename in the configured `report_dir`.
+
+Bundle publication is serialized with a report-directory-wide cross-process
+lock and protected by a durable write-ahead journal.  If the process is
+interrupted between category replacements, the next bundle access restores the
+previous files and removes stale staged siblings.  Versioned indexes declare
+``bundle_version: 2`` and require per-category SHA-256 digests, so every
+consumer rejects a mixed or modified snapshot before using category data;
+unversioned legacy indexes remain readable.  Recovery is commit-aware: a journal
+whose staged file digests are all present is treated as a completed commit and
+removed without rolling the published bundle back.  The lock is stored in the
+operating system's temporary directory, while the durable journal is stored at
+``<report_dir>/.manifest-bundle.journal``.  Every index that shares a report
+directory shares that journal, so a crash involving an index outside the
+report directory is still recovered before another index can publish over the
+shared category files.  Publishers first record their index in the report-scoped
+owner registry at ``<report_dir>/.manifest-bundle.owners.json``.  A peer may
+recover a journal owned by a registered outside index, but journal metadata by
+itself never authorizes a write; an unregistered owner remains pending and
+blocks publication until its owner can recover it.  Legacy sibling journals
+are also unable to reinterpret the shared journal or owner registry as a
+recoverable index, and a symlink or junction alias cannot bypass the current
+peer's index exclusion.  The same participant can still recover a canonical
+index target when recovery is invoked through an aliased parent directory.
+Malformed legacy journal names are ignored rather than interrupting recovery.
+
+One interactive review decision is published as one bundle transaction: changed
+category records, the character catalog, pending-review state, and the
+refreshed index are staged together and the index is replaced last.  Rejected
+PNG copies and rejection records are finalized only after that transaction
+commits, so a failed publication cannot remove an image still referenced by
+the old manifest.  Apply and restore operations also share a game-script lock,
+preventing concurrent live script rewrites.
+
+Paths read from manifests, pending-review state, and Ren'Py archives are
+validated before live I/O.  Absolute, drive-qualified, parent-traversing, and
+symlink-escaping script and archive paths are rejected; script writes must
+remain inside the game root.  Composite references are accepted only for
+supported image files inside ``<output_dir>/static/`` or
+``<output_dir>/dynamic_review/``, and the report and rejected-item roots are
+explicitly excluded.  Legacy absolute category references remain readable,
+while review refuses to write a category outside its configured report
+directory.  The configured manifest index is checked against every category,
+auxiliary file, and hidden support file before a publisher or consumer reads
+or mutates the bundle.
+
+Each native composite record retains its rendered ``content_hash`` and native
+``condition_state``.  Both participate in record identity, so two condition
+states cannot collapse merely because their layer semantics match.
+Condition-evaluation failures and general native render failures are preserved
+in ``unresolved`` with candidate, image, and usage context; a truncated CFG
+walk is preserved through ``cfg_processed`` and ``cfg_truncated``.
 
 ### Composite output layout
 
@@ -447,9 +525,10 @@ extension: ``categories`` can map a category to a list of folders, and
 - **Progress tracking**: the compose pass polls the child renderer's progress
   log while batches run, so a real-time progress bar advances as states are
   rendered instead of waiting for each batch to finish.
-- **Intermediate cleanup**: the per-batch result JSON (`.native-result.json`)
-  is removed from ``reports/`` after the native stage completes, so only the
-  final per-category manifests and index remain.
+- **Intermediate cleanup**: the per-batch result JSON lives only inside the
+  disposable native workspace.  The workspace is removed after the native
+  stage completes, so no shared or intermediate result file remains in
+  ``reports/``.
 
 ---
 
