@@ -33,6 +33,10 @@ from pathlib import Path
 
 from cli import loading
 
+from ..utility.manifest_paths import (
+    ManifestPathError,
+    resolve_category_manifest_paths,
+)
 from .errors import RestoreError
 
 
@@ -127,42 +131,94 @@ def restore_from_manifest(
     game_root: Path,
     manifest_path: str | Path | None = None,
     *,
+    manifest_index_path: str | Path | None = None,
+    report_dir: str | Path | None = None,
     dry_run: bool = False,
 ) -> dict[str, str]:
     """Restore only the .rpy files that a compose/apply pass touched.
 
-    Reads the manifest JSON to determine which scripts had usage locations
-    (and therefore potential replacements), then restores only those files
-    from the archive.
+    Both the split manifest index and the legacy monolithic manifest are
+    supported.  Split category references are resolved relative to the index
+    directory; categories omitted from a partial index fall back to the
+    canonical filenames in ``report_dir``.
 
     Args:
         game_root: The Ren'Py ``\\game`` folder.
-        manifest_path: Path to the manifest JSON.  Defaults to
-            ``game_root.parent / "composites" / "reports" / "manifest.json"``.
+        manifest_path: Legacy manifest path or manifest index path.
+        manifest_index_path: Explicit path to ``manifest_index.json``.
+        report_dir: Explicit report directory used to locate the index and
+            legacy manifest fallback.
         dry_run: If True, report what would be restored without writing.
 
     Returns:
         A dict mapping restored relative paths to a status string.
     """
-    mp = Path(manifest_path) if manifest_path is not None else None
-    if mp is None:
-        mp = game_root.parent / "composites" / "reports" / "manifest.json"
-    if not mp.is_file():
-        raise RestoreError(f"Manifest not found: {mp}")
+    if manifest_index_path is not None:
+        index_path = Path(manifest_index_path)
+    elif manifest_path is not None:
+        index_path = Path(manifest_path)
+    else:
+        default_report_dir = (
+            Path(report_dir)
+            if report_dir is not None
+            else game_root.parent / "composites" / "reports"
+        )
+        default_index = default_report_dir / "manifest_index.json"
+        legacy_manifest = default_report_dir / "manifest.json"
+        index_path = (
+            default_index
+            if default_index.is_file()
+            else legacy_manifest
+        )
+    if not index_path.is_file():
+        raise RestoreError(f"Manifest not found: {index_path}")
 
-    data = json.loads(mp.read_text(encoding="utf-8"))
+    try:
+        index = json.loads(index_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RestoreError(f"Could not read manifest {index_path}: {exc}") from exc
 
-    # Collect all unique script paths that had usage locations.
+    if not isinstance(index, dict):
+        raise RestoreError(f"Manifest must contain an object: {index_path}")
+
+    records: list[dict] = list(index.get("composites", []))
+    category_report_dir = (
+        Path(report_dir) if report_dir is not None else index_path.parent
+    )
+    try:
+        category_paths = resolve_category_manifest_paths(
+            index,
+            index_path,
+            category_report_dir,
+        )
+    except ManifestPathError as exc:
+        raise RestoreError(str(exc)) from exc
+
+    for category_path in category_paths.values():
+        try:
+            category_data = json.loads(category_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise RestoreError(
+                f"Could not read manifest category file {category_path}: {exc}"
+            ) from exc
+        if not isinstance(category_data, dict):
+            raise RestoreError(
+                f"Manifest category file must contain an object: {category_path}"
+            )
+        records.extend(category_data.get("composites", []))
+
     scripts_to_restore: set[str] = set()
-    for record in data.get("composites", []):
-        for loc in record.get("usage_locations", []):
-            script = loc.get("script", "")
-            if script:
-                scripts_to_restore.add(script)
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        for location in record.get("usage_locations", []):
+            if not isinstance(location, dict):
+                continue
+            script = str(location.get("script") or "")
+            if not script:
+                continue
+            scripts_to_restore.add(script.removeprefix("game/"))
 
-    # The manifest doesn't directly record which scripts were rewritten, but
-    # every script with a usage location had potential replacements.  Restore
-    # all of them to be safe.
     only_files = sorted(scripts_to_restore)
     if not only_files:
         return {}

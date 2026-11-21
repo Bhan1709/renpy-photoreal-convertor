@@ -30,6 +30,8 @@ def test_write_config_preserves_user_controlled_fields(tmp_path: Path) -> None:
                 "non_character_folders": ["props"],
                 "game_defaults": {"month": 6},
                 "output_dir": "custom/composites",
+                "report_dir": "custom/reports",
+                "manifest_index_path": "custom/reports/manifest_index.json",
             }
         ),
         encoding="utf-8",
@@ -69,6 +71,8 @@ def test_write_config_preserves_user_controlled_fields(tmp_path: Path) -> None:
     assert payload["non_character_folders"] == ["props"]
     assert payload["game_defaults"] == {"month": 6}
     assert payload["output_dir"] == "custom/composites"
+    assert payload["report_dir"] == "custom/reports"
+    assert payload["manifest_index_path"] == "custom/reports/manifest_index.json"
     assert payload["extracted_archives"] == [
         {
             "archive": "archive.rpa",

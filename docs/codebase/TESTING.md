@@ -33,7 +33,10 @@ CI runs the same suite after Ruff and mypy.
 | `tests/test_discovery.py` | Source discovery and staged-output exclusion |
 | `tests/test_extract.py` | Archive extraction failure reporting and path-traversal rejection |
 | `tests/test_native_workspace.py` | Native workspace mirroring of configured archive roots |
+| `tests/test_native_protocol.py` | Native candidate schema, pagination-counter, and CFG walk-state validation |
 | `tests/test_pipeline.py` | Pipeline delegation, mode exclusivity, and dry-run behavior |
+| `tests/test_phase2_manifest_transaction.py` | Atomic report publication, explicit paths, relative category references, and split-manifest consumers |
+| `tests/test_phase2_native_identity.py` | Native content-hash/condition-state identity, unresolved errors, and CFG truncation state |
 | `tests/test_staging.py` | Isolated staging and prior-extraction exclusion |
 | `tests/test_cli.py` | CLI exit codes and root/subcommand option propagation |
 
@@ -58,8 +61,8 @@ CI runs the same suite after Ruff and mypy.
 
 - Coverage tooling and thresholds are not configured yet.
 - CI quality gates: pytest, Ruff, and mypy.
-- Known gaps: native Ren'Py rendering, review, apply, restore, and real archive
-  integration still need dedicated regression coverage.
+- Known gaps: an end-to-end native Ren'Py render, interactive review, live-script
+  apply, and real archive restore still need dedicated regression coverage.
 
 ### 6) Evidence
 

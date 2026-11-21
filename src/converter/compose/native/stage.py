@@ -92,6 +92,11 @@ class NativeStageResult:
     layered_images: int
     characters: int
 
+    @property
+    def manifest_index_path(self) -> Path:
+        """Return the explicit split-manifest index path."""
+        return self.manifest_path
+
 
 class _RecordSink:
     """Deduplicating record sink shared by native and screen-pass records."""
@@ -202,7 +207,7 @@ class _RecordSink:
         if not normalized:
             return
 
-        key = _record_key(kind, name, normalized)
+        key = _native_record_key(candidate, normalized)
         locations = self._locations(candidate)
         if key in self.records_by_key:
             self._merge(key, locations)
@@ -230,6 +235,8 @@ class _RecordSink:
             status,
             dimensions,
             family2,
+            content_hash=str(candidate["content_hash"]),
+            condition_state=dict(candidate.get("condition_assignments") or {}),
         )
         self._store(key, record)
 
@@ -262,6 +269,10 @@ class _RecordSink:
             seen: set[tuple[str, int]] = set()
             for entry in candidate.get("layers") or []:
                 unresolved = tuple(entry.get("unresolved") or ())
+                unresolved_error = next(
+                    iter(entry.get("unresolved_errors") or ()),
+                    None,
+                )
                 for source in entry.get("sources") or []:
                     static = by_source.get(str(source).lower())
                     if static is not None:
@@ -272,6 +283,7 @@ class _RecordSink:
                         layers.append(
                             static.replace(
                                 unresolved_conditions=unresolved,
+                                warning=static.warning or unresolved_error,
                                 attribute=static.attribute or entry.get("attribute"),
                                 group=static.group or (entry.get("group") or ""),
                             )
@@ -289,6 +301,7 @@ class _RecordSink:
                             conditions=tuple(entry.get("conditions") or ()),
                             attribute=entry.get("attribute"),
                             unresolved_conditions=unresolved,
+                            warning=unresolved_error,
                         )
                     )
             return layers
@@ -379,6 +392,9 @@ class _RecordSink:
         status: str,
         dimensions: tuple[int, int] | None,
         family2: str,
+        *,
+        content_hash: str | None = None,
+        condition_state: dict[str, object] | None = None,
     ) -> CompositeRecord:
         record = _build_base_record(
             name,
@@ -391,6 +407,8 @@ class _RecordSink:
             family,
             status,
             dimensions,
+            content_hash=content_hash,
+            condition_state=condition_state,
         )
         if family2 == "char":
             return _enrich_char_record(record, normalized, self.associator)
@@ -490,6 +508,46 @@ def _native_characters(characters: dict) -> dict[str, CharacterDeclaration]:
     return extra
 
 
+def _native_record_key(
+    candidate: dict[str, Any],
+    normalized: list[Layer],
+) -> tuple[str, str, str]:
+    """Return the host identity key for one native render candidate."""
+    content_hash = candidate.get("content_hash")
+    condition_state = candidate.get("condition_assignments") or {}
+    return _record_key(
+        str(candidate["kind"]),
+        str(candidate["name"]),
+        normalized,
+        str(content_hash) if content_hash else None,
+        dict(condition_state),
+    )
+
+
+def _native_unresolved_errors(candidates: list[dict[str, Any]]) -> tuple[str, ...]:
+    """Return unique native diagnostics reported by render candidates."""
+    errors = {
+        str(error)
+        for candidate in candidates
+        for error in (candidate.get("unresolved_errors") or [])
+    }
+    errors.update(
+        str(candidate["error"])
+        for candidate in candidates
+        if candidate.get("error")
+    )
+    return tuple(sorted(errors))
+
+
+def _native_walk_state(result: dict[str, Any]) -> dict[str, object]:
+    """Return the native CFG walk state carried by the last batch result."""
+    batch = result.get("batch") or {}
+    walk = batch.get("walk") or {}
+    if not isinstance(walk, dict):
+        return {}
+    return {str(key): value for key, value in walk.items()}
+
+
 def _validate_modes(modes: list[str] | None) -> list[str]:
     """Normalise and validate the requested compose modes."""
     requested = [str(mode) for mode in (modes or []) if mode]
@@ -570,11 +628,11 @@ def _script_files(config: GameConfig) -> list[str]:
 
 def _previous_dynamic_states(config: GameConfig) -> list[dict]:
     """Carry the previous manifest's dynamic states forward."""
-    manifest_path = config.resolved_paths()["manifest_path"]
-    if not manifest_path.is_file():
+    index_path = config.resolved_paths()["manifest_index_path"]
+    if not index_path.is_file():
         return []
     try:
-        data = json.loads(manifest_path.read_text(encoding="utf-8"))
+        data = json.loads(index_path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return []
     states = data.get("dynamic_states", [])
@@ -852,7 +910,8 @@ def _run_native_stage(
 
     layout = discover_runtime(game_config.source_path)
     paths = game_config.resolved_paths()
-    reports_dir = paths["manifest_path"].parent
+    reports_dir = paths["report_dir"]
+    manifest_index_path = paths["manifest_index_path"]
     # The child writes its result JSON into reports_dir; create it up front so
     # the first batch doesn't fail with FileNotFoundError.
     reports_dir.mkdir(parents=True, exist_ok=True)
@@ -911,12 +970,20 @@ def _run_native_stage(
             if not candidate.get("error") and not candidate.get("content_hash")
         )
         dynamic_declarations = _dynamic_declarations(index, game_config)
+        walk_state = _native_walk_state(last)
+        processed_value = walk_state.get("processed", 0)
+        cfg_processed = (
+            int(processed_value)
+            if isinstance(processed_value, (int, float, str))
+            else 0
+        )
+        cfg_truncated = bool(walk_state.get("truncated", False))
         manifest = CompositeManifest(
             composites=tuple(sink.records),
             dynamic_states=_previous_dynamic_states(game_config),
             image_declarations=_declaration_records(index, game_config),
             dynamic_declarations=dynamic_declarations,
-            unresolved=(),
+            unresolved=_native_unresolved_errors(candidates),
             summary={
                 "scripts_scanned": len(index.files),
                 "composites": len(sink.records),
@@ -928,12 +995,20 @@ def _run_native_stage(
                 "native_layered_images": len(layered_meta),
                 "image_declarations_indexed": len(index.image_decls),
                 "dynamic_declarations": len(dynamic_declarations),
+                "cfg_processed": cfg_processed,
+                "cfg_truncated": cfg_truncated,
             },
+            cfg_processed=cfg_processed,
+            cfg_truncated=cfg_truncated,
         )
 
         from ..manifest import ManifestWriter
 
-        ManifestWriter(game_config).write(
+        ManifestWriter(
+            game_config,
+            manifest_index_path=manifest_index_path,
+            report_dir=reports_dir,
+        ).write(
             manifest,
             dry_run=dry_run,
             extra_characters=_native_characters(last.get("characters") or {}),
@@ -941,7 +1016,7 @@ def _run_native_stage(
 
         batch = last.get("batch", {})
         return NativeStageResult(
-            manifest_path=reports_dir / "manifest_index.json",
+            manifest_path=manifest_index_path,
             manifest=manifest,
             batches=int(batch.get("index", 0)) + 1,
             states=len(candidates),
@@ -988,7 +1063,8 @@ def run_composite_stage(
         timeout: Per-batch subprocess timeout in seconds.
 
     Returns:
-        Path to ``<output_dir>/reports/manifest_index.json``.
+        The configured manifest index path.  With default configuration this is
+        ``<output_dir>/reports/manifest_index.json``.
     """
     result = _run_native_stage(
         vn_root,

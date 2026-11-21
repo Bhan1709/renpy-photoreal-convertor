@@ -23,10 +23,11 @@ from typing import NotRequired, TypedDict
 
 from cli import counted, loading, note, print_summary, progress_bar
 
+from ...utility import atomic_write_json
 from ..conditions import condition_variables, get_label_assignments_map
 from ..config import GameConfig
 from ..errors import ApplyError, ManifestError
-from ..manifest import KNOWN_FAMILIES
+from ..manifest import KNOWN_FAMILIES, ManifestWriter, resolve_category_manifest_paths
 from ..models import AdoptionReport, CompositeManifest, CompositeRecord
 from ..regexp import SHOW_RE
 
@@ -46,8 +47,19 @@ class _CompositeUsageInfo(TypedDict):
 class Applier:
     """Runs the full apply pass for a :class:`GameConfig`."""
 
-    def __init__(self, config: GameConfig) -> None:
+    def __init__(
+        self,
+        config: GameConfig,
+        *,
+        manifest_index_path: Path | None = None,
+        report_dir: Path | None = None,
+    ) -> None:
         self.config = config
+        self.manifests = ManifestWriter(
+            config,
+            manifest_index_path=manifest_index_path,
+            report_dir=report_dir,
+        )
         # Single cache for raw script lines, shared by all file-reading methods.
         self._source_text_cache: dict[str, tuple[str, ...]] = {}
         # Derived cache for (labels, writes) computed from raw lines.
@@ -169,6 +181,8 @@ class Applier:
             dynamic_declarations=index_payload["dynamic_declarations"],
             unresolved=tuple(index_payload.get("unresolved", [])),
             summary=summary,
+            cfg_processed=int(index_payload.get("cfg_processed", 0)),
+            cfg_truncated=bool(index_payload.get("cfg_truncated", False)),
         )
         with loading("Checking generated composite files..."):
             image_tags, missing_generated = self._generated_composites(full_manifest)
@@ -317,9 +331,7 @@ class Applier:
         }
         # Write updated index manifest (per-category manifests are unchanged;
         # only the index carries the adoption summary).
-        index_path = (
-            self.config.resolved_paths()["manifest_path"].parent / "manifest_index.json"
-        )
+        index_path = self.manifests.manifest_index_path
         index_path.parent.mkdir(parents=True, exist_ok=True)
         index_data = (
             json.loads(index_path.read_text(encoding="utf-8"))
@@ -327,7 +339,7 @@ class Applier:
             else {}
         )
         index_data["summary"] = full_manifest.summary
-        index_path.write_text(json.dumps(index_data, indent=2), encoding="utf-8")
+        atomic_write_json(index_path, index_data)
         print_summary(
             "Apply summary",
             [
@@ -356,7 +368,9 @@ class Applier:
         return self.config.resolved_paths()["declaration_path"]
 
     def _report_path(self) -> Path:
-        return self.config.resolved_paths()["report_path"]
+        if self.config.report_path is not None:
+            return self.config.resolved_paths()["report_path"]
+        return self.manifests.report_dir / "adoption_report.json"
 
     def _read_source_lines(self, path: Path) -> tuple[str, ...] | None:
         """Read and cache raw lines from a script file, shared by all readers."""
@@ -659,23 +673,31 @@ class Applier:
         return dict(by_file)
 
     def _load_index_payload(self) -> dict:
-        """Load the global manifest_index.json payload (no per-category composites)."""
-        paths = self.config.resolved_paths()
-        index_path = paths["manifest_path"].parent / "manifest_index.json"
+        """Load the global manifest index payload (without category records)."""
+        index_path = self.manifests.manifest_index_path
         if not index_path.is_file():
             raise ManifestError(f"Manifest index not found: {index_path}")
-        return json.loads(index_path.read_text(encoding="utf-8"))
+        try:
+            return json.loads(index_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ManifestError(
+                f"Could not read manifest index {index_path}: {exc}"
+            ) from exc
 
     def _category_manifest_files(self) -> list[Path]:
-        """Return existing per-category manifest files, in canonical order."""
-        paths = self.config.resolved_paths()
-        reports_dir = paths["manifest_path"].parent
-        files: list[Path] = []
-        for cat_name in KNOWN_FAMILIES:
-            cat_path = reports_dir / f"manifest_{cat_name}.json"
-            if cat_path.is_file():
-                files.append(cat_path)
-        return files
+        """Return referenced category manifest files in canonical order."""
+        index_path = self.manifests.manifest_index_path
+        index_payload = self._load_index_payload()
+        category_paths = resolve_category_manifest_paths(
+            index_payload,
+            index_path,
+            self.manifests.report_dir,
+        )
+        return [
+            category_paths[category]
+            for category in KNOWN_FAMILIES
+            if category in category_paths
+        ]
 
 
 # ---------------------------------------------------------------------- #

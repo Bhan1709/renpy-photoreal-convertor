@@ -164,7 +164,7 @@ This project is intended to be a toolkit to convert Ren'Py based games and visua
 │   │   ├── pipeline.py      # End-to-end staged decompile → compose pipeline
 │   │   ├── config.json      # Decompile-generated GameConfig (src/converter/config.json)
 │   │   ├── py.typed
-│   │   ├── utility/         # Shared utilities (tqdm)
+│   │   ├── utility/         # Shared progress, atomic-write, and manifest-path utilities
 │   │   ├── decompile/       # Ren'Py decompile/extract subpackage
 │   │   │   ├── __init__.py
 │   │   │   ├── decompile.py # Core logic + CLI entry point
@@ -227,7 +227,7 @@ New generalized subpackage for building photoreal composites from Ren'Py game as
 - **`GameConfig` / `load_config`** — Game-specific config loaded from decompile-generated `src/converter/config.json`
 - **`Composer.compose()`** — Scans `.rpy` scripts for layeredimage/screen/image declarations, composites referenced PNGs, writes per-category manifests
 - **`Applier.apply()`** — Rewrites `show`/`scene` statements to composite tags, emits runtime `ConditionSwitch` wrappers, declares composites in `composite_images.rpy`
-- **`ManifestWriter`** — Writes per-category manifests (`manifest_bg.json`, …) + `manifest_index.json`
+- **`ManifestWriter`** — Publishes per-category manifests (`manifest_bg.json`, …) + `manifest_index.json` in one atomic transaction with relative category references
 - **`restore_rpy_files()` / `restore_from_manifest()`** — Revert modified `.rpy` files from `archive.rpa` (in `converter/restore`)
 
 See `src/converter/compose/README.md` for full documentation.
@@ -303,14 +303,12 @@ if cached:
 ```python
 from converter.compose.config import load_config
 from converter.compose.compose_pass import Composer
-from converter.compose.manifest import ManifestWriter
 from converter.compose.apply_pass import Applier
 
 config = load_config("src/converter/config.json")
 
-# 1. Compose → manifest + PNGs
+# 1. Compose → manifest + PNGs (the compose pass publishes the manifest)
 manifest = Composer(config).compose(dry_run=False)
-ManifestWriter(config).write(manifest, dry_run=False)
 
 # 2. Apply → adopt composites into live scripts
 manifest, report = Applier(config).apply()

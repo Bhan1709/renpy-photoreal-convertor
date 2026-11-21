@@ -26,7 +26,7 @@ decompile (src/converter/decompile/):
 compose (src/converter/compose/):
   index_scripts() -> create isolated native workspace ->
   enumerate/render states with the bundled Ren'Py runtime ->
-  write per-category manifests + manifest_index.json under <game>/composites/reports/
+  publish per-category manifests + manifest_index.json atomically under the configured report_dir
         |
         v
 apply (src/converter/compose/applier.py):
@@ -43,7 +43,7 @@ Describe the flow in 4-6 steps using file-backed evidence:
 1. `src/converter/decompile/discovery.py` `find_game_folder()` locates the first `game` folder under `src/renpy_game` (excluding the consolidated `src/renpy_game/game` output).
 2. `src/converter/decompile/flow.py` `prepare_game()` runs find → stage → extract → decompile → detect categories → write `config.json` without modifying the source game; `process_game()` adds the optional interactive compose follow-up.
 3. `src/converter/pipeline.py` `run_pipeline()` delegates to `prepare_game()`, loads the config written by that same run, and invokes compose (apply remains deferred for review).
-4. `src/converter/compose/compose_pass/orchestrate.py` `Composer.compose()` delegates to the native Ren'Py stage, which indexes scripts, creates an isolated workspace, enumerates runtime states, renders through the bundled Ren'Py runtime, and writes the split manifests.
+4. `src/converter/compose/compose_pass/orchestrate.py` `Composer.compose()` delegates to the native Ren'Py stage, which indexes scripts, creates an isolated workspace, enumerates runtime states, renders through the bundled Ren'Py runtime, and publishes the split manifests in one atomic transaction. The index stores relative category references and is replaced last as the commit marker.
 5. `src/converter/compose/apply_pass/applier.py` `Applier.apply()` loads manifests, rewrites `show`/`scene` statements to composite tags, emits `ConditionSwitch` wrappers for dynamic state, writes `game/composite_images.rpy` declarations and an adoption report; idempotent (refuses to touch a line whose text no longer matches the recorded statement).
 6. `src/converter/restore/restore.py` provides archive-scoped and source-tree restoration paths; the compose CLI currently uses source-tree restoration.
 
@@ -75,7 +75,7 @@ Describe the flow in 4-6 steps using file-backed evidence:
 
 ### 5) Known Architectural Risks
 
-- Automated tests and CI now cover orchestration/config boundaries, but native rendering, review, apply, and restore still lack end-to-end coverage (see `TESTING.md`).
+- Automated tests and CI now cover orchestration/config boundaries, manifest transactions, native identity/state adaptation, and split-manifest consumers, but native rendering and interactive review still lack end-to-end coverage (see `TESTING.md`).
 - `rpa-toolkit` is a git dependency pinned to a commit SHA (`pyproject.toml`); if the git reference becomes unavailable, installs break.
 - `opencode.json` is auto-generated and overwritten by the agent CLI on each profile launch; manual edits are not durable (`AGENTS.md` §3; `src/agent/cli.py`).
 - Modelfile `PARAMETER num_ctx` must match `context_limit` in `src/agent/config.json` profile entries, or context-window monitoring may be inaccurate (`AGENTS.md` §5).

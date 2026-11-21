@@ -131,7 +131,6 @@ def compose_game(
         clean_output(config)
 
     manifest = Composer(config).compose(dry_run=dry_run, clean_output=clean)
-    ManifestWriter(config).write(manifest, dry_run=dry_run)
     composite_count = counted(len(manifest.composites_list), "composite")
     if dry_run:
         info(f"Dry run: {composite_count} would be created.")
@@ -166,7 +165,7 @@ def print_review_instructions(config: GameConfig, config_path: Path) -> None:
     if not scenes and not speakers:
         return
 
-    reports_dir = config.resolved_paths()["manifest_path"].parent
+    reports_dir = config.resolved_paths()["report_dir"]
     pending_path = reports_dir / "review_pending.json"
     review_cmd = f'python -m converter.compose.review compose-review "{config_path}"'
 
@@ -247,7 +246,7 @@ def apply_game(config: GameConfig) -> int:
     scenes, speakers = pending_review(config)
     if scenes:
         pending_path = (
-            config.resolved_paths()["manifest_path"].parent / "review_pending.json"
+            config.resolved_paths()["report_dir"] / "review_pending.json"
         )
         warning(
             "Apply blocked: character associations are still missing for "

@@ -44,13 +44,16 @@ from cli import (
     warning,
 )
 
+from ...utility import atomic_write_json, atomic_write_json_files
 from ..config import GameConfig, load_config
+from ..errors import ManifestError
 from ..manifest import (
     CHARACTERS_FILE,
     KNOWN_FAMILIES,
     ManifestWriter,
     _load_characters,
     _save_characters,
+    resolve_category_manifest_paths,
 )
 from ..review_instructions import manual_scene_instructions, manual_speaker_instructions
 
@@ -226,49 +229,89 @@ def _resolve_speaker(
 # --------------------------------------------------------------------------- #
 
 
-def _load_all_category_manifests(reports_dir: Path) -> dict[str, dict]:
-    """Load every ``manifest_<cat>.json`` file into memory.
+def _manifest_index_path(reports_dir: Path, manifest_index_path: Path | None) -> Path:
+    """Return the explicit index path or its conventional report sibling."""
+    return manifest_index_path or (reports_dir / "manifest_index.json")
 
-    Returns ``{cat_name: cat_data}`` covering all known families.  Missing or
-    unreadable files yield an empty composite list for that category.
+
+def _category_manifest_paths(
+    reports_dir: Path,
+    manifest_index_path: Path | None = None,
+) -> dict[str, Path]:
+    """Resolve category paths from the manifest index, with a legacy fallback."""
+    index_path = _manifest_index_path(reports_dir, manifest_index_path)
+    if not index_path.is_file():
+        return {
+            category: reports_dir / f"manifest_{category}.json"
+            for category in KNOWN_FAMILIES
+        }
+
+    try:
+        index = json.loads(index_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ManifestError(
+            f"Could not read manifest index {index_path}: {exc}"
+        ) from exc
+    referenced = resolve_category_manifest_paths(index, index_path, reports_dir)
+    return {
+        category: referenced.get(
+            category,
+            reports_dir / f"manifest_{category}.json",
+        )
+        for category in KNOWN_FAMILIES
+    }
+
+
+def _load_all_category_manifests(
+    reports_dir: Path,
+    manifest_index_path: Path | None = None,
+) -> dict[str, dict]:
+    """Load every referenced category manifest into memory.
+
+    Missing files yield an empty category, while unreadable files are errors;
+    corrupt review data must never be silently replaced with empty data.
     """
     all_data: dict[str, dict] = {}
-    for cat_name in KNOWN_FAMILIES:
-        cat_path = reports_dir / f"manifest_{cat_name}.json"
-        if cat_path.is_file():
+    for category, category_path in _category_manifest_paths(
+        reports_dir,
+        manifest_index_path,
+    ).items():
+        if category_path.is_file():
             try:
-                all_data[cat_name] = json.loads(cat_path.read_text(encoding="utf-8"))
-            except (json.JSONDecodeError, OSError):
-                all_data[cat_name] = {
-                    "category": cat_name,
-                    "composites": [],
-                    "summary": {"composites": 0},
-                }
+                all_data[category] = json.loads(
+                    category_path.read_text(encoding="utf-8")
+                )
+            except (json.JSONDecodeError, OSError) as exc:
+                raise ManifestError(
+                    f"Could not read manifest category file {category_path}: {exc}"
+                ) from exc
         else:
-            all_data[cat_name] = {
-                "category": cat_name,
+            all_data[category] = {
+                "category": category,
                 "composites": [],
                 "summary": {"composites": 0},
             }
     return all_data
 
 
-def _save_all_category_manifests(reports_dir: Path, all_data: dict[str, dict]) -> None:
-    """Write every category manifest back to disk."""
-    for cat_name, cat_data in all_data.items():
-        cat_path = reports_dir / f"manifest_{cat_name}.json"
-        cat_path.write_text(json.dumps(cat_data, indent=2), encoding="utf-8")
+def _save_all_category_manifests(
+    reports_dir: Path,
+    all_data: dict[str, dict],
+    manifest_index_path: Path | None = None,
+) -> None:
+    """Atomically write every category manifest back to disk."""
+    category_paths = _category_manifest_paths(reports_dir, manifest_index_path)
+    transaction = {
+        category_paths[category]: category_data
+        for category, category_data in all_data.items()
+        if category in category_paths
+    }
+    atomic_write_json_files(transaction)
 
 
 def _save_pending_review(reports_dir: Path, pending: dict) -> None:
-    """Write the pending review data back to ``review_pending.json``.
-
-    Resolved or explicitly ignored entries (mapped/rejected speakers,
-    associated/kept/rejected scenes) are removed from this file so they are not
-    re-reviewed on subsequent runs.
-    """
-    pending_path = reports_dir / "review_pending.json"
-    pending_path.write_text(json.dumps(pending, indent=2), encoding="utf-8")
+    """Atomically write the pending review data back to disk."""
+    atomic_write_json(reports_dir / "review_pending.json", pending)
 
 
 # --------------------------------------------------------------------------- #
@@ -352,6 +395,7 @@ def _map_speaker_to_character(
     composite_paths: list[str],
     all_data: dict[str, dict],
     reports_dir: Path,
+    manifest_index_path: Path | None = None,
 ) -> None:
     """Map ``speaker`` to a canonical character and persist the alias."""
     aliases_list = char_aliases[resolved].setdefault("aliases", [])
@@ -366,7 +410,11 @@ def _map_speaker_to_character(
         speaker,
         resolved,
     )
-    _save_all_category_manifests(reports_dir, all_data)
+    _save_all_category_manifests(
+        reports_dir,
+        all_data,
+        manifest_index_path,
+    )
     success(f"Mapped '{speaker}' to '{resolved}' and added the alias.")
 
 
@@ -376,6 +424,7 @@ def _keep_unverified_speaker_name(
     composite_paths: list[str],
     all_data: dict[str, dict],
     reports_dir: Path,
+    manifest_index_path: Path | None = None,
 ) -> None:
     """Rename speaker dialogs to an unverified custom name and save manifests."""
     target_set = set(composite_paths)
@@ -388,7 +437,11 @@ def _keep_unverified_speaker_name(
             new_list.append(_replace_speaker_in_dialogs(comp, speaker, custom_name))
         cat_data["composites"] = new_list
         cat_data["summary"] = {"composites": len(new_list)}
-    _save_all_category_manifests(reports_dir, all_data)
+    _save_all_category_manifests(
+        reports_dir,
+        all_data,
+        manifest_index_path,
+    )
     info(f"Updated '{speaker}' to '{custom_name}'. The alias is unverified.")
 
 
@@ -404,6 +457,7 @@ def _reject_speaker(
     reports_dir: Path,
     rejected_dir: Path,
     all_data: dict[str, dict],
+    manifest_index_path: Path | None = None,
 ) -> None:
     """Reject an unmapped speaker: remove its dialogs from manifests and write a
     rejected record under ``rejected_dir``."""
@@ -425,7 +479,11 @@ def _reject_speaker(
         cat_data["composites"] = new_list
         cat_data["summary"] = {"composites": len(new_list)}
 
-    _save_all_category_manifests(reports_dir, all_data)
+    _save_all_category_manifests(
+        reports_dir,
+        all_data,
+        manifest_index_path,
+    )
 
     # Write rejected record.
     rejected_dir.mkdir(parents=True, exist_ok=True)
@@ -453,6 +511,7 @@ def _reject_scene(
     reports_dir: Path,
     rejected_dir: Path,
     all_data: dict[str, dict],
+    manifest_index_path: Path | None = None,
 ) -> None:
     """Reject a scene composite: move the PNG to rejected/pngs/, remove its
     manifest entry, and write a rejected record."""
@@ -482,7 +541,11 @@ def _reject_scene(
             "composites": len(cat_data["composites"]),
         }
 
-    _save_all_category_manifests(reports_dir, all_data)
+    _save_all_category_manifests(
+        reports_dir,
+        all_data,
+        manifest_index_path,
+    )
 
     # Write rejected record.
     rejected_dir.mkdir(parents=True, exist_ok=True)
@@ -573,6 +636,7 @@ def _process_unmapped_speakers(
     char_aliases: dict[str, dict],
     all_data: dict[str, dict],
     reports_dir: Path,
+    manifest_index_path: Path | None = None,
 ) -> dict[str, dict]:
     """Interactively review each unmapped speaker one at a time."""
     unmapped = pending.get("unmapped_speakers", [])
@@ -612,6 +676,7 @@ def _process_unmapped_speakers(
                 reports_dir,
                 rejected_dir,
                 all_data,
+                manifest_index_path,
             )
         elif character_choice == _CUSTOM_SPEAKER:
             char_name = prompt_text(
@@ -636,6 +701,7 @@ def _process_unmapped_speakers(
                         composite_paths,
                         all_data,
                         reports_dir,
+                        manifest_index_path,
                     )
                 else:
                     warning(f"'{char_name}' is not a known character.")
@@ -653,6 +719,7 @@ def _process_unmapped_speakers(
                             reports_dir,
                             rejected_dir,
                             all_data,
+                            manifest_index_path,
                         )
                     else:
                         _keep_unverified_speaker_name(
@@ -661,6 +728,7 @@ def _process_unmapped_speakers(
                             composite_paths,
                             all_data,
                             reports_dir,
+                            manifest_index_path,
                         )
         else:
             _map_speaker_to_character(
@@ -670,6 +738,7 @@ def _process_unmapped_speakers(
                 composite_paths,
                 all_data,
                 reports_dir,
+                manifest_index_path,
             )
 
         # Remove this speaker from the pending review so it is not re-reviewed.
@@ -694,6 +763,7 @@ def _process_scenes_missing_chars(
     rejected_dir: Path,
     all_data: dict[str, dict],
     reports_dir: Path,
+    manifest_index_path: Path | None = None,
 ) -> None:
     """Interactively review each scene missing character association."""
     scenes = pending.get("scenes", [])
@@ -750,6 +820,7 @@ def _process_scenes_missing_chars(
                     reports_dir,
                     rejected_dir,
                     all_data,
+                    manifest_index_path,
                 )
                 break
 
@@ -808,7 +879,11 @@ def _process_scenes_missing_chars(
                         "manifest_scene.json entry was not found."
                     )
                     continue
-                _save_all_category_manifests(reports_dir, all_data)
+                _save_all_category_manifests(
+                    reports_dir,
+                    all_data,
+                    manifest_index_path,
+                )
                 info(
                     f"Appended {', '.join(associated_characters)} to scene "
                     f"'{name}' in manifest_scene.json."
@@ -828,7 +903,11 @@ def _process_scenes_missing_chars(
                     "manifest_scene.json entry was not found."
                 )
                 continue
-            _save_all_category_manifests(reports_dir, all_data)
+            _save_all_category_manifests(
+                reports_dir,
+                all_data,
+                manifest_index_path,
+            )
             info(
                 f"Appended {', '.join(selections)} to scene '{name}' "
                 "in manifest_scene.json."
@@ -878,11 +957,13 @@ def review(config_path: str = "src/converter/config.json") -> int:
         _print_next_step(config)
         return 0
 
-    reports_dir = config.resolved_paths()["manifest_path"].parent
+    paths = config.resolved_paths()
+    reports_dir = paths["report_dir"]
+    manifest_index_path = paths["manifest_index_path"]
     rejected_dir = config.game_root / "composites" / REJECTED_SUBFOLDER
 
     char_aliases = _load_characters(reports_dir)
-    all_data = _load_all_category_manifests(reports_dir)
+    all_data = _load_all_category_manifests(reports_dir, manifest_index_path)
 
     rule("Composite review")
     kv("Config", config_path)
@@ -907,6 +988,7 @@ def review(config_path: str = "src/converter/config.json") -> int:
         char_aliases,
         all_data,
         reports_dir,
+        manifest_index_path,
     )
 
     # Phase 2: Review scenes missing character association.
@@ -920,7 +1002,14 @@ def review(config_path: str = "src/converter/config.json") -> int:
             title=f"Phase 2 - {heading}",
             style=MAUVE,
         )
-    _process_scenes_missing_chars(config, pending, rejected_dir, all_data, reports_dir)
+    _process_scenes_missing_chars(
+        config,
+        pending,
+        rejected_dir,
+        all_data,
+        reports_dir,
+        manifest_index_path,
+    )
 
     console.print()
     print_summary(

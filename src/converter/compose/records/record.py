@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections import Counter
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Final
 
@@ -144,26 +145,42 @@ def _restore_layer_order(layers: list[Layer], source_order: list[Layer]) -> list
     return sorted(layers, key=lambda layer: positions.get(key(layer), len(positions)))
 
 
-def _record_key(kind: str, name: str, normalized: list[Layer]) -> tuple[str, str, str]:
-    """Dedup key for a composite: (kind, name, sha1 of normalized layer semantics)."""
-    semantic = json.dumps(
+def _record_key(
+    kind: str,
+    name: str,
+    normalized: list[Layer],
+    content_hash: str | None = None,
+    condition_state: Mapping[str, object] | None = None,
+) -> tuple[str, str, str]:
+    """Return a composite dedup key.
+
+    Native composites additionally include their rendered content hash and the
+    condition environment used for that render.  Static callers retain the
+    original layer-semantics identity.
+    """
+    identity: list[object] = [
+        kind,
+        name,
         [
-            kind,
-            name,
-            [
-                (
-                    x.source,
-                    list(x.conditions),
-                    x.attribute,
-                    x.offset,
-                    x.offset_rel,
-                    x.canvas_size,
-                )
-                for x in normalized
-            ],
+            (
+                x.source,
+                list(x.conditions),
+                x.attribute,
+                x.offset,
+                x.offset_rel,
+                x.canvas_size,
+            )
+            for x in normalized
         ],
-        sort_keys=True,
-    )
+    ]
+    if content_hash is not None or condition_state is not None:
+        identity.extend(
+            [
+                content_hash,
+                dict(sorted((condition_state or {}).items())),
+            ]
+        )
+    semantic = json.dumps(identity, sort_keys=True)
     digest = hashlib.sha1(semantic.encode()).hexdigest()[:12]
     return (kind, name, digest)
 
@@ -285,6 +302,9 @@ def _build_base_record(
     family: str,
     status: str,
     dimensions: tuple[int, int] | None,
+    *,
+    content_hash: str | None = None,
+    condition_state: Mapping[str, object] | None = None,
 ) -> CompositeRecord:
     """Build the base :class:`CompositeRecord` from shared data."""
     usage_locations = tuple(
@@ -315,6 +335,8 @@ def _build_base_record(
             sorted({c for x in normalized for c in x.conditions})
         ),
         family=family,
+        content_hash=content_hash,
+        condition_state=dict(condition_state or {}),
     )
 
 

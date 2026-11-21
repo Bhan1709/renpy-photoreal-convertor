@@ -132,8 +132,15 @@ are rejected before compose starts.
   compose pass fast.
 - ``output_dir`` — where composite PNGs are written (default:
   ``<game_root>/composites``).
-- ``manifest_path`` / ``declaration_path`` / ``report_path`` — output locations
-  (default to ``<output_dir>/reports/`` and ``<game_root>/composite_images.rpy``).
+- ``report_dir`` — where split manifests, the character catalog, and pending
+  review data are written (default: ``<output_dir>/reports``).
+- ``manifest_index_path`` — exact split-manifest index path (default:
+  ``<report_dir>/manifest_index.json``).
+- ``declaration_path`` / ``report_path`` — apply-pass output locations
+  (default to ``<game_root>/composite_images.rpy`` and
+  ``<report_dir>/adoption_report.json``).
+- ``manifest_path`` — legacy compatibility setting; new configurations should
+  use ``report_dir`` and ``manifest_index_path``.
 
 Use :meth:`GameConfig.resolved_paths` to get all resolved absolute output paths.
 
@@ -240,16 +247,14 @@ python -m converter.compose restore  # restore game folder from source, keep com
 ```python
 from converter.compose.config import GameConfig, load_config
 from converter.compose.compose_pass import Composer
-from converter.compose.manifest import ManifestWriter
 from converter.compose.apply_pass import Applier
 
 # 1. Load the decompile-generated config
 config = load_config("src/converter/config.json")
 
-# 2. Compose → manifest + PNGs
+# 2. Compose → manifest + PNGs (the compose pass publishes the manifest)
 composer = Composer(config)
 manifest = composer.compose(dry_run=False, clean_output=False)
-ManifestWriter(config).write(manifest, dry_run=False)
 
 # 3. Apply → adopt composites into live scripts
 applier = Applier(config)
@@ -353,9 +358,23 @@ Under ``<output_dir>/reports/``:
 - ``manifest_other.json`` — composites that don't fit a known family
 - ``characters.json`` — canonical character names, generated folders, and speaker aliases
 - ``manifest_index.json`` — global data (summary, dynamic_states, image_declarations,
-  dynamic_declarations, unresolved) plus references to each category file.
+  dynamic_declarations, unresolved, CFG walk state) plus relative references to
+  each category file.
 
-The apply pass loads the index and merges all category manifests in memory.
+The complete report bundle is serialized first, staged in the destination
+filesystem, and published through atomic replacements.  The index is replaced
+last as the commit marker.  Category references are relative to the index
+directory, and the apply, review, and restore consumers resolve those
+references instead of reconstructing absolute filenames. If a legacy or
+partially edited index omits a category reference, every consumer uses the
+canonical filename in the configured `report_dir`.
+
+Each native composite record retains its rendered ``content_hash`` and native
+``condition_state``.  Both participate in record identity, so two condition
+states cannot collapse merely because their layer semantics match.
+Condition-evaluation failures and general native render failures are preserved
+in ``unresolved``; a truncated CFG walk is preserved through ``cfg_processed``
+and ``cfg_truncated``.
 
 ### Composite output layout
 

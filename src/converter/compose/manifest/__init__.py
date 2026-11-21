@@ -16,6 +16,7 @@ from .writer import (
     _load_characters,
     _save_characters,
     _seed_characters,
+    resolve_category_manifest_paths,
 )
 
 __all__ = [
@@ -25,4 +26,5 @@ __all__ = [
     "_load_characters",
     "_save_characters",
     "_seed_characters",
+    "resolve_category_manifest_paths",
 ]

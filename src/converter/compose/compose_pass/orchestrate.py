@@ -33,6 +33,10 @@ class Composer:
     ) -> CompositeManifest:
         """Run the compose pass and return a :class:`CompositeManifest`.
 
+        The native compose stage publishes the split manifest bundle before
+        this method returns.  Callers must not write the returned manifest a
+        second time.
+
         Args:
             dry_run: If True, do not write PNGs or the manifest.
             clean_output: Accepted for API parity; actual cleanup is handled

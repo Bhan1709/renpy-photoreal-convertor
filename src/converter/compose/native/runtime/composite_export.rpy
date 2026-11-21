@@ -807,15 +807,32 @@ init -999 python in _composite_export:
         return ordered
 
     def _eval_condition(condition):
-        """Evaluate one layer condition against the currently applied store."""
-        if not isinstance(condition, _STRING_TYPES) or not condition.strip():
-            return False
-        try:
-            return bool(renpy.python.py_eval(condition))
-        except Exception:
-            return False
+        """Evaluate one layer condition without hiding evaluation failures.
 
-    def _source_entry(sources, attribute, group, conditions):
+        Returns ``(value, error)``.  ``error`` is ``None`` for a successful
+        evaluation and contains the original exception details otherwise.
+        """
+        if not isinstance(condition, _STRING_TYPES) or not condition.strip():
+            error = "condition evaluation failed: condition must be a non-empty string"
+            return False, error
+        try:
+            return bool(renpy.python.py_eval(condition)), None
+        except Exception as exc:
+            error = "condition evaluation failed for {0!r}: {1}: {2}".format(
+                condition,
+                exc.__class__.__name__,
+                exc,
+            )
+            return False, error
+
+    def _source_entry(
+        sources,
+        attribute,
+        group,
+        conditions,
+        unresolved=(),
+        unresolved_errors=(),
+    ):
         ordered = []
         for source in sources:
             if source and source not in ordered:
@@ -825,16 +842,20 @@ init -999 python in _composite_export:
             "attribute": attribute,
             "group": group,
             "conditions": list(conditions),
+            "unresolved": list(unresolved),
+            "unresolved_errors": list(unresolved_errors),
         }
 
     def _selected_layers(image, attributes):
-        """Return the provenance of every layer that ``attributes`` selects.
+        """Return selected layer provenance and condition diagnostics.
 
         Conditions are evaluated against the store as it stands when this is
         called, so the caller must apply any condition assignments first.
+        Evaluation failures are returned instead of being interpreted as false.
         """
         attributes = set(attributes)
         result = []
+        errors = []
 
         for layer in getattr(image, "layers", []):
             cls = layer.__class__.__name__
@@ -846,8 +867,14 @@ init -999 python in _composite_export:
                 try:
                     if not layer.check(attributes):
                         continue
-                except Exception:
-                    pass
+                except Exception as exc:
+                    errors.append(
+                        "layer attribute check failed: {0}: {1}".format(
+                            exc.__class__.__name__,
+                            exc,
+                        )
+                    )
+                    continue
                 sources = _displayable_sources(getattr(layer, "image", None))
                 result.append(
                     _source_entry(
@@ -859,8 +886,14 @@ init -999 python in _composite_export:
                 try:
                     if not layer.check(attributes):
                         continue
-                except Exception:
-                    pass
+                except Exception as exc:
+                    errors.append(
+                        "layer check failed: {0}: {1}".format(
+                            exc.__class__.__name__,
+                            exc,
+                        )
+                    )
+                    continue
                 sources = _displayable_sources(getattr(layer, "image", None))
                 result.append(_source_entry(sources, None, None, ()))
 
@@ -868,24 +901,46 @@ init -999 python in _composite_export:
                 try:
                     if not layer.check(attributes):
                         continue
-                except Exception:
-                    pass
+                except Exception as exc:
+                    errors.append(
+                        "condition layer check failed: {0}: {1}".format(
+                            exc.__class__.__name__,
+                            exc,
+                        )
+                    )
+                    continue
                 condition = getattr(layer, "condition", None)
-                if not _eval_condition(condition):
+                value, error = _eval_condition(condition)
+                if error is not None:
+                    errors.append(error)
+                    continue
+                if not value:
                     continue
                 sources = _displayable_sources(getattr(layer, "image", None))
                 result.append(_source_entry(sources, None, None, (condition,)))
 
             elif cls == "ConditionGroup":
-                # An if/elif/else chain shows only its first true branch.
+                # An if/elif/else chain shows only its first true branch.  An
+                # evaluation error stops the group rather than being treated
+                # as a false branch.
                 for condition_layer in getattr(layer, "conditions", []):
                     try:
                         if not condition_layer.check(attributes):
                             continue
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        errors.append(
+                            "condition group check failed: {0}: {1}".format(
+                                exc.__class__.__name__,
+                                exc,
+                            )
+                        )
+                        break
                     condition = getattr(condition_layer, "condition", None)
-                    if not _eval_condition(condition):
+                    value, error = _eval_condition(condition)
+                    if error is not None:
+                        errors.append(error)
+                        break
+                    if not value:
                         continue
                     sources = _displayable_sources(
                         getattr(condition_layer, "image", None)
@@ -910,7 +965,7 @@ init -999 python in _composite_export:
                     )
                 )
 
-        return result
+        return result, errors
 
     # ------------------------------------------------------------------ #
     # State construction
@@ -1119,7 +1174,7 @@ init -999 python in _composite_export:
         screen_height,
         timings,
     ):
-        """Render one state and return ``(hash, w, h, file, layers, sources)``.
+        """Render one state and return its content and diagnostic provenance.
 
         Condition variables are seeded from ``defaults`` and then overridden by
         ``environment`` for the duration of the render, so that layered-image
@@ -1180,15 +1235,49 @@ init -999 python in _composite_export:
             except Exception:
                 displayable = renpy.easy.displayable(" ".join(image_name))
 
-            tree = renpy.display.render.render(
-                displayable, screen_width, screen_height, 0.0, 0.0
-            )
+            try:
+                tree = renpy.display.render.render(
+                    displayable, screen_width, screen_height, 0.0, 0.0
+                )
+            except Exception as exc:
+                # A condition can raise while Ren'Py builds the displayable.
+                # Re-check the layer conditions so that diagnostic survives
+                # the failed render instead of being lost with the exception.
+                if layered_image is not None:
+                    try:
+                        _layers, condition_errors = _selected_layers(
+                            layered_image,
+                            attributes or (),
+                        )
+                        if condition_errors:
+                            setattr(
+                                exc,
+                                "composite_unresolved_errors",
+                                list(condition_errors),
+                            )
+                    except Exception:
+                        pass
+                raise
             timings["render"] += _now() - started
             width = int(tree.width)
             height = int(tree.height)
+
+            layers = []
+            sources = []
+            unresolved_errors = []
+            if layered_image is not None:
+                layers, unresolved_errors = _selected_layers(
+                    layered_image,
+                    attributes or (),
+                )
+            else:
+                sources = _dedupe_sources(
+                    _displayable_sources(getattr(displayable, "target", displayable))
+                )
+
             if width <= 0 or height <= 0:
                 # Nothing is visible for this state (every layer hidden).
-                return None, 0, 0, None, [], []
+                return None, 0, 0, None, layers, sources, unresolved_errors
 
             canvas = renpy.display.render.Render(width, height)
             canvas.blit(tree, (0, 0), focus=False)
@@ -1226,16 +1315,15 @@ init -999 python in _composite_export:
                 timings["save"] += _now() - save_started
                 saved.add(content_hash)
 
-            layers = []
-            sources = []
-            if layered_image is not None:
-                layers = _selected_layers(layered_image, attributes or ())
-            else:
-                sources = _dedupe_sources(
-                    _displayable_sources(getattr(displayable, "target", displayable))
-                )
-
-            return content_hash, width, height, content_hash + ".png", layers, sources
+            return (
+                content_hash,
+                width,
+                height,
+                content_hash + ".png",
+                layers,
+                sources,
+                unresolved_errors,
+            )
 
         finally:
             for name, value in previous.items():
@@ -1351,13 +1439,22 @@ init -999 python in _composite_export:
             render_file = None
             layers = []
             sources = []
+            unresolved_errors = []
 
             layered_image = None
             if state["kind"] == "layeredimage" and state["tag"] in layered:
                 layered_image = layered[state["tag"]][1]
 
             try:
-                content_hash, width, height, render_file, layers, sources = _render_one(
+                (
+                    content_hash,
+                    width,
+                    height,
+                    render_file,
+                    layers,
+                    sources,
+                    unresolved_errors,
+                ) = _render_one(
                     image_name,
                     state["condition_assignments"],
                     defaults,
@@ -1369,8 +1466,11 @@ init -999 python in _composite_export:
                     screen_height,
                     timings,
                 )
-            except Exception:
+            except Exception as exc:
                 error = traceback.format_exc()
+                unresolved_errors = list(
+                    getattr(exc, "composite_unresolved_errors", []) or []
+                )
                 _log(
                     "render failed for {0}: {1}".format(
                         " ".join(image_name), error
@@ -1390,6 +1490,7 @@ init -999 python in _composite_export:
                 "render_file": render_file,
                 "layers": layers,
                 "sources": sources,
+                "unresolved_errors": list(unresolved_errors),
                 "usages": _dedupe_usages(state["usages"]),
                 "error": error,
             }
