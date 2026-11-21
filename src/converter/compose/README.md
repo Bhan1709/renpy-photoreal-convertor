@@ -25,9 +25,12 @@ The flow is:
    launched headlessly, every compiled label is walked for ``show``/``scene``
    states (including ``show screen``), layered images and image declarations
    are resolved by the real displayables, and every state is rendered natively
-   through the software renderer.  Results are adapted into the same
-   ``CompositeRecord``/``CompositeManifest`` objects and written as per-category
-   manifests under ``<output_dir>/reports/``.
+   through the software renderer.  Discovery is cached across unchanged runs,
+   each page is transported as validated schema-2 JSONL, and candidates are
+   adapted one batch at a time.  Results become the same
+   ``CompositeRecord``/``CompositeManifest`` objects and are published as
+   per-category manifests under ``<output_dir>/reports/``.  After a successful
+   publication, unreferenced generated PNGs are pruned conservatively.
 2. **Apply** (`applier.py`): reads the manifest, rewrites ``show``/``scene``
    statements in live scripts to point at generated composite tags (or emits
    runtime ``ConditionSwitch`` wrappers when state is dynamic), declares every
@@ -93,7 +96,7 @@ it is loaded from the decompile-generated ``src/converter/config.json`` via
       "scene": "archive/xxx"
     }
   },
-  "compose_modes": ["cfg", "layered_all", "conditions"]
+  "compose_modes": ["cfg", "conditions"]
 }
 ```
 
@@ -127,9 +130,21 @@ are rejected before compose starts.
   Compose scans every live script in the game folder, so deleting a script from
   that folder is enough to drop it from the pass.
 - ``compose_modes`` — optional subset of the native compose modes (``cfg``,
-  ``layered_all``, ``conditions``) read from config.json.  Omitted (or empty)
-  runs every mode; large games can set ``"compose_modes": ["cfg"]`` to keep a
-  compose pass fast.
+  ``layered_all``, ``conditions``) read from config.json.  ``cfg`` is the
+  mandatory baseline and is always included.  Omitted (or empty) settings
+  retain the legacy all-modes default.  Compatibility aliases (``all``,
+  ``condition``, ``layered``, ``declaration``, and ``screen``) are accepted.
+  The recommended fast profile is ``["cfg", "conditions"]``;
+  ``layered_all`` is opt-in because it creates a large synthetic inventory.
+- ``native_max_total_states`` — global cap for all native render states
+  (default ``100000``).  Mandatory CFG overflow fails explicitly.
+- ``native_max_total_variants`` — global cap for optional condition/synthetic
+  variants (default ``250000``).  Optional variants truncate deterministically.
+- ``native_persistent_worker`` — reuse one Ren'Py worker across render pages
+  when supported (default ``true``), with automatic one-shot fallback.
+- ``native_cache_enabled`` — retain discovery, pixel render, and byte-level PNG
+  CAS artifacts between compose runs (default ``true``).  Durable artifacts
+  live under ``<output_dir>/.compose-native-cache/``.
 - ``output_dir`` — where composite PNGs are written (default:
   ``<game_root>/composites``).
 - ``report_dir`` — where split manifests, the character catalog, and pending
@@ -317,9 +332,10 @@ compose/
 │   ├── constants.py # Protocol + safety limits
 │   ├── discovery.py # Bundled runtime discovery
 │   ├── workspace.py # Disposable game workspace
-│   ├── process.py   # Headless subprocess batches
-│   ├── protocol.py  # Native result validation
-│   ├── stage.py     # run_composite_stage + record adaptation
+│   ├── process.py   # Headless one-shot batches + persistent worker lifecycle
+│   ├── protocol.py  # Native schema-2 JSONL/result validation
+│   ├── prune.py     # Published-bundle-aware stale generated-image pruning
+│   ├── stage.py     # run_composite_stage + per-batch record adaptation
 │   └── runtime/     # Injected composite_export.rpy
 ├── association/     # Character inference for XXX composites
 │   ├── __init__.py
@@ -430,10 +446,35 @@ or mutates the bundle.
 
 Each native composite record retains its rendered ``content_hash`` and native
 ``condition_state``.  Both participate in record identity, so two condition
-states cannot collapse merely because their layer semantics match.
+states cannot collapse merely because their layer semantics match.  The native
+pixel hash remains the manifest identity; a separate SHA-256 over encoded PNG
+bytes identifies the persistent content-addressed cache object.
 Condition-evaluation failures and general native render failures are preserved
 in ``unresolved`` with candidate, image, and usage context; a truncated CFG
 walk is preserved through ``cfg_processed`` and ``cfg_truncated``.
+
+Native pages use the ``renpy-compose-native-v2`` protocol with schema version
+``2``.  A complete page contains one JSONL header, its candidate records, and
+one footer.  The host validates the entire page through a disk-backed spool
+before adapting any candidate, including pagination counters, CFG walk state,
+and worker session/job/attempt identity.  Error envelopes carry the same
+identity, and an incomplete, trailing, mixed, or foreign stream is never
+treated as a successful batch.
+
+After compose or apply successfully commits the current manifest bundle, the
+native pruner reloads that published bundle and verifies its category digests
+before deleting anything.  Published manifest references and conservatively
+detected live-script references are retained.  The same live-script boundary
+includes regular ``.rpy`` files and Ren'Py ``*_ren.py`` translation modules,
+so apply-time global path replacement and pruning cannot disagree about a
+translation-only reference.  Only regular, unreferenced PNGs in valid
+``static/<family>/...`` or ``dynamic_review/<family>/...`` layouts are
+removed; reports, rejected items, cache artifacts, symlinks, non-PNG files,
+and other layouts are left untouched.  Missing referenced images keep the
+existing apply reporting contract and cause pruning to fail closed without
+deleting stale files.  Because pruning is post-commit maintenance, a cleanup
+validation failure is reported without claiming that the already-published
+manifest was rolled back.
 
 ### Composite output layout
 
@@ -525,10 +566,11 @@ extension: ``categories`` can map a category to a list of folders, and
 - **Progress tracking**: the compose pass polls the child renderer's progress
   log while batches run, so a real-time progress bar advances as states are
   rendered instead of waiting for each batch to finish.
-- **Intermediate cleanup**: the per-batch result JSON lives only inside the
-  disposable native workspace.  The workspace is removed after the native
-  stage completes, so no shared or intermediate result file remains in
-  ``reports/``.
+- **Intermediate cleanup**: per-batch JSONL streams live only inside the
+  disposable native workspace and are removed with it.  Optional durable
+  discovery/render/CAS artifacts live under the explicit
+  ``<output_dir>/.compose-native-cache/`` directory, never beside the
+  manifests or inside generated image roots.
 
 ---
 

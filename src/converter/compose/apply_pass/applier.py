@@ -21,7 +21,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import NotRequired, TypedDict
 
-from cli import counted, loading, note, print_summary, progress_bar
+from cli import counted, loading, note, print_summary, progress_bar, warning
 
 from ...utility import atomic_write_json_files
 from ...utility.manifest_bundle import (
@@ -37,6 +37,7 @@ from ...utility.manifest_bundle import (
 )
 from ...utility.manifest_paths import (
     ManifestIntegrityError,
+    require_manifest_bundle_version,
     verify_category_manifest_digests,
 )
 from ...utility.safe_paths import (
@@ -51,6 +52,8 @@ from ..config import GameConfig
 from ..errors import ApplyError, ManifestError
 from ..manifest import KNOWN_FAMILIES, ManifestWriter, resolve_category_manifest_paths
 from ..models import AdoptionReport, CompositeManifest, CompositeRecord
+from ..native.prune import prune_stale_generated_images
+from ..parsing import live_script_paths
 from ..regexp import SHOW_RE
 
 KEYWORDS = {"at", "with", "zorder", "as", "parent", "to"}
@@ -130,7 +133,7 @@ class Applier:
         # Global index payload (dynamic states, declarations, summary) is read
         # once; composites are streamed per category manifest below.
         index_path = self.manifests.manifest_index_path
-        index_payload = self._load_index_payload()
+        index_payload = self._load_index_payload(require_versioned=True)
         # Register the trusted owner before any live script is modified.  A
         # malformed registry must fail before apply can leave script rewrites
         # behind, and the registration must precede any journal publication.
@@ -447,6 +450,34 @@ class Applier:
                 self.manifests.report_dir,
             ),
         )
+        # The live scripts and generated declaration now point at the current
+        # generation.  Prune only after the manifest update has committed so a
+        # failed apply cannot remove images still needed by the game.
+        try:
+            prune_result = prune_stale_generated_images(
+                self.config,
+                manifest_index_path=self.manifests.manifest_index_path,
+                report_dir=self.manifests.report_dir,
+            )
+        except (ManifestError, OSError) as exc:
+            # The manifest update and live-script adoption are already
+            # committed.  Treat failed cleanup as post-commit maintenance
+            # rather than reporting the whole apply as uncommitted.
+            warning(
+                "Apply completed, but stale-image pruning was skipped: "
+                f"{exc}"
+            )
+        else:
+            if prune_result.removed:
+                note(
+                    f"Removed {len(prune_result.removed)} stale generated "
+                    "image(s)."
+                )
+            if prune_result.skipped:
+                note(
+                    f"Skipped {len(prune_result.skipped)} generated path(s) "
+                    "during stale-image pruning."
+                )
         print_summary(
             "Apply summary",
             [
@@ -796,7 +827,11 @@ class Applier:
         declaration_path = self._declaration_path()
         candidates: list[Path] = []
         seen: set[Path] = set()
-        for path in self.config.game_root.rglob("*.rpy"):
+        try:
+            live_paths = live_script_paths(self.config)
+        except UnsafePathError as exc:
+            raise ApplyError(str(exc)) from exc
+        for path in live_paths:
             resolved = path.resolve()
             if not resolved.is_relative_to(game_root):
                 raise ApplyError(
@@ -853,7 +888,7 @@ class Applier:
             by_file.setdefault(rel, []).append((line, info))
         return dict(by_file)
 
-    def _load_index_payload(self) -> dict:
+    def _load_index_payload(self, *, require_versioned: bool = False) -> dict:
         """Load the global manifest index payload (without category records)."""
         index_path = self.manifests.manifest_index_path
         self._validate_index_path()
@@ -867,6 +902,11 @@ class Applier:
             ) from exc
         if not isinstance(payload, dict):
             raise ManifestError(f"Manifest index must contain an object: {index_path}")
+        if require_versioned:
+            try:
+                require_manifest_bundle_version(payload)
+            except ManifestIntegrityError as exc:
+                raise ManifestError(str(exc)) from exc
         return payload
 
     def _category_manifest_files(self) -> list[Path]:

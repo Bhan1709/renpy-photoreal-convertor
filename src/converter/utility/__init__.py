@@ -51,6 +51,7 @@ from .safe_paths import (
     resolve_game_script_path,
     resolve_under_root,
     safe_relative_path,
+    validate_generated_image_relative,
 )
 
 __all__ = [
@@ -88,6 +89,7 @@ __all__ = [
     "resolve_under_root",
     "safe_relative_path",
     "tqdm",
+    "validate_generated_image_relative",
     "validate_manifest_index_path",
     "verify_category_manifest_digests",
 ]

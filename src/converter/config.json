@@ -1,9 +1,12 @@
 {
   "compose_modes": [
     "cfg",
-    "layered_all",
     "conditions"
   ],
+  "native_max_total_states": 100000,
+  "native_max_total_variants": 250000,
+  "native_persistent_worker": true,
+  "native_cache_enabled": true,
   "schema": 1,
   "game_folder": "src\\renpy_game\\game",
   "source_game": "CampMourningWood-0.25.0.1-pc",

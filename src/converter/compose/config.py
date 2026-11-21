@@ -22,6 +22,12 @@ from pathlib import Path
 from ..utility.safe_paths import UnsafePathError
 from ..utility.safe_paths import safe_relative_path as _shared_safe_relative_path
 from .errors import ConfigError
+from .native.constants import (
+    MAX_TOTAL_RENDER_STATES,
+    MAX_TOTAL_VARIANTS,
+    VALID_MODES,
+    normalize_modes,
+)
 
 # Project root: this file lives at src/converter/compose/config.py, so
 # parents[3] is the repository root where config.json and src/ live.
@@ -99,6 +105,13 @@ class GameConfig:
             script under ``game_root`` instead of trusting this list.
         ren_py_files: ``_ren.py`` scripts recorded by decompile, relative to
             ``game_root``. Kept for compatibility only.
+        compose_modes: Optional legacy native coverage policy. ``None`` keeps
+            the all-modes compatibility default; CFG is always mandatory.
+        native_max_total_states: Global cap for all enumerated render states.
+        native_max_total_variants: Global cap for optional state variants.
+        native_persistent_worker: Reuse one Ren'Py worker across render pages.
+        native_cache_enabled: Retain discovery and content-addressed render
+            artifacts between compose runs.
         output_dir: Directory where generated composite PNGs are written.
             Defaults to ``<game_root>/composites``.
         report_dir: Directory containing split manifests and compose reports.
@@ -138,10 +151,20 @@ class GameConfig:
     )
     rpy_files: list[str] | None = None
     ren_py_files: list[str] | None = None
-    # Optional subset of native compose modes ("cfg", "layered_all",
-    # "conditions") to run.  ``None`` runs every mode; large games can set
-    # ``["cfg"]`` in config.json to keep a compose pass fast.
+    # Optional coverage policy for native compose modes ("cfg", "layered_all",
+    # "conditions").  ``None`` retains the legacy all-modes default.  The CFG
+    # baseline is mandatory in the native runtime; the other two modes are
+    # additive.
     compose_modes: tuple[str, ...] | None = None
+    # Global native discovery budgets.  Mandatory CFG states fail explicitly
+    # when the total-state cap is exceeded; optional synthetic/condition
+    # variants are truncated deterministically.
+    native_max_total_states: int = MAX_TOTAL_RENDER_STATES
+    native_max_total_variants: int = MAX_TOTAL_VARIANTS
+    # Reuse one Ren'Py process for all render pages when possible, and retain
+    # discovery/render artifacts between runs for faster subsequent composes.
+    native_persistent_worker: bool = True
+    native_cache_enabled: bool = True
     output_dir: Path | None = None
     report_dir: Path | None = None
     manifest_index_path: Path | None = None
@@ -158,6 +181,10 @@ class GameConfig:
 
     def __post_init__(self) -> None:
         """Compile path regexes and normalize archive roots."""
+        if self.native_max_total_states < 0:
+            raise ValueError("native_max_total_states must be non-negative")
+        if self.native_max_total_variants < 0:
+            raise ValueError("native_max_total_variants must be non-negative")
         if not self.archive_dirs:
             object.__setattr__(self, "archive_dirs", (self.archive_dir,))
         elif self.archive_dir not in self.archive_dirs:
@@ -282,6 +309,10 @@ class GameConfig:
             "rpy_files": self.rpy_files,
             "ren_py_files": self.ren_py_files,
             "compose_modes": list(self.compose_modes) if self.compose_modes else None,
+            "native_max_total_states": self.native_max_total_states,
+            "native_max_total_variants": self.native_max_total_variants,
+            "native_persistent_worker": self.native_persistent_worker,
+            "native_cache_enabled": self.native_cache_enabled,
             "output_dir": str(paths["output_dir"]),
             "report_dir": str(paths["report_dir"]),
             "manifest_index_path": str(paths["manifest_index_path"]),
@@ -417,6 +448,32 @@ def _string_tuple(value: object, *, field_name: str) -> tuple[str, ...]:
     return tuple(str(item) for item in value)
 
 
+def _non_negative_int(
+    data: dict[str, object],
+    key: str,
+    *,
+    default: int,
+) -> int:
+    """Load one non-negative integer setting."""
+    value = data.get(key, default)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ConfigError(f"'{key}' must be a non-negative integer")
+    return value
+
+
+def _boolean(
+    data: dict[str, object],
+    key: str,
+    *,
+    default: bool,
+) -> bool:
+    """Load one boolean setting."""
+    value = data.get(key, default)
+    if not isinstance(value, bool):
+        raise ConfigError(f"'{key}' must be a boolean")
+    return value
+
+
 def _optional_project_path(data: dict[str, object], key: str) -> Path | None:
     """Load an optional path relative to the project root."""
     value = data.get(key)
@@ -467,11 +524,17 @@ def load_config(config_path: str | Path) -> GameConfig:
         _string_tuple(data.get("ren_py_files"), field_name="ren_py_files")
     )
 
-    compose_modes = _string_tuple(data.get("compose_modes"), field_name="compose_modes")
-    valid_modes = {"cfg", "layered_all", "conditions"}
-    unknown_modes = sorted(set(compose_modes) - valid_modes)
+    requested_modes = _string_tuple(
+        data.get("compose_modes"),
+        field_name="compose_modes",
+    )
+    normalized_modes = [
+        mode.strip().lower() for mode in requested_modes if mode.strip()
+    ]
+    unknown_modes = sorted(set(normalized_modes) - set(VALID_MODES))
     if unknown_modes:
         raise ConfigError(f"unknown compose mode(s): {', '.join(unknown_modes)}")
+    compose_modes = tuple(normalize_modes(normalized_modes))
 
     if "path_aliases" in data:
         path_aliases_value = data.get("path_aliases") or {}
@@ -548,6 +611,26 @@ def load_config(config_path: str | Path) -> GameConfig:
         rpy_files=rpy_files,
         ren_py_files=ren_py_files,
         compose_modes=compose_modes or None,
+        native_max_total_states=_non_negative_int(
+            data,
+            "native_max_total_states",
+            default=MAX_TOTAL_RENDER_STATES,
+        ),
+        native_max_total_variants=_non_negative_int(
+            data,
+            "native_max_total_variants",
+            default=MAX_TOTAL_VARIANTS,
+        ),
+        native_persistent_worker=_boolean(
+            data,
+            "native_persistent_worker",
+            default=True,
+        ),
+        native_cache_enabled=_boolean(
+            data,
+            "native_cache_enabled",
+            default=True,
+        ),
         output_dir=_optional_project_path(data, "output_dir"),
         report_dir=_optional_project_path(data, "report_dir"),
         manifest_index_path=_optional_project_path(data, "manifest_index_path"),
