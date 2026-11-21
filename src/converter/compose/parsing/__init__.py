@@ -34,7 +34,7 @@ from .blocks import (
 )
 from .declarations import ImageDeclaration, parse_image_declarations
 from .dialog import DialogueLine, find_nearby_dialog
-from .files import files, live_scripts
+from .files import files, live_script_paths, live_scripts
 from .indexer import (
     FileIndex,
     ScriptIndex,
@@ -56,6 +56,7 @@ __all__ = [
     "files",
     "find_nearby_dialog",
     "index_scripts",
+    "live_script_paths",
     "live_scripts",
     "parse_image_declarations",
     "parse_layered",

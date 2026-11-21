@@ -62,6 +62,29 @@ def files(
     return result
 
 
+def live_script_paths(config: GameConfig) -> list[Path]:
+    """Return every live script path used by compose, apply, and pruning.
+
+    This includes regular ``.rpy`` scripts and Ren'Py's ``*_ren.py`` files,
+    while excluding archive/cache copies and converter-generated scripts.  The
+    same discovery boundary is shared so a script cannot be rendered by native
+    compose but then omitted from apply-time path replacement or stale-image
+    retention.
+    """
+    result = list(files(config))
+    seen = {path.resolve() for path in result}
+    for path in config.game_root.rglob("*_ren.py"):
+        _require_contained(path, config.game_root)
+        if not _is_live_script(path, config.game_root):
+            continue
+        resolved = path.resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        result.append(path)
+    return sorted(result, key=lambda path: path.as_posix().lower())
+
+
 def live_scripts(config: GameConfig) -> list[str]:
     """Return all live script paths, relative to ``game_root``.
 
@@ -69,12 +92,7 @@ def live_scripts(config: GameConfig) -> list[str]:
     that are physically present in the game folder.  Removing a script from the
     game folder is therefore all a user needs to do to drop it from compose.
     """
-    scripts = {
+    return [
         path.relative_to(config.game_root).as_posix()
-        for path in files(config)
-    }
-    for path in config.game_root.rglob("*_ren.py"):
-        _require_contained(path, config.game_root)
-        if _is_live_script(path, config.game_root):
-            scripts.add(path.relative_to(config.game_root).as_posix())
-    return sorted(scripts)
+        for path in live_script_paths(config)
+    ]

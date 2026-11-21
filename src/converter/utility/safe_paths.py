@@ -140,6 +140,32 @@ def resolve_game_script_path(
     return target
 
 
+def validate_generated_image_relative(
+    relative_path: str | Path,
+    *,
+    field_name: str = "generated image path",
+) -> Path:
+    """Validate one generated-image path relative to the output root.
+
+    Generated composites use ``<status>/<family>/<file>`` beneath the output
+    directory.  Report/rejected roots and unsupported image suffixes are not
+    valid generated-image locations.
+    """
+    relative = safe_relative_path(relative_path, field_name=field_name)
+    parts = relative.parts
+    if (
+        len(parts) < 3
+        or parts[0] not in _GENERATED_IMAGE_STATUS_DIRS
+        or not parts[1]
+        or any(part.casefold() in _RESERVED_OUTPUT_DIRS for part in parts[:-1])
+        or relative.suffix.lower() not in _GENERATED_IMAGE_SUFFIXES
+    ):
+        raise UnsafePathError(
+            f"Unsafe {field_name} is not a generated image: {relative_path!r}"
+        )
+    return relative
+
+
 def resolve_game_output_path(
     game_root: str | Path,
     output_root: str | Path,
@@ -174,17 +200,10 @@ def resolve_game_output_path(
         raise UnsafePathError(
             f"Unsafe composite path escapes {output_path}: {composite_path!r}"
         ) from exc
-    parts = output_relative.parts
-    if (
-        len(parts) < 3
-        or parts[0] not in _GENERATED_IMAGE_STATUS_DIRS
-        or not parts[1]
-        or any(part.casefold() in _RESERVED_OUTPUT_DIRS for part in parts[:-1])
-        or target.suffix.lower() not in _GENERATED_IMAGE_SUFFIXES
-    ):
-        raise UnsafePathError(
-            f"Unsafe composite path is not a generated image: {composite_path!r}"
-        )
+    validate_generated_image_relative(
+        output_relative,
+        field_name="composite path",
+    )
 
     for excluded in excluded_roots:
         excluded_path = Path(excluded).resolve()
@@ -204,4 +223,5 @@ __all__ = [
     "resolve_game_script_path",
     "resolve_under_root",
     "safe_relative_path",
+    "validate_generated_image_relative",
 ]

@@ -20,6 +20,20 @@ class ManifestIntegrityError(ManifestPathError):
     """Raised when a referenced category file does not match its digest."""
 
 
+def require_manifest_bundle_version(
+    index_payload: Mapping[str, object],
+    *,
+    required_version: int = MANIFEST_BUNDLE_VERSION,
+) -> None:
+    """Require one manifest index to use the expected versioned bundle format."""
+    version = index_payload.get("bundle_version")
+    if type(version) is not int or version != required_version:
+        raise ManifestIntegrityError(
+            "Manifest index has an unsupported bundle_version: "
+            f"{version!r} (expected {required_version})"
+        )
+
+
 def _reference_path(reference: Any, category: str) -> Path:
     """Return one validated category reference as a path."""
     if isinstance(reference, Mapping):
@@ -57,6 +71,7 @@ def verify_category_manifest_digests(
     report_dir: str | Path | None = None,
     manifest_index_path: str | Path | None = None,
     categories: Sequence[str] = MANIFEST_CATEGORIES,
+    require_versioned: bool = False,
 ) -> None:
     """Verify category files against the digests stored in an index.
 
@@ -69,6 +84,8 @@ def verify_category_manifest_digests(
     category from being silently treated as an empty category.
     """
     bundle_version = index_payload.get("bundle_version")
+    if require_versioned:
+        require_manifest_bundle_version(index_payload)
     if bundle_version is not None and (
         type(bundle_version) is not int
         or bundle_version != MANIFEST_BUNDLE_VERSION
@@ -210,6 +227,7 @@ __all__ = [
     "MANIFEST_CATEGORIES",
     "ManifestIntegrityError",
     "ManifestPathError",
+    "require_manifest_bundle_version",
     "resolve_category_manifest_paths",
     "verify_category_manifest_digests",
 ]

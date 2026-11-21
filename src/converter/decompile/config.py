@@ -17,6 +17,10 @@ from .scan import scan_source_files
 
 PRESERVED_CONFIG_FIELDS = (
     "compose_modes",
+    "native_max_total_states",
+    "native_max_total_variants",
+    "native_persistent_worker",
+    "native_cache_enabled",
     "special_speakers",
     "player_folder",
     "player_aliases",

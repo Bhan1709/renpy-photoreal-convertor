@@ -1,12 +1,14 @@
 init -999 python in _composite_export:
 
     import ctypes
+    import glob
     import hashlib
     import json
     import os
     import re
     import struct
     import sys
+    import time
     import traceback
 
     try:
@@ -67,37 +69,118 @@ init -999 python in _composite_export:
             raise RuntimeError("native compose config is not an object")
         return data
 
-    def _write_result(data):
+    def _result_path(config=None):
+        if isinstance(config, _builtins.dict):
+            path = config.get("result_path")
+            if path:
+                return path
         path = os.environ.get("RENPY_COMPOSITE_OUTPUT")
         if not path:
             raise RuntimeError("RENPY_COMPOSITE_OUTPUT is not set")
-        text = json.dumps(data, sort_keys=True)
-        with open(path, "wb") as handle:
-            handle.write(text.encode("utf-8"))
+        return path
 
-    def _write_error(message):
-        try:
-            _write_result(
-                {
-                    "protocol": PROTOCOL,
-                    "schema_version": SCHEMA_VERSION,
-                    "status": "error",
-                    "error": {"message": message},
-                }
+    def _write_result(data, path=None):
+        if path is None:
+            path = _result_path()
+        if os.path.islink(path):
+            raise RuntimeError(
+                "native result path must not be a symbolic link"
             )
+        text = json.dumps(data, sort_keys=True) + "\n"
+        temporary = path + ".tmp"
+        parent = os.path.dirname(temporary)
+        if parent and os.path.islink(parent):
+            raise RuntimeError(
+                "native result directory must not be a symbolic link"
+            )
+        if os.path.islink(temporary):
+            os.unlink(temporary)
+        with open(temporary, "wb") as handle:
+            handle.write(text.encode("utf-8"))
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+
+    def _stream_record(record_type, payload):
+        record = dict(payload or {})
+        record["record_type"] = record_type
+        record["protocol"] = PROTOCOL
+        record["schema_version"] = SCHEMA_VERSION
+        return record
+
+    def _write_stream_line(handle, record):
+        text = json.dumps(
+            record,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        handle.write(text.encode("utf-8"))
+        handle.write(b"\n")
+
+    def _identity(config):
+        """Return the logical batch identity carried by one native result."""
+        session_id = str((config or {}).get("session_id") or "")
+        if not session_id:
+            return None
+        return {
+            "session_id": session_id,
+            "job_id": max(0, int((config or {}).get("job_id") or 0)),
+            "attempt": max(1, int((config or {}).get("attempt") or 1)),
+        }
+
+    def _write_error(message, path=None, kind=None, config=None):
+        try:
+            error = {"message": message}
+            if kind:
+                error["kind"] = kind
+            payload = {
+                "protocol": PROTOCOL,
+                "schema_version": SCHEMA_VERSION,
+                "status": "error",
+                "error": error,
+            }
+            identity = _identity(config)
+            if identity is not None:
+                payload["identity"] = identity
+            _write_result(payload, path)
         except Exception:
             pass
 
+    class _NativeLimitError(RuntimeError):
+        """Raised when a mandatory global discovery budget is exceeded."""
+
     def _states_signature(config):
         """Hash the inputs that affect state enumeration, not batching."""
+        fingerprint = config.get("discovery_fingerprint") or ""
         payload = {
-            "format": 2,
-            "game_root": config.get("game_root") or "",
+            "format": 5,
+            # The disposable workspace path changes every run.  A host-provided
+            # discovery fingerprint replaces it so the durable cache remains
+            # reusable across runs of the same game.
+            "game_root": "" if fingerprint else (config.get("game_root") or ""),
+            "discovery_fingerprint": fingerprint,
             "modes": config.get("modes") or [],
             "defaults": config.get("defaults") or {},
-            "max_synthetic_states": int(config.get("max_synthetic_states") or 1024),
+            "max_synthetic_states": int(
+                config.get("max_synthetic_states")
+                if config.get("max_synthetic_states") is not None
+                else 1024
+            ),
             "max_condition_assignments": int(
-                config.get("max_condition_assignments") or 64
+                config.get("max_condition_assignments")
+                if config.get("max_condition_assignments") is not None
+                else 64
+            ),
+            "max_total_states": int(
+                config.get("max_total_states")
+                if config.get("max_total_states") is not None
+                else 100000
+            ),
+            "max_total_variants": int(
+                config.get("max_total_variants")
+                if config.get("max_total_variants") is not None
+                else 250000
             ),
             "max_cfg_states": int(config.get("max_cfg_states") or 1000000),
             "max_cfg_depth": int(config.get("max_cfg_depth") or 6),
@@ -106,7 +189,16 @@ init -999 python in _composite_export:
             json.dumps(payload, sort_keys=True).encode("utf-8")
         ).hexdigest()
 
-    def _save_states(path, signature, states, walk_stats):
+    def _save_states(
+        path,
+        signature,
+        states,
+        walk_stats,
+        metadata=None,
+        budget=None,
+        state_counts=None,
+        discovery_fingerprint=None,
+    ):
         """Freeze the enumerated states so every batch slices the same list.
 
         Usage lists are interned: the states share the same usage dict objects,
@@ -137,16 +229,35 @@ init -999 python in _composite_export:
             )
         payload = {
             "signature": signature,
+            "discovery_fingerprint": str(discovery_fingerprint or ""),
             "walk": walk_stats,
+            "budget": dict(budget or {}),
+            "metadata": dict(metadata or {}),
+            "state_counts": dict(state_counts or {}),
             "usage_lists": usage_lists,
             "states": compact,
         }
+        if os.path.islink(path):
+            raise RuntimeError(
+                "native discovery cache path must not be a symbolic link"
+            )
         temp_path = path + ".tmp"
+        parent = os.path.dirname(temp_path)
+        if parent and os.path.islink(parent):
+            raise RuntimeError(
+                "native discovery cache directory must not be a symbolic link"
+            )
+        if parent and not os.path.isdir(parent):
+            os.makedirs(parent)
+        if os.path.islink(temp_path):
+            os.unlink(temp_path)
         with open(temp_path, "wb") as handle:
             handle.write(json.dumps(payload, sort_keys=True).encode("utf-8"))
+            handle.flush()
+            os.fsync(handle.fileno())
         os.replace(temp_path, path)
 
-    def _load_states(path, signature):
+    def _load_states(path, signature, discovery_fingerprint=None):
         """Return the frozen ``(states, walk_stats)``, or None if unusable."""
         if not path or not os.path.isfile(path):
             return None
@@ -155,6 +266,11 @@ init -999 python in _composite_export:
                 payload = json.loads(handle.read().decode("utf-8"))
             if payload.get("signature") != signature:
                 return None
+            if discovery_fingerprint is not None:
+                if payload.get("discovery_fingerprint") != str(
+                    discovery_fingerprint
+                ):
+                    return None
             usage_lists = payload.get("usage_lists") or []
             states = []
             for entry in payload["states"]:
@@ -174,7 +290,19 @@ init -999 python in _composite_export:
                         "usages": list(usages),
                     }
                 )
-            return states, dict(payload.get("walk") or {})
+            state_counts_value = payload.get("state_counts")
+            state_counts = (
+                dict(state_counts_value)
+                if isinstance(state_counts_value, dict)
+                else None
+            )
+            return (
+                states,
+                dict(payload.get("walk") or {}),
+                dict(payload.get("metadata") or {}),
+                dict(payload.get("budget") or {}),
+                state_counts,
+            )
         except Exception:
             return None
 
@@ -559,17 +687,31 @@ init -999 python in _composite_export:
                 result[name[0]] = (name, value)
         return result
 
-    def _find_image_node(tag):
+    def _image_node_map():
+        """Build one tag-to-image-node map for this child process.
+
+        The old implementation scanned every compiled statement once per
+        requested image tag.  The map preserves the old first-match semantics
+        while making discovery linear in the number of AST statements.
+        """
         try:
             statements = renpy.game.script.all_stmts
         except Exception:
             statements = []
+        result = {}
         for node in statements or []:
             if not isinstance(node, renpy.ast.Image):
                 continue
-            if len(node.imgname) == 1 and node.imgname[0] == tag:
-                return node
-        return None
+            try:
+                image_name = node.imgname
+            except Exception:
+                continue
+            if len(image_name) != 1:
+                continue
+            tag = image_name[0]
+            if tag not in result:
+                result[tag] = node
+        return result
 
     def _definition(node, game_root):
         if node is None:
@@ -698,6 +840,8 @@ init -999 python in _composite_export:
             return text
 
     def _condition_assignments(image, defaults, limit):
+        if limit <= 0:
+            return []
         names = _condition_variables(image, defaults)
         if not names:
             return []
@@ -984,15 +1128,33 @@ init -999 python in _composite_export:
 
     def _build_states(config, usages, layered, defaults):
         modes = config.get("modes") or ["cfg", "layered_all", "conditions"]
-        max_synthetic = int(config.get("max_synthetic_states") or 1024)
-        max_conditions = int(config.get("max_condition_assignments") or 64)
+        max_synthetic = int(
+            config.get("max_synthetic_states")
+            if config.get("max_synthetic_states") is not None
+            else 1024
+        )
+        max_conditions = int(
+            config.get("max_condition_assignments")
+            if config.get("max_condition_assignments") is not None
+            else 64
+        )
+        max_total_states = int(
+            config.get("max_total_states")
+            if config.get("max_total_states") is not None
+            else 100000
+        )
+        max_total_variants = int(
+            config.get("max_total_variants")
+            if config.get("max_total_variants") is not None
+            else 250000
+        )
         include = config.get("include_layered_images")
         include_set = set(include) if include else None
 
         states = {}
 
-        def add(kind, tag, attributes, environment, usage, synthetic=False):
-            key = (
+        def state_key(kind, tag, attributes, environment):
+            return (
                 kind,
                 tag,
                 tuple(attributes),
@@ -1003,8 +1165,12 @@ init -999 python in _composite_export:
                     )
                 ),
             )
+
+        def add(kind, tag, attributes, environment, usage, synthetic=False):
+            key = state_key(kind, tag, attributes, environment)
             entry = states.get(key)
-            if entry is None:
+            created = entry is None
+            if created:
                 entry = {
                     "kind": kind,
                     "tag": tag,
@@ -1016,8 +1182,11 @@ init -999 python in _composite_export:
                 states[key] = entry
             if usage is not None:
                 entry["usages"].append(usage)
-            return entry
+            return entry, created
 
+        # CFG-discovered states are the mandatory baseline.  They are never
+        # silently truncated: exceeding the global state cap is an explicit
+        # limit error reported by the child protocol.
         for usage in usages:
             tag = usage["tag"]
             if tag in layered:
@@ -1027,14 +1196,46 @@ init -999 python in _composite_export:
             else:
                 add("image", tag, usage["image_name"], {}, usage)
 
-        if "layered_all" in modes:
-            for tag in sorted(layered.keys()):
-                if include_set is not None and tag not in include_set:
-                    continue
-                image = layered[tag][1]
-                for attributes in _synthetic_states(image, max_synthetic):
-                    add("layeredimage", tag, attributes, {}, None, synthetic=True)
+        cfg_states = len(states)
+        if cfg_states > max_total_states:
+            raise _NativeLimitError(
+                "native CFG discovery produced {0} mandatory states, exceeding "
+                "the global limit of {1}".format(
+                    cfg_states,
+                    max_total_states,
+                )
+            )
 
+        variant_count = 0
+        synthetic_count = 0
+        condition_count = 0
+        skipped_variants = 0
+        truncated = False
+
+        def add_variant(kind, tag, attributes, environment):
+            key = state_key(kind, tag, attributes, environment)
+            if key in states:
+                return states[key], False
+            if (
+                len(states) >= max_total_states
+                or variant_count >= max_total_variants
+            ):
+                return None, True
+            entry, _created = add(
+                kind,
+                tag,
+                attributes,
+                environment,
+                None,
+                synthetic=not environment,
+            )
+            return entry, True
+
+        # Condition variants are enumerated before synthetic inventory so the
+        # global budget preserves the variants that can affect runtime
+        # ConditionSwitch output.  Assignments depend on the layered image and
+        # defaults, not on the base attribute set, so they are hoisted once per
+        # image and reused for every discovered attribute combination.
         if "conditions" in modes:
             for tag in sorted(layered.keys()):
                 if include_set is not None and tag not in include_set:
@@ -1060,16 +1261,55 @@ init -999 python in _composite_export:
                 base_usages = []
                 for entry in base_entries:
                     base_usages.extend(entry["usages"])
+                assignments = _condition_assignments(
+                    image,
+                    defaults,
+                    max_conditions,
+                )
 
                 for attributes in base_attributes:
-                    for environment in _condition_assignments(
-                        image, defaults, max_conditions
-                    ):
-                        entry = add(
-                            "layeredimage", tag, attributes, environment, None
+                    for environment in assignments:
+                        entry, created = add_variant(
+                            "layeredimage",
+                            tag,
+                            attributes,
+                            environment,
                         )
+                        if entry is None:
+                            truncated = True
+                            skipped_variants += 1
+                            break
+                        if created:
+                            variant_count += 1
+                            condition_count += 1
                         for usage in base_usages:
                             entry["usages"].append(usage)
+                    if truncated:
+                        break
+                if truncated:
+                    break
+
+        if "layered_all" in modes and not truncated:
+            for tag in sorted(layered.keys()):
+                if include_set is not None and tag not in include_set:
+                    continue
+                image = layered[tag][1]
+                for attributes in _synthetic_states(image, max_synthetic):
+                    entry, created = add_variant(
+                        "layeredimage",
+                        tag,
+                        attributes,
+                        {},
+                    )
+                    if entry is None:
+                        truncated = True
+                        skipped_variants += 1
+                        break
+                    if created:
+                        variant_count += 1
+                        synthetic_count += 1
+                if truncated:
+                    break
 
         result = list(states.values())
         result.sort(
@@ -1080,7 +1320,18 @@ init -999 python in _composite_export:
                 tuple(sorted(entry["condition_assignments"].items())),
             )
         )
-        return result
+        budget = {
+            "max_total_states": max_total_states,
+            "max_total_variants": max_total_variants,
+            "cfg_states": cfg_states,
+            "synthetic_states": synthetic_count,
+            "condition_variants": condition_count,
+            "variants": variant_count,
+            "total_states": len(result),
+            "truncated": truncated,
+            "skipped_variants": skipped_variants,
+        }
+        return result, budget
 
     # ------------------------------------------------------------------ #
     # Rendering
@@ -1153,6 +1404,49 @@ init -999 python in _composite_export:
         digest.update(("{0}x{1}:".format(width, height)).encode("ascii"))
         digest.update(_surface_rgba(surface))
         return digest.hexdigest()
+
+    def _render_file_matches(path, content_hash, width, height):
+        """Return whether one cached PNG still has the expected pixels."""
+        if os.path.islink(path):
+            return False
+        try:
+            image = _pygame().image.load(path)
+            if image.get_size() != (width, height):
+                return False
+            return _surface_hash(image) == content_hash
+        except Exception:
+            return False
+
+    def _store_render(surface, path, content_hash, width, height):
+        """Atomically store one pixel-addressed PNG in the render cache."""
+        if os.path.islink(path):
+            raise RuntimeError(
+                "native render cache path must not be a symbolic link"
+            )
+        if os.path.isfile(path):
+            if _render_file_matches(path, content_hash, width, height):
+                return
+            # A stale or partially written cache object is repaired from the
+            # current surface instead of being trusted by filename alone.
+
+        # Keep the ``.png`` suffix: pygame selects the encoder from the
+        # temporary file's extension, so a generic ``.tmp`` suffix would make
+        # the atomic cache write fail before publication.
+        temporary = path + ".tmp-" + str(os.getpid()) + ".png"
+        try:
+            if os.path.islink(temporary):
+                os.unlink(temporary)
+            _pygame().image.save(surface, temporary)
+            with open(temporary, "rb+") as handle:
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, path)
+        except Exception:
+            try:
+                os.unlink(temporary)
+            except Exception:
+                pass
+            raise
 
     _MISSING_NAME_RE = re.compile(
         r"name '([A-Za-z_]\w*)' is not defined"
@@ -1309,9 +1603,14 @@ init -999 python in _composite_export:
                 )
 
             if content_hash not in saved:
-                save_started = _now()
                 path = os.path.join(render_dir, content_hash + ".png")
-                _pygame().image.save(surface, path)
+                # The render directory is a persistent content-addressed
+                # store.  Reuse an existing canonical PNG across pages and
+                # compose runs only after its pixels verify against the
+                # native content hash.  Writes are staged and atomically
+                # replaced so a crash cannot leave a partial canonical PNG.
+                save_started = _now()
+                _store_render(surface, path, content_hash, width, height)
                 timings["save"] += _now() - save_started
                 saved.add(content_hash)
 
@@ -1365,149 +1664,50 @@ init -999 python in _composite_export:
     # Command entry point
     # ------------------------------------------------------------------ #
 
-    def _run():
-        config = _load_config()
-        game_root = config.get("game_root") or ""
-        _STATE["progress_path"] = config.get("progress_path") or None
-
-        render_dir = config.get("render_dir")
-        if not render_dir:
-            raise RuntimeError("native compose config is missing render_dir")
-        if not os.path.isdir(render_dir):
-            os.makedirs(render_dir)
-
-        screen_width, screen_height = _setup_display(config)
-
-        defaults = config.get("defaults") or {}
-        layered = _layered_registry()
-        states_path = config.get("states_path") or None
-        signature = _states_signature(config)
-        cached = _load_states(states_path, signature)
-        if cached is None:
-            roots = _roots()
-            usages, walk_stats = _walk(
-                roots,
-                game_root,
-                int(config.get("max_cfg_states") or 1000000),
-                int(config.get("max_cfg_depth") or 6),
-            )
-            states = _build_states(config, usages, layered, defaults)
-            if states_path:
-                _save_states(states_path, signature, states, walk_stats)
-        else:
-            states, walk_stats = cached
-
-        state_counts = {}
+    def _budget_from_states(states, config=None):
+        cfg_states = 0
+        synthetic_states = 0
+        condition_variants = 0
         for state in states:
-            state_counts[state["kind"]] = state_counts.get(state["kind"], 0) + 1
+            if state.get("condition_assignments"):
+                condition_variants += 1
+            elif state.get("synthetic"):
+                synthetic_states += 1
+            else:
+                cfg_states += 1
+        config = config or {}
+        return {
+            "max_total_states": int(
+                config.get("max_total_states")
+                if config.get("max_total_states") is not None
+                else 100000
+            ),
+            "max_total_variants": int(
+                config.get("max_total_variants")
+                if config.get("max_total_variants") is not None
+                else 250000
+            ),
+            "cfg_states": cfg_states,
+            "synthetic_states": synthetic_states,
+            "condition_variants": condition_variants,
+            "variants": synthetic_states + condition_variants,
+            "total_states": len(states),
+            "truncated": False,
+            "skipped_variants": 0,
+        }
 
-        offset = int(config.get("state_offset") or 0)
-        limit = int(config.get("max_render_states") or 4096)
-        total = len(states)
-        selected = states[offset : offset + limit]
+    def _state_counts(states):
+        counts = {}
+        for state in states:
+            kind = state["kind"]
+            counts[kind] = counts.get(kind, 0) + 1
+        return counts
 
-        saved = set()
-        candidates = []
-        timings = {"render": 0.0, "hash": 0.0, "save": 0.0}
-        empty = 0
-        batch_start = _now()
-
-        _progress(
-            "batch {0} start offset={1} selected={2} total={3}".format(
-                int(config.get("batch_index") or 0), offset, len(selected), total
-            )
-        )
-
-        for index, state in enumerate(selected):
-            image_name = _state_image_name(state)
-            if (index + 1) % 25 == 0:
-                _progress(
-                    "render {0}/{1} elapsed={2:.1f}s render={3:.1f}s hash={4:.1f}s "
-                    "save={5:.1f}s".format(
-                        index + 1,
-                        len(selected),
-                        _now() - batch_start,
-                        timings["render"],
-                        timings["hash"],
-                        timings["save"],
-                    )
-                )
-            error = None
-            content_hash = None
-            width = 0
-            height = 0
-            render_file = None
-            layers = []
-            sources = []
-            unresolved_errors = []
-
-            layered_image = None
-            if state["kind"] == "layeredimage" and state["tag"] in layered:
-                layered_image = layered[state["tag"]][1]
-
-            try:
-                (
-                    content_hash,
-                    width,
-                    height,
-                    render_file,
-                    layers,
-                    sources,
-                    unresolved_errors,
-                ) = _render_one(
-                    image_name,
-                    state["condition_assignments"],
-                    defaults,
-                    layered_image,
-                    state["attributes"],
-                    render_dir,
-                    saved,
-                    screen_width,
-                    screen_height,
-                    timings,
-                )
-            except Exception as exc:
-                error = traceback.format_exc()
-                unresolved_errors = list(
-                    getattr(exc, "composite_unresolved_errors", []) or []
-                )
-                _log(
-                    "render failed for {0}: {1}".format(
-                        " ".join(image_name), error
-                    )
-                )
-
-            candidate = {
-                "candidate_id": _candidate_id(state),
-                "name": state["tag"],
-                "kind": state["kind"],
-                "attributes": list(state["attributes"]),
-                "image_name": list(image_name),
-                "condition_assignments": dict(state["condition_assignments"]),
-                "content_hash": content_hash,
-                "width": width,
-                "height": height,
-                "render_file": render_file,
-                "layers": layers,
-                "sources": sources,
-                "unresolved_errors": list(unresolved_errors),
-                "usages": _dedupe_usages(state["usages"]),
-                "error": error,
-            }
-
-            candidates.append(candidate)
-            if error is None and content_hash is None:
-                empty += 1
-
-            if (index + 1) % 250 == 0:
-                renpy.exports.free_memory()
-
-        renpy.exports.free_memory()
-
+    def _discovery_metadata(states, layered, node_map, game_root):
         layered_result = []
         for tag in sorted(layered.keys()):
             metadata = _layered_metadata(tag, layered[tag][1])
-            metadata["definition"] = _definition(_find_image_node(tag), game_root)
+            metadata["definition"] = _definition(node_map.get(tag), game_root)
             layered_result.append(metadata)
 
         image_definitions = {}
@@ -1517,49 +1717,432 @@ init -999 python in _composite_export:
             tag = state["tag"]
             if tag in image_definitions:
                 continue
-            image_definitions[tag] = _definition(_find_image_node(tag), game_root)
+            image_definitions[tag] = _definition(node_map.get(tag), game_root)
 
-        characters = _characters()
-
-        result = {
-            "protocol": PROTOCOL,
-            "schema_version": SCHEMA_VERSION,
-            "status": "ok",
-            "batch": {
-                "index": int(config.get("batch_index") or 0),
-                "state_offset": offset,
-                "rendered": len(candidates),
-                "total_states": total,
-                "next_offset": offset + len(selected)
-                if offset + len(selected) < total
-                else None,
-                "renpy_version": getattr(
-                    renpy, "version_only", getattr(renpy, "version", "unknown")
-                ),
-                "renderer": "sw",
-                "screen": [screen_width, screen_height],
-                "state_counts": state_counts,
-                "walk": walk_stats,
-                "empty_renders": empty,
-                "layered_images": len(layered_result),
-                "characters": len(characters),
-            },
-            "candidates": candidates,
+        return {
             "layered_images": layered_result,
             "image_definitions": image_definitions,
-            "characters": characters,
+            "characters": _characters(),
         }
-        _write_result(result)
+
+    def _discovery_context(config, game_root, layered, node_map):
+        """Return cached states and metadata for one worker context."""
+        defaults = config.get("defaults") or {}
+        states_path = config.get("states_path") or None
+        signature = _states_signature(config)
+        context = _STATE.get("context")
+        if context and context.get("signature") == signature:
+            return context
+
+        cached = _load_states(
+            states_path,
+            signature,
+            config.get("discovery_fingerprint"),
+        )
+        discovered = cached is None
+        cache_incomplete = False
+        if cached is None:
+            roots = _roots()
+            usages, walk_stats = _walk(
+                roots,
+                game_root,
+                int(config.get("max_cfg_states") or 1000000),
+                int(config.get("max_cfg_depth") or 6),
+            )
+            states, budget = _build_states(config, usages, layered, defaults)
+            metadata = _discovery_metadata(states, layered, node_map, game_root)
+            state_counts = _state_counts(states)
+        else:
+            states, walk_stats, metadata, budget, state_counts = cached
+            cache_incomplete = (
+                not metadata or not budget or state_counts is None
+            )
+            if not metadata:
+                metadata = _discovery_metadata(states, layered, node_map, game_root)
+            if not budget:
+                budget = _budget_from_states(states, config)
+            if state_counts is None:
+                state_counts = _state_counts(states)
+
+        if states_path and (discovered or cache_incomplete):
+            _save_states(
+                states_path,
+                signature,
+                states,
+                walk_stats,
+                metadata,
+                budget,
+                state_counts,
+                config.get("discovery_fingerprint"),
+            )
+
+        context = {
+            "signature": signature,
+            "states": states,
+            "walk": walk_stats,
+            "metadata": metadata,
+            "budget": budget,
+            "state_counts": state_counts,
+        }
+        _STATE["context"] = context
+        return context
+
+    def _batch_payload(
+        config,
+        states,
+        state_counts,
+        walk_stats,
+        budget,
+        metadata,
+        screen_width,
+        screen_height,
+        empty_renders,
+    ):
+        offset = int(config.get("state_offset") or 0)
+        limit = int(config.get("max_render_states") or 4096)
+        selected = states[offset : offset + limit]
+        total = len(states)
+        layered_result = metadata.get("layered_images") or []
+        characters = metadata.get("characters") or {}
+        batch = {
+            "index": int(config.get("batch_index") or 0),
+            "state_offset": offset,
+            "rendered": len(selected),
+            "total_states": total,
+            "next_offset": offset + len(selected)
+            if offset + len(selected) < total
+            else None,
+            "renpy_version": getattr(
+                renpy, "version_only", getattr(renpy, "version", "unknown")
+            ),
+            "renderer": "sw",
+            "screen": [screen_width, screen_height],
+            "state_counts": state_counts,
+            "walk": walk_stats,
+            "budget": dict(budget or {}),
+            "empty_renders": empty_renders,
+            "layered_images": len(layered_result),
+            "characters": len(characters),
+        }
+        identity = _identity(config)
+        if identity is not None:
+            batch["identity"] = identity
+        return batch
+
+    def _run_batch(config, setup_display=True):
+        game_root = config.get("game_root") or ""
+        _STATE["progress_path"] = config.get("progress_path") or None
+
+        render_dir = config.get("render_dir")
+        if not render_dir:
+            raise RuntimeError("native compose config is missing render_dir")
+        if os.path.islink(render_dir):
+            raise RuntimeError("native render store must not be a symbolic link")
+        if not os.path.isdir(render_dir):
+            os.makedirs(render_dir)
+
+        if setup_display:
+            screen_width, screen_height = _setup_display(config)
+        else:
+            screen_width, screen_height = _STATE.get("screen", (0, 0))
+
+        defaults = config.get("defaults") or {}
+        signature = _states_signature(config)
+        runtime_context = _STATE.get("runtime_context")
+        if (
+            runtime_context is None
+            or runtime_context.get("signature") != signature
+        ):
+            runtime_context = {
+                "signature": signature,
+                "layered": _layered_registry(),
+                "node_map": _image_node_map(),
+            }
+            _STATE["runtime_context"] = runtime_context
+        layered = runtime_context["layered"]
+        node_map = runtime_context["node_map"]
+        context = _discovery_context(
+            config,
+            game_root,
+            layered,
+            node_map,
+        )
+        states = context["states"]
+        walk_stats = context["walk"]
+        metadata = context["metadata"]
+        budget = context["budget"]
+
+        offset = int(config.get("state_offset") or 0)
+        limit = int(config.get("max_render_states") or 4096)
+        total = len(states)
+        selected = states[offset : offset + limit]
+
+        saved = set()
+        timings = {"render": 0.0, "hash": 0.0, "save": 0.0}
+        empty = 0
+        batch_start = _now()
+        result_path = _result_path(config)
+
+        _progress(
+            "batch {0} start offset={1} selected={2} total={3}".format(
+                int(config.get("batch_index") or 0), offset, len(selected), total
+            )
+        )
+
+        temporary = result_path + ".tmp"
+        parent = os.path.dirname(temporary)
+        if parent and os.path.islink(parent):
+            raise RuntimeError(
+                "native result directory must not be a symbolic link"
+            )
+        if parent and not os.path.isdir(parent):
+            os.makedirs(parent)
+        if os.path.islink(temporary):
+            os.unlink(temporary)
+        handle = open(temporary, "wb")
+        try:
+            header_batch = _batch_payload(
+                config,
+                states,
+                context["state_counts"],
+                walk_stats,
+                budget,
+                metadata,
+                screen_width,
+                screen_height,
+                0,
+            )
+            _write_stream_line(
+                handle,
+                _stream_record(
+                    "header",
+                    {
+                        "status": "ok",
+                        "batch": header_batch,
+                        "layered_images": metadata.get("layered_images") or [],
+                        "image_definitions": metadata.get("image_definitions") or {},
+                        "characters": metadata.get("characters") or {},
+                    },
+                ),
+            )
+
+            for index, state in enumerate(selected):
+                image_name = _state_image_name(state)
+                if (index + 1) % 25 == 0:
+                    _progress(
+                        "render {0}/{1} elapsed={2:.1f}s render={3:.1f}s "
+                        "hash={4:.1f}s save={5:.1f}s".format(
+                            index + 1,
+                            len(selected),
+                            _now() - batch_start,
+                            timings["render"],
+                            timings["hash"],
+                            timings["save"],
+                        )
+                    )
+                error = None
+                content_hash = None
+                width = 0
+                height = 0
+                render_file = None
+                layers = []
+                sources = []
+                unresolved_errors = []
+
+                layered_image = None
+                if state["kind"] == "layeredimage" and state["tag"] in layered:
+                    layered_image = layered[state["tag"]][1]
+
+                try:
+                    (
+                        content_hash,
+                        width,
+                        height,
+                        render_file,
+                        layers,
+                        sources,
+                        unresolved_errors,
+                    ) = _render_one(
+                        image_name,
+                        state["condition_assignments"],
+                        defaults,
+                        layered_image,
+                        state["attributes"],
+                        render_dir,
+                        saved,
+                        screen_width,
+                        screen_height,
+                        timings,
+                    )
+                except Exception as exc:
+                    error = traceback.format_exc()
+                    unresolved_errors = list(
+                        getattr(exc, "composite_unresolved_errors", []) or []
+                    )
+                    _log(
+                        "render failed for {0}: {1}".format(
+                            " ".join(image_name), error
+                        )
+                    )
+
+                candidate = {
+                    "candidate_id": _candidate_id(state),
+                    "name": state["tag"],
+                    "kind": state["kind"],
+                    "attributes": list(state["attributes"]),
+                    "image_name": list(image_name),
+                    "condition_assignments": dict(state["condition_assignments"]),
+                    "content_hash": content_hash,
+                    "width": width,
+                    "height": height,
+                    "render_file": render_file,
+                    "layers": layers,
+                    "sources": sources,
+                    "unresolved_errors": list(unresolved_errors),
+                    "usages": _dedupe_usages(state["usages"]),
+                    "error": error,
+                }
+                _write_stream_line(
+                    handle,
+                    _stream_record("candidate", candidate),
+                )
+                if error is None and content_hash is None:
+                    empty += 1
+
+                if (index + 1) % 250 == 0:
+                    renpy.exports.free_memory()
+
+            renpy.exports.free_memory()
+            footer_batch = _batch_payload(
+                config,
+                states,
+                context["state_counts"],
+                walk_stats,
+                budget,
+                metadata,
+                screen_width,
+                screen_height,
+                empty,
+            )
+            _write_stream_line(
+                handle,
+                _stream_record(
+                    "footer",
+                    {"status": "ok", "batch": footer_batch},
+                ),
+            )
+            handle.flush()
+            os.fsync(handle.fileno())
+        except Exception:
+            handle.close()
+            try:
+                os.unlink(temporary)
+            except Exception:
+                pass
+            raise
+        else:
+            handle.close()
+        os.replace(temporary, result_path)
+        return footer_batch
+
+    def _write_done(path, status, message=None):
+        payload = {"status": status}
+        if message:
+            payload["message"] = message
+        temporary = path + ".tmp"
+        if os.path.islink(temporary):
+            os.unlink(temporary)
+        with open(temporary, "wb") as handle:
+            handle.write(json.dumps(payload, sort_keys=True).encode("utf-8"))
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+
+    def _run_worker():
+        """Render queued jobs in one Ren'Py process."""
+        config = _load_config()
+        jobs_dir = config.get("jobs_dir")
+        results_dir = config.get("results_dir")
+        stop_path = config.get("stop_path")
+        ready_path = config.get("ready_path")
+        if not jobs_dir or not results_dir or not stop_path or not ready_path:
+            raise RuntimeError("native worker config is missing job paths")
+        if not os.path.isdir(jobs_dir):
+            os.makedirs(jobs_dir)
+        if not os.path.isdir(results_dir):
+            os.makedirs(results_dir)
+
+        screen_width, screen_height = _setup_display(config)
+        _STATE["screen"] = (screen_width, screen_height)
+        ready_temporary = ready_path + ".tmp"
+        with open(ready_temporary, "wb") as ready_handle:
+            ready_handle.write(b"ready\n")
+            ready_handle.flush()
+            os.fsync(ready_handle.fileno())
+        os.replace(ready_temporary, ready_path)
+        processed = set()
+        while not os.path.exists(stop_path):
+            job_paths = sorted(glob.glob(os.path.join(jobs_dir, "job-*.json")))
+            for job_path in job_paths:
+                if job_path in processed:
+                    continue
+                done_path = os.path.splitext(job_path)[0] + ".done"
+                job_config = None
+                try:
+                    with open(job_path, "rb") as job_file:
+                        job_config = json.loads(job_file.read().decode("utf-8"))
+                    # A condition expression can mutate the Ren'Py store while
+                    # a batch is rendered.  Restore the clean post-init store
+                    # before the next job so one batch cannot influence the
+                    # next batch's condition state.
+                    try:
+                        renpy.python.clean_stores()
+                    except Exception:
+                        pass
+                    _run_batch(job_config, setup_display=False)
+                    _write_done(done_path, "ok")
+                except Exception as exc:
+                    message = traceback.format_exc()
+                    _log(message)
+                    if isinstance(job_config, _builtins.dict):
+                        try:
+                            result_path = _result_path(job_config)
+                        except Exception:
+                            result_path = None
+                    else:
+                        result_path = None
+                    kind = "limit" if isinstance(exc, _NativeLimitError) else None
+                    if result_path:
+                        _write_error(message, result_path, kind, job_config)
+                    _write_done(done_path, "error", message)
+                processed.add(job_path)
+            time.sleep(0.05)
 
     def run_command():
+        config = None
         try:
-            _run()
+            config = _load_config()
+            _run_batch(config)
         except renpy.game.QuitException:
             raise
         except Exception:
             message = traceback.format_exc()
             _log(message)
-            _write_error(message)
+            kind = "limit" if isinstance(
+                sys.exc_info()[1], _NativeLimitError
+            ) else None
+            _write_error(message, kind=kind, config=config)
+            raise renpy.game.QuitException(status=1)
+        return False
+
+    def run_worker_command():
+        try:
+            _run_worker()
+        except renpy.game.QuitException:
+            raise
+        except Exception:
+            message = traceback.format_exc()
+            _log(message)
             raise renpy.game.QuitException(status=1)
         return False
 
@@ -1570,7 +2153,15 @@ init -998 python:
         store._composite_export.run_command,
         uses_display=True,
     )
+    renpy.arguments.register_command(
+        "composite_export_worker",
+        store._composite_export.run_worker_command,
+        uses_display=True,
+    )
 
-    if renpy.game.args.command == "composite_export":
+    if renpy.game.args.command in (
+        "composite_export",
+        "composite_export_worker",
+    ):
         renpy.config.save = False
         renpy.config.save_persistent = False
