@@ -18,15 +18,6 @@ def manual_scene_instructions(
     """Return the manual fallback instructions for scene associations."""
     pending_path = reports_dir / "review_pending.json"
     scene_manifest = reports_dir / "manifest_scene.json"
-    scene_json = (
-        "{\n"
-        '  "characters": [\n'
-        '    {"character": "<folder>", '
-        '"evidence": ["script_identifier:<script>:<line>"]}\n'
-        "  ],\n"
-        '  "character_association_status": "associated"\n'
-        "}"
-    )
 
     return (
         "Manual scene resolution",
@@ -62,33 +53,18 @@ def manual_scene_instructions(
             ),
             Padding(
                 Text(
-                    "Manual alternative (the interactive review writes these files "
-                    "automatically):"
+                    "Integrity note: versioned bundles protect category files "
+                    "with SHA-256 digests in the manifest index. Direct edits to "
+                    f"{scene_manifest} will be rejected; use the interactive "
+                    "review so the category, pending state, and refreshed "
+                    "index are published together."
                 )
-            ),
-            Padding(Text("- Associate each scene with one or more characters:")),
-            Padding(Text(f"- Open {scene_manifest}."), (0, 2)),
-            Padding(
-                Text('- Find the scene in the "composites" list and add:'),
-                (0, 2),
-            ),
-            Padding(
-                Syntax(
-                    scene_json,
-                    "json",
-                    theme="ansi_dark",
-                    background_color="default",
-                    word_wrap=True,
-                    padding=(0, 1),
-                ),
-                (0, 3),
             ),
             Padding(
                 Text(
-                    "- Remove the resolved entry from the 'scenes' array in "
+                    "Pending scene entries are stored in "
                     f"{pending_path}."
-                ),
-                (0, 2),
+                )
             ),
         ],
     )
@@ -141,6 +117,14 @@ def manual_speaker_instructions(
                     f"array in {pending_path}."
                 ),
                 (0, 2),
+            ),
+            Padding(
+                Text(
+                    "Integrity note: prefer the interactive review because it "
+                    "publishes category, character, pending-review, and index "
+                    "changes together. Versioned bundles reject direct edits "
+                    "to protected category files."
+                )
             ),
         ],
     )

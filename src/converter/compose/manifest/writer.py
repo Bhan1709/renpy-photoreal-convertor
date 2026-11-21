@@ -31,7 +31,24 @@ from typing import cast
 from cli import print_summary
 
 from ...utility import atomic_write_json, atomic_write_json_files
-from ...utility.manifest_paths import MANIFEST_CATEGORIES, ManifestPathError
+from ...utility.atomic import json_payload_digest
+from ...utility.manifest_bundle import (
+    ManifestBundlePathError,
+    bundle_journal_metadata,
+    bundle_journal_path,
+    bundle_paths,
+    manifest_bundle_lock,
+    recover_manifest_bundle,
+    register_bundle_owner,
+    validate_manifest_index_path,
+)
+from ...utility.manifest_paths import (
+    MANIFEST_BUNDLE_VERSION,
+    MANIFEST_CATEGORIES,
+    ManifestIntegrityError,
+    ManifestPathError,
+    verify_category_manifest_digests,
+)
 from ...utility.manifest_paths import (
     resolve_category_manifest_paths as _resolve_category_manifest_paths,
 )
@@ -48,12 +65,20 @@ KNOWN_FAMILIES = MANIFEST_CATEGORIES
 CHARACTERS_FILE = "characters.json"
 
 
+def _validate_index_path(index_path: Path, report_dir: Path) -> None:
+    """Reject an index path that aliases a reserved bundle file."""
+    try:
+        validate_manifest_index_path(index_path, report_dir)
+    except ManifestBundlePathError as exc:
+        raise ManifestError(str(exc)) from exc
+
+
 def _relative_manifest_reference(target: Path, manifest_index_path: Path) -> str:
     """Return a category path relative to the manifest index directory."""
     try:
         relative = os.path.relpath(
-            target.resolve(),
-            manifest_index_path.resolve().parent,
+            os.path.abspath(os.fspath(target)),
+            os.path.abspath(os.fspath(manifest_index_path.parent)),
         )
     except ValueError as exc:
         raise ManifestError(
@@ -302,25 +327,43 @@ class ManifestWriter:
             reports_dir = (
                 Path(report_dir) if report_dir is not None else self.report_dir
             )
-        self.manifest_index_path = index_path
-        self.report_dir = reports_dir
+        _validate_index_path(index_path, reports_dir)
 
-        bundle_paths = [
-            reports_dir / f"manifest_{category}.json"
-            for category in KNOWN_FAMILIES
-        ]
-        bundle_paths.extend(
-            [
-                reports_dir / CHARACTERS_FILE,
-                reports_dir / "review_pending.json",
-            ]
-        )
-        resolved_index = index_path.resolve()
-        if any(path.resolve() == resolved_index for path in bundle_paths):
-            raise ManifestError(
-                f"Manifest index path collides with a bundle file: {index_path}"
+        with manifest_bundle_lock(index_path, report_dir=reports_dir):
+            recover_manifest_bundle(index_path, reports_dir)
+            return self._write_unlocked(
+                manifest,
+                dry_run=dry_run,
+                extra_characters=extra_characters,
+                manifest_index_path=manifest_index_path,
+                report_dir=report_dir,
             )
 
+    def _write_unlocked(
+        self,
+        manifest: CompositeManifest,
+        dry_run: bool = False,
+        extra_characters: dict[str, CharacterDeclaration] | None = None,
+        *,
+        manifest_index_path: Path | None = None,
+        report_dir: Path | None = None,
+    ) -> CompositeManifest:
+        """Write the bundle while the caller holds the bundle lock."""
+        if manifest_index_path is not None:
+            index_path = Path(manifest_index_path)
+            reports_dir = (
+                Path(report_dir) if report_dir is not None else index_path.parent
+            )
+        else:
+            index_path = self.manifest_index_path
+            reports_dir = (
+                Path(report_dir) if report_dir is not None else self.report_dir
+            )
+        self.manifest_index_path = index_path
+        self.report_dir = reports_dir
+        _validate_index_path(index_path, reports_dir)
+
+        stable_bundle_paths = bundle_paths(index_path, reports_dir)
         known_families = set(KNOWN_FAMILIES)
         categories: dict[str, list] = {name: [] for name in KNOWN_FAMILIES}
         for record in manifest.composites_list:
@@ -351,6 +394,7 @@ class ManifestWriter:
 
             transaction: dict[Path, dict] = {}
             category_files: dict[str, str] = {}
+            category_digests: dict[str, str] = {}
             for category_name in KNOWN_FAMILIES:
                 category_records = categories.get(category_name, [])
                 category_manifest = {
@@ -360,6 +404,9 @@ class ManifestWriter:
                 }
                 category_path = reports_dir / f"manifest_{category_name}.json"
                 transaction[category_path] = category_manifest
+                category_digests[category_name] = json_payload_digest(
+                    category_manifest
+                )
                 category_files[category_name] = _relative_manifest_reference(
                     category_path, index_path
                 )
@@ -404,7 +451,9 @@ class ManifestWriter:
             }
 
             index_manifest = {
+                "bundle_version": MANIFEST_BUNDLE_VERSION,
                 "categories": category_files,
+                "category_digests": category_digests,
                 "summary": manifest.summary,
                 "dynamic_states": manifest.dynamic_states,
                 "image_declarations": manifest.image_declarations,
@@ -415,7 +464,13 @@ class ManifestWriter:
             }
             # The index is intentionally the final replacement in the bundle.
             transaction[index_path] = index_manifest
-            atomic_write_json_files(transaction)
+            register_bundle_owner(index_path, reports_dir)
+            atomic_write_json_files(
+                transaction,
+                journal_path=bundle_journal_path(index_path, reports_dir),
+                allowed_paths=stable_bundle_paths,
+                journal_metadata=bundle_journal_metadata(index_path, reports_dir),
+            )
 
             pending_scenes = cast(
                 list[str],
@@ -447,7 +502,16 @@ class ManifestWriter:
             manifest_index_path=manifest_index_path,
             report_dir=report_dir,
         )
-        return writer.manifest_index_path.is_file()
+        _validate_index_path(writer.manifest_index_path, writer.report_dir)
+        with manifest_bundle_lock(
+            writer.manifest_index_path,
+            report_dir=writer.report_dir,
+        ):
+            recover_manifest_bundle(
+                writer.manifest_index_path,
+                writer.report_dir,
+            )
+            return writer.manifest_index_path.is_file()
 
     @classmethod
     def load_all(
@@ -463,7 +527,21 @@ class ManifestWriter:
             manifest_index_path=manifest_index_path,
             report_dir=report_dir,
         )
-        index_path = writer.manifest_index_path
+        _validate_index_path(writer.manifest_index_path, writer.report_dir)
+        with manifest_bundle_lock(
+            writer.manifest_index_path,
+            report_dir=writer.report_dir,
+        ):
+            recover_manifest_bundle(
+                writer.manifest_index_path,
+                writer.report_dir,
+            )
+            return writer._load_all_unlocked()
+
+    def _load_all_unlocked(self) -> CompositeManifest:
+        """Load the bundle while the caller holds the bundle lock."""
+        index_path = self.manifest_index_path
+        _validate_index_path(index_path, self.report_dir)
         if not index_path.is_file():
             raise ManifestError(f"Manifest index not found: {index_path}")
 
@@ -473,11 +551,22 @@ class ManifestWriter:
             raise ManifestError(
                 f"Could not read manifest index {index_path}: {exc}"
             ) from exc
+        if not isinstance(index, dict):
+            raise ManifestError(f"Manifest index must contain an object: {index_path}")
         category_paths = resolve_category_manifest_paths(
             index,
             index_path,
-            writer.report_dir,
+            self.report_dir,
         )
+        try:
+            verify_category_manifest_digests(
+                index,
+                category_paths,
+                report_dir=self.report_dir,
+                manifest_index_path=index_path,
+            )
+        except ManifestIntegrityError as exc:
+            raise ManifestError(str(exc)) from exc
 
         all_composites: list[dict] = []
         for category_path in category_paths.values():
@@ -487,10 +576,31 @@ class ManifestWriter:
                 raise ManifestError(
                     f"Could not read manifest category file {category_path}: {exc}"
                 ) from exc
-            all_composites.extend(category_data.get("composites", []))
+            if not isinstance(category_data, dict):
+                raise ManifestError(
+                    f"Manifest category file must contain an object: {category_path}"
+                )
+            composites = category_data.get("composites", [])
+            if not isinstance(composites, list):
+                raise ManifestError(
+                    f"Manifest category 'composites' must be a list: {category_path}"
+                )
+            for composite in composites:
+                if not isinstance(composite, dict):
+                    raise ManifestError(
+                        f"Manifest category contains an invalid composite: {category_path}"
+                    )
+            all_composites.extend(composites)
+
+        try:
+            records = tuple(CompositeRecord.from_dict(c) for c in all_composites)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ManifestError(
+                f"Manifest category contains an invalid composite record: {exc}"
+            ) from exc
 
         return CompositeManifest(
-            composites=tuple(CompositeRecord.from_dict(c) for c in all_composites),
+            composites=records,
             dynamic_states=index.get("dynamic_states", []),
             image_declarations=index.get("image_declarations", []),
             dynamic_declarations=index.get("dynamic_declarations", []),
@@ -514,15 +624,24 @@ class ManifestWriter:
             manifest_index_path=manifest_index_path,
             report_dir=report_dir,
         )
+        _validate_index_path(writer.manifest_index_path, writer.report_dir)
         pending_path = writer.report_dir / "review_pending.json"
-        if not pending_path.is_file():
-            return {}
-        try:
-            return json.loads(pending_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            raise ManifestError(
-                f"Could not read pending review file {pending_path}: {exc}"
-            ) from exc
+        with manifest_bundle_lock(
+            writer.manifest_index_path,
+            report_dir=writer.report_dir,
+        ):
+            recover_manifest_bundle(
+                writer.manifest_index_path,
+                writer.report_dir,
+            )
+            if not pending_path.is_file():
+                return {}
+            try:
+                return json.loads(pending_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                raise ManifestError(
+                    f"Could not read pending review file {pending_path}: {exc}"
+                ) from exc
 
 
 def _print_summary(

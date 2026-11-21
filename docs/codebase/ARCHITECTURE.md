@@ -43,9 +43,9 @@ Describe the flow in 4-6 steps using file-backed evidence:
 1. `src/converter/decompile/discovery.py` `find_game_folder()` locates the first `game` folder under `src/renpy_game` (excluding the consolidated `src/renpy_game/game` output).
 2. `src/converter/decompile/flow.py` `prepare_game()` runs find → stage → extract → decompile → detect categories → write `config.json` without modifying the source game; `process_game()` adds the optional interactive compose follow-up.
 3. `src/converter/pipeline.py` `run_pipeline()` delegates to `prepare_game()`, loads the config written by that same run, and invokes compose (apply remains deferred for review).
-4. `src/converter/compose/compose_pass/orchestrate.py` `Composer.compose()` delegates to the native Ren'Py stage, which indexes scripts, creates an isolated workspace, enumerates runtime states, renders through the bundled Ren'Py runtime, and publishes the split manifests in one atomic transaction. The index stores relative category references and is replaced last as the commit marker.
-5. `src/converter/compose/apply_pass/applier.py` `Applier.apply()` loads manifests, rewrites `show`/`scene` statements to composite tags, emits `ConditionSwitch` wrappers for dynamic state, writes `game/composite_images.rpy` declarations and an adoption report; idempotent (refuses to touch a line whose text no longer matches the recorded statement).
-6. `src/converter/restore/restore.py` provides archive-scoped and source-tree restoration paths; the compose CLI currently uses source-tree restoration.
+4. `src/converter/compose/compose_pass/orchestrate.py` `Composer.compose()` delegates to the native Ren'Py stage, which indexes scripts, creates an isolated workspace, enumerates runtime states, renders through the bundled Ren'Py runtime, and publishes the split manifests in one report-directory-locked, journaled transaction. The versioned index stores relative category references and required per-category SHA-256 digests, and is replaced last as the commit marker. Every index sharing the report directory also shares one durable journal. A report-scoped owner registry authenticates the participant index, allowing a peer to recover an interrupted publication without trusting journal metadata alone. The hidden journal and owner-registry paths are reserved from index and owner registration, including resolved aliases. Recovery peer exclusions also use resolved path identity, so a symlink or junction cannot make one participant authorize another participant's index; same-participant scopes retain both lexical and parent-resolved index paths for crash recovery. Malformed legacy journal names are ignored. Bundle readers recover an interrupted journal and verify the digests before consuming category data. Recovery is commit-aware: if every staged digest is already present, the journal is discarded without rolling the completed bundle back.
+5. `src/converter/compose/apply_pass/applier.py` `Applier.apply()` loads manifests, rewrites `show`/`scene` statements to composite tags, emits `ConditionSwitch` wrappers for dynamic state, writes `game/composite_images.rpy` declarations and an adoption report; idempotent (refuses to touch a line whose text no longer matches the recorded statement). Apply, review, and restore use bundle locks, while apply and restore also share a game-script mutation lock.
+6. `src/converter/restore/restore.py` provides archive-scoped and source-tree restoration paths; the compose CLI currently uses source-tree restoration. Restored scripts are replaced atomically.
 
 ### 3) Layer/Module Responsibilities
 
@@ -58,6 +58,8 @@ Describe the flow in 4-6 steps using file-backed evidence:
 | `src/converter/pipeline.py` | End-to-end staged decompile → compose orchestration | Image compositing internals, proxy | `src/converter/pipeline.py` |
 | `src/converter/decompile/` | Game-folder discovery, `.rpa` extraction, `.rpyc` decompilation, image-category scan, `config.json` generation | Compositing, script rewriting | `src/converter/decompile/README.md` |
 | `src/converter/compose/` | Script parsing, path resolution, condition evaluation, compositing, manifests, apply, declarations | Game discovery, `.rpa` extraction, OpenCode | `src/converter/compose/README.md` |
+| `src/converter/utility/manifest_bundle.py` | Report-wide bundle locking, game-script locking, owner authentication, reserved-path validation, and journal recovery | Manifest business semantics and digest calculation | `src/converter/utility/manifest_bundle.py` |
+| `src/converter/utility/safe_paths.py` | Portable path syntax validation and resolved live-root containment | Manifest category-reference semantics | `src/converter/utility/safe_paths.py` |
 | `src/converter/restore/` | Revert `.rpy` from `archive.rpa`; undo decompile | Creating composites | `src/converter/restore/restore.py` |
 | `src/converter/config.json` (generated) | GameConfig: game folder, rpy_files, extracted archives, image categories | Runtime state (written once by decompile) | `src/converter/config.json`; `src/converter/compose/config.py` |
 
@@ -75,7 +77,7 @@ Describe the flow in 4-6 steps using file-backed evidence:
 
 ### 5) Known Architectural Risks
 
-- Automated tests and CI now cover orchestration/config boundaries, manifest transactions, native identity/state adaptation, and split-manifest consumers, but native rendering and interactive review still lack end-to-end coverage (see `TESTING.md`).
+- Automated tests and CI now cover orchestration/config boundaries, manifest transactions, bundle locking/journal recovery, native identity/state adaptation, and split-manifest consumers, but native rendering and interactive review still lack end-to-end coverage (see `TESTING.md`).
 - `rpa-toolkit` is a git dependency pinned to a commit SHA (`pyproject.toml`); if the git reference becomes unavailable, installs break.
 - `opencode.json` is auto-generated and overwritten by the agent CLI on each profile launch; manual edits are not durable (`AGENTS.md` §3; `src/agent/cli.py`).
 - Modelfile `PARAMETER num_ctx` must match `context_limit` in `src/agent/config.json` profile entries, or context-window monitoring may be inaccurate (`AGENTS.md` §5).
@@ -84,8 +86,8 @@ Describe the flow in 4-6 steps using file-backed evidence:
 ### 6) Evidence
 
 - `src/converter/pipeline.py`
-- `src/converter/compose/composer.py`
-- `src/converter/compose/applier.py`
+- `src/converter/compose/compose_pass/orchestrate.py`
+- `src/converter/compose/apply_pass/applier.py`
 - `src/converter/compose/models.py`
 - `src/converter/compose/README.md` (design principles, module responsibility division)
 - `src/converter/decompile/README.md`

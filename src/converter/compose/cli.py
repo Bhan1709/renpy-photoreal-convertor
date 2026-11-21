@@ -55,6 +55,11 @@ from cli import (
 
 from ..decompile.constants import CONFIG_PATH
 from ..restore import restore_compose_from_source
+from ..utility.manifest_bundle import (
+    game_script_lock,
+    manifest_bundle_lock,
+    recover_manifest_bundle,
+)
 from .apply_pass import Applier
 from .compose_pass import Composer
 from .config import GameConfig, load_config
@@ -107,13 +112,20 @@ def load_game_config(config_path: Path) -> GameConfig | None:
 
 def clean_output(config: GameConfig) -> None:
     """Remove previously generated composites (PNGs and report manifests)."""
-    output_dir = config.resolved_paths()["output_dir"]
-    if output_dir.exists():
-        with loading("Removing previous composite output..."):
-            shutil.rmtree(output_dir)
-        success(f"Removed previous composite output: {output_dir}")
-    else:
-        info(f"No previous composite output was found at {output_dir}.")
+    paths = config.resolved_paths()
+    output_dir = paths["output_dir"]
+    index_path = paths["manifest_index_path"]
+    with (
+        manifest_bundle_lock(index_path, report_dir=paths["report_dir"]),
+        game_script_lock(config.game_root),
+    ):
+        recover_manifest_bundle(index_path, paths["report_dir"])
+        if output_dir.exists():
+            with loading("Removing previous composite output..."):
+                shutil.rmtree(output_dir)
+            success(f"Removed previous composite output: {output_dir}")
+        else:
+            info(f"No previous composite output was found at {output_dir}.")
 
 
 def compose_game(
@@ -235,36 +247,43 @@ def apply_game(config: GameConfig) -> int:
     """Adopt composites into live ``.rpy`` scripts.
 
     Refuses to run while scene composites still lack a character association,
-    because that would emit composites with unknown speakers.
+    because that would emit composites with unknown speakers.  The pending
+    check and script mutation share one bundle lock so a concurrent review
+    cannot publish new pending work between them.
     """
-    if not ManifestWriter.has_composite_manifest(config):
-        info("No composites are available to apply.")
-        info("Next step: create the composites before applying them.")
-        command("mise run compose")
+    paths = config.resolved_paths()
+    with manifest_bundle_lock(
+        paths["manifest_index_path"],
+        report_dir=paths["report_dir"],
+    ):
+        if not ManifestWriter.has_composite_manifest(config):
+            info("No composites are available to apply.")
+            info("Next step: create the composites before applying them.")
+            command("mise run compose")
+            return 0
+
+        pending = ManifestWriter.load_pending_review(config)
+        scenes = pending.get("scenes", [])
+        speakers = pending.get("unmapped_speakers", [])
+        if scenes:
+            pending_path = paths["report_dir"] / "review_pending.json"
+            warning(
+                "Apply blocked: character associations are still missing for "
+                f"{counted(len(scenes), 'scene composite')}.\n"
+                f"Resolve them in {pending_path}, then run compose again.\n"
+                "The live game scripts were not changed."
+            )
+            return 1
+        if speakers:
+            warning(
+                f"Unmapped speakers remaining: {counted(len(speakers), 'speaker')}.\n"
+                "Review them with 'mise run compose' if the composites look incorrect."
+            )
+
+        rule("Applying composites to game scripts")
+        Applier(config).apply()
+        success("Applied composites to the live .rpy scripts.")
         return 0
-
-    scenes, speakers = pending_review(config)
-    if scenes:
-        pending_path = (
-            config.resolved_paths()["report_dir"] / "review_pending.json"
-        )
-        warning(
-            "Apply blocked: character associations are still missing for "
-            f"{counted(len(scenes), 'scene composite')}.\n"
-            f"Resolve them in {pending_path}, then run compose again.\n"
-            "The live game scripts were not changed."
-        )
-        return 1
-    if speakers:
-        warning(
-            f"Unmapped speakers remaining: {counted(len(speakers), 'speaker')}.\n"
-            "Review them with 'mise run compose' if the composites look incorrect."
-        )
-
-    rule("Applying composites to game scripts")
-    Applier(config).apply()
-    success("Applied composites to the live .rpy scripts.")
-    return 0
 
 
 def restore_game(config_path: Path, *, dry_run: bool) -> int:

@@ -164,7 +164,7 @@ This project is intended to be a toolkit to convert Ren'Py based games and visua
 │   │   ├── pipeline.py      # End-to-end staged decompile → compose pipeline
 │   │   ├── config.json      # Decompile-generated GameConfig (src/converter/config.json)
 │   │   ├── py.typed
-│   │   ├── utility/         # Shared progress, atomic-write, and manifest-path utilities
+│   │   ├── utility/         # Shared progress, atomic-write, lock, journal, and manifest-path utilities
 │   │   ├── decompile/       # Ren'Py decompile/extract subpackage
 │   │   │   ├── __init__.py
 │   │   │   ├── decompile.py # Core logic + CLI entry point
@@ -227,8 +227,25 @@ New generalized subpackage for building photoreal composites from Ren'Py game as
 - **`GameConfig` / `load_config`** — Game-specific config loaded from decompile-generated `src/converter/config.json`
 - **`Composer.compose()`** — Scans `.rpy` scripts for layeredimage/screen/image declarations, composites referenced PNGs, writes per-category manifests
 - **`Applier.apply()`** — Rewrites `show`/`scene` statements to composite tags, emits runtime `ConditionSwitch` wrappers, declares composites in `composite_images.rpy`
-- **`ManifestWriter`** — Publishes per-category manifests (`manifest_bg.json`, …) + `manifest_index.json` in one atomic transaction with relative category references
+- **`ManifestWriter`** — Publishes per-category manifests (`manifest_bg.json`, …) + `manifest_index.json` in one locked, journaled transaction with relative category references and per-category SHA-256 digests
 - **`restore_rpy_files()` / `restore_from_manifest()`** — Revert modified `.rpy` files from `archive.rpa` (in `converter/restore`)
+
+The manifest bundle uses a report-directory-wide cross-process lock and one
+report-scoped durable rollback journal shared by every index in that report
+directory. A report-scoped owner registry authenticates the index that owns a
+pending journal, so metadata alone cannot authorize recovery writes. The hidden
+journal and owner-registry filenames are reserved, including resolved path
+aliases, and cannot be configured as an index or registered owner. Versioned
+indexes require the category digests
+stored in `manifest_index.json`; consumers verify them before reading category
+data, so an interrupted publication is
+detected and recovered instead of being treated as a valid mixed snapshot.
+Interactive review decisions publish their category, character, pending-review,
+and index changes as one transaction; rejected assets and records are finalized
+only after that commit succeeds. Manifest-, archive-, and pending-state-derived
+live paths are containment-checked before they can read, replace, move, or
+delete files, and generated-image references cannot target report/rejection
+files.
 
 See `src/converter/compose/README.md` for full documentation.
 

@@ -1,9 +1,34 @@
 {
+  "compose_modes": [
+    "cfg",
+    "layered_all",
+    "conditions"
+  ],
   "schema": 1,
   "game_folder": "src\\renpy_game\\game",
   "source_game": "CampMourningWood-0.25.0.1-pc",
   "source_path": "src\\renpy_game\\CampMourningWood-0.25.0.1-pc",
   "rpy_files": [
+    "archive/cabins.rpy",
+    "archive/camp.rpy",
+    "archive/characters.rpy",
+    "archive/deniseEvents.rpy",
+    "archive/dnd.rpy",
+    "archive/eventReplays.rpy",
+    "archive/gui.rpy",
+    "archive/intro.rpy",
+    "archive/lauraSocial.rpy",
+    "archive/nightCycle.rpy",
+    "archive/options.rpy",
+    "archive/patReward.rpy",
+    "archive/quests.rpy",
+    "archive/screens.rpy",
+    "archive/script.rpy",
+    "archive/social.rpy",
+    "archive/socialHazel.rpy",
+    "archive/socialJane.rpy",
+    "archive/work.rpy",
+    "archive/xxx.rpy",
     "cabins.rpy",
     "camp.rpy",
     "characters.rpy",
@@ -26,11 +51,6 @@
     "xxx.rpy"
   ],
   "ren_py_files": [],
-  "compose_modes": [
-    "cfg",
-    "layered_all",
-    "conditions"
-  ],
   "extracted_archives": [
     {
       "archive": "archive.rpa",

@@ -17,8 +17,10 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
-from pathlib import Path, PureWindowsPath
+from pathlib import Path
 
+from ..utility.safe_paths import UnsafePathError
+from ..utility.safe_paths import safe_relative_path as _shared_safe_relative_path
 from .errors import ConfigError
 
 # Project root: this file lives at src/converter/compose/config.py, so
@@ -305,23 +307,10 @@ def _safe_relative_path(value: str, *, field_name: str) -> Path:
     Both native and Windows path syntax are checked so a config authored on
     one platform cannot escape its intended root when consumed on another.
     """
-    normalized = value.replace("\\", "/").strip()
-    if not normalized or "\x00" in normalized:
-        raise ConfigError(f"unsafe {field_name} in config: {value!r}")
-
-    native = Path(normalized)
-    windows = PureWindowsPath(normalized)
-    if (
-        native.is_absolute()
-        or native.anchor
-        or windows.is_absolute()
-        or windows.drive
-        or windows.root
-        or ".." in native.parts
-        or not native.parts
-    ):
-        raise ConfigError(f"unsafe {field_name} in config: {value!r}")
-    return native
+    try:
+        return _shared_safe_relative_path(value.strip(), field_name=field_name)
+    except UnsafePathError as exc:
+        raise ConfigError(f"unsafe {field_name} in config: {value!r}") from exc
 
 
 def _archive_dirs_from_data(

@@ -140,6 +140,32 @@ def test_manifest_writer_rejects_index_path_that_collides_with_bundle_file(
     assert not index_path.exists()
 
 
+@pytest.mark.parametrize(
+    "support_name",
+    [
+        ".manifest-bundle.journal",
+        ".manifest-bundle.owners.json",
+    ],
+)
+def test_manifest_writer_rejects_a_support_file_as_the_index(
+    tmp_path: Path,
+    support_name: str,
+) -> None:
+    report_dir = tmp_path / "reports"
+    index_path = report_dir / support_name
+    config = _config(
+        tmp_path,
+        report_dir=report_dir,
+        manifest_index_path=index_path,
+    )
+
+    with pytest.raises(ManifestError, match="collides"):
+        ManifestWriter(config).write(_manifest())
+
+    assert not index_path.exists()
+    assert not (report_dir / ".manifest-bundle.owners.json").exists()
+
+
 def test_manifest_write_is_one_atomic_transaction_with_relative_refs(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -173,8 +199,20 @@ def test_manifest_write_is_one_atomic_transaction_with_relative_refs(
             report_dir / "review_pending.json",
         }
     )
-    assert set(replaced) == expected
-    assert replaced[-1] == index_path
+    journal_path = report_dir / ".manifest-bundle.journal"
+    owner_registry = report_dir / ".manifest-bundle.owners.json"
+    bundle_replacements = [
+        path
+        for path in replaced
+        if path not in {journal_path, owner_registry}
+    ]
+    assert set(bundle_replacements) == expected
+    assert bundle_replacements[-1] == index_path
+    assert owner_registry in replaced
+    assert replaced.index(owner_registry) < replaced.index(journal_path)
+    registry = json.loads(owner_registry.read_text(encoding="utf-8"))
+    assert registry["index_paths"] == [str(index_path.resolve())]
+    assert not journal_path.exists()
     assert not list(report_dir.glob("*.tmp"))
 
     index = json.loads(index_path.read_text(encoding="utf-8"))
@@ -394,6 +432,31 @@ def test_review_consumer_uses_category_references_from_the_index(
     assert categories["bg"]["composites"][0]["name"] == "home"
 
 
+def test_manifest_loader_normalizes_relative_backslash_references(
+    tmp_path: Path,
+) -> None:
+    report_dir = tmp_path / "reports"
+    index_path = report_dir / "manifest_index.json"
+    category_path = report_dir / "nested" / "custom_bg.json"
+    _write_json(
+        category_path,
+        {"category": "bg", "composites": [_record().to_dict()]},
+    )
+    _write_json(
+        index_path,
+        {"categories": {"bg": "nested\\custom_bg.json"}},
+    )
+    config = _config(
+        tmp_path,
+        report_dir=report_dir,
+        manifest_index_path=index_path,
+    )
+
+    loaded = ManifestWriter.load_all(config)
+
+    assert [record.name for record in loaded.composites] == ["home"]
+
+
 def test_apply_consumer_uses_category_references_from_the_index(
     tmp_path: Path,
 ) -> None:
@@ -534,6 +597,18 @@ def test_restore_keeps_legacy_monolithic_manifest_fallback(
                 {
                     "usage_locations": [
                         {"script": "game/legacy.rpy", "line": 3},
+                    ]
+                }
+            ]
+        },
+    )
+    _write_json(
+        legacy_manifest.parent / "manifest_bg.json",
+        {
+            "composites": [
+                {
+                    "usage_locations": [
+                        {"script": "game/stale-split.rpy", "line": 4},
                     ]
                 }
             ]

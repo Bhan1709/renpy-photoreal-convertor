@@ -33,10 +33,13 @@ CI runs the same suite after Ruff and mypy.
 | `tests/test_discovery.py` | Source discovery and staged-output exclusion |
 | `tests/test_extract.py` | Archive extraction failure reporting and path-traversal rejection |
 | `tests/test_native_workspace.py` | Native workspace mirroring of configured archive roots |
-| `tests/test_native_protocol.py` | Native candidate schema, pagination-counter, and CFG walk-state validation |
+| `tests/test_native_protocol.py` | Native candidate schema, safe render references, pagination-counter, and CFG walk-state validation |
 | `tests/test_pipeline.py` | Pipeline delegation, mode exclusivity, and dry-run behavior |
-| `tests/test_phase2_manifest_transaction.py` | Atomic report publication, explicit paths, relative category references, and split-manifest consumers |
+| `tests/test_phase2_manifest_transaction.py` | Atomic report publication, explicit paths, relative category references, reserved support-path rejection, and split-manifest consumers |
 | `tests/test_phase2_native_identity.py` | Native content-hash/condition-state identity, unresolved errors, and CFG truncation state |
+| `tests/test_phase2_bundle_reliability.py` | Native result isolation, batch identity checks, contextual diagnostics, bundle locks, digests, atomic review transactions, owner-authenticated report-journal recovery, reserved support-path rejection, alias-safe peer exclusion, and interrupt-safe rollback |
+| `tests/test_phase2_path_safety.py` | Manifest/archive path traversal rejection, resolved containment, generated-image-root restrictions, apply/restore safety, and destructive-root boundaries |
+| `tests/test_phase2_review_rejection.py` | Deferred rejected-asset/record finalization, report-file deletion prevention, symlinked-destination rejection, and failed-review rollback behavior |
 | `tests/test_staging.py` | Isolated staging and prior-extraction exclusion |
 | `tests/test_cli.py` | CLI exit codes and root/subcommand option propagation |
 

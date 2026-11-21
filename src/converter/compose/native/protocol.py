@@ -28,8 +28,18 @@ _REQUIRED_CANDIDATE_FIELDS = (
 )
 
 
-def read_result(path: Path) -> dict[str, Any]:
-    """Read and validate one native-stage JSON result."""
+def read_result(
+    path: Path,
+    *,
+    expected_batch_index: int | None = None,
+    expected_state_offset: int | None = None,
+) -> dict[str, Any]:
+    """Read and validate one native-stage JSON result.
+
+    When expected pagination coordinates are supplied, the result must belong
+    to the requested batch.  This prevents a stale or foreign result file
+    from being appended to the current run.
+    """
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError as exc:
@@ -41,7 +51,12 @@ def read_result(path: Path) -> dict[str, Any]:
             f"Could not read native Ren'Py stage result {path}: {exc}"
         ) from exc
 
-    validate_result(data, source=path)
+    validate_result(
+        data,
+        source=path,
+        expected_batch_index=expected_batch_index,
+        expected_state_offset=expected_state_offset,
+    )
     assert isinstance(data, dict)
     return data
 
@@ -143,10 +158,13 @@ def _validate_candidate(candidate: object, location: str) -> None:
 
     content_hash = candidate["content_hash"]
     if content_hash is not None and (
-        not isinstance(content_hash, str) or not content_hash
+        not isinstance(content_hash, str)
+        or len(content_hash) != 64
+        or any(char not in "0123456789abcdef" for char in content_hash.lower())
     ):
         raise NativeProtocolError(
-            f"Native stage candidate content_hash must be a string or null{location}"
+            f"Native stage candidate content_hash must be a SHA-256 digest or null"
+            f"{location}"
         )
 
     for key in ("width", "height"):
@@ -162,6 +180,18 @@ def _validate_candidate(candidate: object, location: str) -> None:
     ):
         raise NativeProtocolError(
             f"Native stage candidate render_file must be a string or null{location}"
+        )
+    if render_file is not None and (
+        "/" in render_file
+        or "\\" in render_file
+        or Path(render_file).name != render_file
+    ):
+        raise NativeProtocolError(
+            f"Native stage candidate render_file must be a file name{location}"
+        )
+    if content_hash is None and render_file is not None:
+        raise NativeProtocolError(
+            f"Native stage candidate render_file requires content_hash{location}"
         )
 
     error = candidate["error"]
@@ -194,6 +224,11 @@ def _validate_candidate(candidate: object, location: str) -> None:
         if render_file is None:
             raise NativeProtocolError(
                 f"Native stage rendered candidate must have a render_file{location}"
+            )
+        if render_file != f"{content_hash}.png":
+            raise NativeProtocolError(
+                "Native stage candidate render_file must match its content_hash"
+                f"{location}"
             )
 
 
@@ -275,7 +310,13 @@ def _validate_batch(batch: object, candidate_count: int, location: str) -> None:
         )
 
 
-def validate_result(data: object, *, source: Path | None = None) -> None:
+def validate_result(
+    data: object,
+    *,
+    source: Path | None = None,
+    expected_batch_index: int | None = None,
+    expected_state_offset: int | None = None,
+) -> None:
     """Validate the stable fields of a native-stage result."""
     location = f" ({source})" if source is not None else ""
     if not isinstance(data, dict):
@@ -328,7 +369,22 @@ def validate_result(data: object, *, source: Path | None = None) -> None:
     for candidate in candidates:
         _validate_candidate(candidate, location)
 
-    _validate_batch(data["batch"], len(candidates), location)
+    batch = data["batch"]
+    _validate_batch(batch, len(candidates), location)
+
+    if expected_batch_index is not None and batch["index"] != expected_batch_index:
+        raise NativeProtocolError(
+            "Native stage batch index does not match the requested batch "
+            f"(expected {expected_batch_index}, got {batch['index']}){location}"
+        )
+    if (
+        expected_state_offset is not None
+        and batch["state_offset"] != expected_state_offset
+    ):
+        raise NativeProtocolError(
+            "Native stage batch state_offset does not match the requested batch "
+            f"(expected {expected_state_offset}, got {batch['state_offset']}){location}"
+        )
 
     layered_images = data["layered_images"]
     if not isinstance(layered_images, list) or not all(

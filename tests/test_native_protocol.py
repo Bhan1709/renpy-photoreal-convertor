@@ -23,7 +23,7 @@ def _candidate() -> dict[str, Any]:
         "content_hash": "a" * 64,
         "width": 64,
         "height": 32,
-        "render_file": "home.png",
+        "render_file": f"{'a' * 64}.png",
         "layers": [
             {
                 "sources": ["bgs/home.png"],
@@ -111,6 +111,24 @@ def test_validate_result_rejects_incomplete_candidate() -> None:
     result["candidates"] = [{}]
 
     with pytest.raises(NativeProtocolError, match="candidate"):
+        validate_result(result)
+
+
+@pytest.mark.parametrize(
+    "render_file",
+    [
+        "../outside.png",
+        "nested/render.png",
+        "different-hash.png",
+    ],
+)
+def test_validate_result_rejects_an_unsafe_render_reference(
+    render_file: str,
+) -> None:
+    result = _result()
+    result["candidates"][0]["render_file"] = render_file
+
+    with pytest.raises(NativeProtocolError, match="render_file"):
         validate_result(result)
 
 

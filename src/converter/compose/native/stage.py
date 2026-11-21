@@ -16,8 +16,11 @@ compose path.
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
+import sys
+import tempfile
 from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
@@ -25,6 +28,11 @@ from typing import Any
 
 from cli import counted, info, loading, progress_bar
 
+from ...utility.manifest_bundle import (
+    game_script_lock,
+    manifest_bundle_lock,
+    recover_manifest_bundle,
+)
 from ..association import CharacterAssociator, CharacterDeclaration
 from ..compositing import Compositor
 from ..config import DEFAULT_CATEGORY_FOLDERS, GameConfig
@@ -121,6 +129,7 @@ class _RecordSink:
         self.records_by_key: dict[tuple[str, str, str], CompositeRecord] = {}
         self.key_to_index: dict[tuple[str, str, str], int] = {}
         self.usages_processed = 0
+        self.unresolved_errors: list[str] = []
 
     # ------------------------------------------------------------------ #
     # Static screen-pass compatibility (Pass 3 renders on the CPU)
@@ -221,6 +230,15 @@ class _RecordSink:
         dimensions: tuple[int, int] | None = None
         if not self.dry_run:
             if not _copy_render(candidate, target, self.render_dir):
+                context = _native_diagnostic_context(candidate)
+                detail = (
+                    f"native render failure [{context}]: rendered file could not "
+                    "be copied from the disposable workspace"
+                    if context
+                    else "native render failure: rendered file could not be copied "
+                    "from the disposable workspace"
+                )
+                self.unresolved_errors.append(detail)
                 return
             dimensions = (int(candidate["width"]), int(candidate["height"]))
 
@@ -470,11 +488,46 @@ def _copy_render(candidate: dict, target: Path, render_dir: Path | None) -> bool
     render_file = candidate.get("render_file")
     if not render_file or render_dir is None:
         return False
-    source = render_dir / str(render_file)
+    render_root = render_dir.resolve()
+    unresolved_source = render_root / str(render_file)
+    if unresolved_source.is_symlink():
+        # A symlink could point at an arbitrary host file even when its lexical
+        # location is inside the disposable render directory.
+        return False
+    source = unresolved_source.resolve()
+    try:
+        source.relative_to(render_root)
+    except ValueError:
+        # A child result may only reference files from its disposable render
+        # directory.  Never follow an absolute or parent-traversing path out
+        # of that workspace.
+        return False
     if not source.is_file():
         return False
+
+    expected_size = (
+        int(candidate.get("width") or 0),
+        int(candidate.get("height") or 0),
+    )
+    if expected_size != (0, 0) and _png_size(source) != expected_size:
+        return False
+
     target.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(source, target)
+    descriptor, raw_temporary = tempfile.mkstemp(
+        prefix=f".{target.name}.",
+        suffix=".tmp",
+        dir=target.parent,
+    )
+    temporary = Path(raw_temporary)
+    os.close(descriptor)
+    try:
+        shutil.copy2(source, temporary)
+        with temporary.open("rb+") as handle:
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, target)
+    finally:
+        temporary.unlink(missing_ok=True)
     return True
 
 
@@ -524,19 +577,92 @@ def _native_record_key(
     )
 
 
-def _native_unresolved_errors(candidates: list[dict[str, Any]]) -> tuple[str, ...]:
-    """Return unique native diagnostics reported by render candidates."""
-    errors = {
-        str(error)
-        for candidate in candidates
-        for error in (candidate.get("unresolved_errors") or [])
-    }
-    errors.update(
-        str(candidate["error"])
-        for candidate in candidates
-        if candidate.get("error")
+def _native_diagnostic_context(candidate: dict[str, Any]) -> str | None:
+    """Return identifying context for one native candidate, if available."""
+    candidate_id = candidate.get("candidate_id")
+    name = candidate.get("name")
+    image_name = candidate.get("image_name")
+    usages = candidate.get("usages")
+
+    has_context = any(
+        value not in (None, "", [], ())
+        for value in (candidate_id, name, image_name, usages)
     )
-    return tuple(sorted(errors))
+    if not has_context:
+        return None
+
+    if isinstance(image_name, str):
+        image_text = image_name
+    elif isinstance(image_name, (list, tuple)):
+        image_text = " ".join(str(part) for part in image_name)
+    else:
+        image_text = str(image_name) if image_name else ""
+    usage_text = ", ".join(
+        (
+            f"{usage.get('script', '<unknown>')}:{usage.get('line', 0)}"
+            + (
+                f" ({usage['statement']})"
+                if usage.get("statement")
+                else ""
+            )
+        )
+        for usage in (usages or [])
+        if isinstance(usage, dict)
+    )
+    return (
+        f"candidate_id={candidate_id or '<unknown>'}, "
+        f"name={name or '<unknown>'}, "
+        f"image_name={image_text or '<unknown>'}, "
+        f"usages=[{usage_text}]"
+    )
+
+
+def _native_layer_diagnostic_context(
+    candidate: dict[str, Any],
+    layer: dict[str, Any],
+) -> str:
+    """Return candidate and layer context for a layer-level diagnostic."""
+    base = _native_diagnostic_context(candidate)
+    sources = layer.get("sources") or []
+    source_text = ", ".join(str(source) for source in sources)
+    attribute = layer.get("attribute")
+    group = layer.get("group")
+    details = (
+        f"layer_sources=[{source_text}], "
+        f"layer_attribute={attribute or '<none>'}, "
+        f"layer_group={group or '<none>'}"
+    )
+    return f"{base}, {details}" if base else details
+
+
+def _native_unresolved_errors(candidates: list[dict[str, Any]]) -> tuple[str, ...]:
+    """Return unique, contextual native diagnostics from render candidates."""
+    diagnostics: dict[tuple[str, str, str], str] = {}
+    for candidate in candidates:
+        context = _native_diagnostic_context(candidate)
+        for error in candidate.get("unresolved_errors") or []:
+            text = str(error)
+            key = ("condition", context or "", text)
+            if context:
+                text = f"native condition error [{context}]: {text}"
+            diagnostics[key] = text
+        for layer in candidate.get("layers") or []:
+            if not isinstance(layer, dict):
+                continue
+            layer_context = _native_layer_diagnostic_context(candidate, layer)
+            for error in layer.get("unresolved_errors") or []:
+                text = str(error)
+                key = ("layer-condition", layer_context, text)
+                text = f"native layer condition error [{layer_context}]: {text}"
+                diagnostics[key] = text
+        error = candidate.get("error")
+        if error:
+            text = str(error)
+            key = ("render", context or "", text)
+            if context:
+                text = f"native render error [{context}]: {text}"
+            diagnostics[key] = text
+    return tuple(sorted(diagnostics.values()))
 
 
 def _native_walk_state(result: dict[str, Any]) -> dict[str, object]:
@@ -628,15 +754,18 @@ def _script_files(config: GameConfig) -> list[str]:
 
 def _previous_dynamic_states(config: GameConfig) -> list[dict]:
     """Carry the previous manifest's dynamic states forward."""
-    index_path = config.resolved_paths()["manifest_index_path"]
-    if not index_path.is_file():
-        return []
-    try:
-        data = json.loads(index_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return []
-    states = data.get("dynamic_states", [])
-    return states if isinstance(states, list) else []
+    paths = config.resolved_paths()
+    index_path = paths["manifest_index_path"]
+    with manifest_bundle_lock(index_path, report_dir=paths["report_dir"]):
+        recover_manifest_bundle(index_path, paths["report_dir"])
+        if not index_path.is_file():
+            return []
+        try:
+            data = json.loads(index_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return []
+        states = data.get("dynamic_states", []) if isinstance(data, dict) else []
+        return states if isinstance(states, list) else []
 
 
 def _is_dynamic_expression(expression: str) -> bool:
@@ -725,6 +854,7 @@ def _run_batches(
     last: dict = {}
     attempt = 0
     total_states: int | None = None
+    reported_total_states: int | None = None
     rendered_total = 0
     bar: Any = None
     batch_rendered = 0
@@ -830,6 +960,18 @@ def _run_batches(
             except OSError:
                 pass
 
+            # A child is allowed to exit without replacing its result file.
+            # Remove the previous attempt's payload so a stale file can never
+            # be mistaken for this batch.  Failing to clear the path is fatal:
+            # launching the child could otherwise reuse an unrelated result.
+            try:
+                workspace.result_path.unlink(missing_ok=True)
+            except OSError as exc:
+                raise NativeStageError(
+                    "Could not clear native result file before launch: "
+                    f"{workspace.result_path}: {exc}"
+                ) from exc
+
             _start_spinner()
             try:
                 run_native_batch(
@@ -856,7 +998,11 @@ def _run_batches(
                 continue
 
             _stop_spinner()
-            data = read_result(workspace.result_path)
+            data = read_result(
+                workspace.result_path,
+                expected_batch_index=batch_index,
+                expected_state_offset=state_offset,
+            )
             if data["status"] == "error":
                 raise NativeProtocolError(
                     "Native Ren'Py compose stage failed: "
@@ -866,6 +1012,13 @@ def _run_batches(
             candidates.extend(data["candidates"])
             batch = data["batch"]
             total = int(batch.get("total_states") or 0)
+            if reported_total_states is None:
+                reported_total_states = total
+            elif total != reported_total_states:
+                raise NativeProtocolError(
+                    "Native stage batch total_states changed between pages "
+                    f"(expected {reported_total_states}, got {total})"
+                )
             if bar is None and total:
                 _ensure_bar(total)
             _set_progress(state_offset + int(batch.get("rendered", 0)))
@@ -896,6 +1049,39 @@ def _run_native_stage(
     dry_run: bool = False,
     timeout: int = DEFAULT_PROCESS_TIMEOUT_SECONDS,
 ) -> NativeStageResult:
+    """Run the native stage while holding the manifest bundle lock."""
+    game_config = _resolve_config(vn_root, output_dir, config)
+    paths = game_config.resolved_paths()
+    with (
+        manifest_bundle_lock(
+            paths["manifest_index_path"],
+            report_dir=paths["report_dir"],
+        ),
+        game_script_lock(game_config.game_root),
+    ):
+        recover_manifest_bundle(
+            paths["manifest_index_path"],
+            paths["report_dir"],
+        )
+        return _run_native_stage_unlocked(
+            vn_root,
+            output_dir,
+            modes,
+            config=game_config,
+            dry_run=dry_run,
+            timeout=timeout,
+        )
+
+
+def _run_native_stage_unlocked(
+    vn_root: Path,
+    output_dir: Path,
+    modes: list[str],
+    *,
+    config: GameConfig | None = None,
+    dry_run: bool = False,
+    timeout: int = DEFAULT_PROCESS_TIMEOUT_SECONDS,
+) -> NativeStageResult:
     """Run the complete native compose stage and write the split manifests."""
     modes = _validate_modes(modes)
     game_config = _resolve_config(vn_root, output_dir, config)
@@ -912,9 +1098,15 @@ def _run_native_stage(
     paths = game_config.resolved_paths()
     reports_dir = paths["report_dir"]
     manifest_index_path = paths["manifest_index_path"]
-    # The child writes its result JSON into reports_dir; create it up front so
-    # the first batch doesn't fail with FileNotFoundError.
+    # The native result is kept inside the disposable workspace.  The report
+    # directory is still created here because the final manifest bundle lives
+    # there.  Remove the legacy shared result path if an older run left one.
     reports_dir.mkdir(parents=True, exist_ok=True)
+    legacy_result_path = reports_dir / ".native-result.json"
+    try:
+        legacy_result_path.unlink(missing_ok=True)
+    except OSError:
+        pass
 
     compositor = Compositor(game_config)
     associator = CharacterAssociator(game_config)
@@ -925,7 +1117,7 @@ def _run_native_stage(
             game_root=game_config.game_root,
             script_files=_script_files(game_config),
             engine_config={},
-            result_path=reports_dir / ".native-result.json",
+            result_path=Path(".native-result.json"),
             workspace_parent=game_config.game_root.parent,
             archive_dirs=[path for path in game_config.archive_dirs],
         )
@@ -983,7 +1175,12 @@ def _run_native_stage(
             dynamic_states=_previous_dynamic_states(game_config),
             image_declarations=_declaration_records(index, game_config),
             dynamic_declarations=dynamic_declarations,
-            unresolved=_native_unresolved_errors(candidates),
+            unresolved=tuple(
+                sorted(
+                    set(_native_unresolved_errors(candidates))
+                    | set(sink.unresolved_errors)
+                )
+            ),
             summary={
                 "scripts_scanned": len(index.files),
                 "composites": len(sink.records),
@@ -1028,14 +1225,15 @@ def _run_native_stage(
         )
     finally:
         if workspace is not None:
-            workspace.cleanup()
-        # Remove the intermediate per-batch result JSON; it is not part of
-        # the final manifest output.
-        result_path = reports_dir / ".native-result.json"
-        try:
-            result_path.unlink(missing_ok=True)
-        except OSError:
-            pass
+            try:
+                workspace.cleanup()
+            except OSError as cleanup_exc:
+                active_error = sys.exception()
+                if active_error is None:
+                    raise
+                active_error.add_note(
+                    f"Native workspace cleanup also failed: {cleanup_exc}"
+                )
 
 
 def run_composite_stage(

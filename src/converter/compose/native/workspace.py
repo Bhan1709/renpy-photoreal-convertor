@@ -33,7 +33,20 @@ class NativeWorkspace:
         return self.game_dir / INJECTED_SCRIPT
 
     def cleanup(self) -> None:
-        """Remove the complete disposable workspace."""
+        """Remove the complete disposable workspace.
+
+        Cleanup is idempotent so a caller can safely attempt it after an
+        earlier partial cleanup.  The stage's ``finally`` block relies on
+        this not masking the original native-stage exception.
+        """
+        if not self.root.exists():
+            return
+        # Remove the result payload first.  If directory removal itself fails,
+        # the potentially sensitive native result is still not left behind.
+        try:
+            self.result_path.unlink(missing_ok=True)
+        except OSError:
+            pass
         shutil.rmtree(self.root, ignore_errors=False)
 
     def __enter__(self) -> Self:
@@ -45,10 +58,37 @@ class NativeWorkspace:
         exc: BaseException | None,
         traceback: TracebackType | None,
     ) -> None:
-        self.cleanup()
+        try:
+            self.cleanup()
+        except OSError as cleanup_exc:
+            if exc is not None:
+                exc.add_note(
+                    f"Native workspace cleanup also failed: {cleanup_exc}"
+                )
+                return
+            raise
 
 
 _SCRIPT_SUFFIXES = frozenset({".rpy", ".rpyc", ".rpym", ".rpymc"})
+
+# Names used by the host/runtime inside a disposable workspace.  A result
+# file must not be allowed to alias one of these paths: doing so could make a
+# later batch consume a config, state cache, or log as its result payload.
+_RESERVED_RESULT_NAMES = frozenset(
+    {
+        "game",
+        "savedir",
+        "native_config.json",
+        "renders",
+        "states.json",
+        "progress.log",
+        "batch_stdout.log",
+        "batch_stderr.log",
+        "logs",
+        "save-root",
+        "multipersistent",
+    }
+)
 
 
 def create_workspace(
@@ -56,7 +96,7 @@ def create_workspace(
     game_root: Path,
     script_files: list[str] | None,
     engine_config: dict,
-    result_path: Path,
+    result_path: Path | None = None,
     workspace_parent: Path | None = None,
     archive_dirs: list[Path] | None = None,
 ) -> NativeWorkspace:
@@ -73,6 +113,10 @@ def create_workspace(
 
     ``archive_dirs`` lists the extracted asset roots that should be mirrored.
     When omitted, ``game_root / "archive"`` is used for compatibility.
+
+    The result file always lives inside the disposable workspace.  The optional
+    *result_path* argument is retained for source compatibility, but only its
+    file name is used; an external path is never shared between native runs.
     """
     source_game = Path(game_root).resolve()
     if not source_game.is_dir():
@@ -101,12 +145,23 @@ def create_workspace(
         encoding="utf-8",
     )
 
+    result_name = Path(result_path).name if result_path is not None else ""
+    result_key = result_name.casefold()
+    if (
+        not result_name
+        or result_name in {".", ".."}
+        or result_key in _RESERVED_RESULT_NAMES
+        or result_key == config_path.name.casefold()
+    ):
+        result_name = "native-result.json"
+    isolated_result_path = root / result_name
+
     return NativeWorkspace(
         root=root,
         game_dir=game_dir,
         savedir=savedir,
         config_path=config_path,
-        result_path=Path(result_path),
+        result_path=isolated_result_path,
     )
 
 
