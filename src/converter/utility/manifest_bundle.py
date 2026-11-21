@@ -229,9 +229,10 @@ def _try_lock(handle: Any, path: Path) -> bool:
     if os.name == "nt":
         import msvcrt
 
+        msvcrt_module: Any = msvcrt
         handle.seek(0)
         try:
-            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+            msvcrt_module.locking(handle.fileno(), msvcrt_module.LK_NBLCK, 1)
         except OSError:
             return False
         return True
@@ -254,9 +255,10 @@ def _unlock(handle: Any) -> None:
     if os.name == "nt":
         import msvcrt
 
+        msvcrt_module: Any = msvcrt
         handle.seek(0)
         try:
-            msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            msvcrt_module.locking(handle.fileno(), msvcrt_module.LK_UNLCK, 1)
         except OSError:
             pass
         return
